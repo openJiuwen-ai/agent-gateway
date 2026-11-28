@@ -56,9 +56,37 @@ class AgentServerClient(ABC):
         """
         ...
 
+    async def update_channel_config(self, channels: dict[str, Any]) -> bool:
+        """Synchronize selected channel settings with the target AgentServer."""
+        from uuid import uuid4
+
+        # Compatibility for external implementations written against the
+        # original interface. Managed clients override this method directly.
+        if getattr(self, "managed_routing", False) is True:
+            fanout = getattr(self, "sync_channel_config", None)
+            return bool(await fanout(channels)) if callable(fanout) else False
+
+        from e2a.message import ReqMethod
+
+        response = await self.send_request(E2AEnvelope(
+            request_id=uuid4().hex,
+            channel="web",
+            method=ReqMethod.JIUWENMATE_CHANNEL_CONFIG_SYNC.value,
+            params={"channels": channels},
+        ))
+        return bool(getattr(response, "ok", False))
+
     @abstractmethod
     async def send_request_stream(
         self, envelope: E2AEnvelope
     ) -> AsyncIterator[AgentResponseChunk]:
         """发送 E2A 信封，流式接收响应."""
         ...
+
+
+async def update_agent_channel_config(client: Any, channels: dict[str, Any]) -> bool:
+    """Invoke the update contract, adapting clients from older extensions."""
+    update = getattr(client, "update_channel_config", None)
+    if callable(update):
+        return await update(channels)
+    return await AgentServerClient.update_channel_config(client, channels)

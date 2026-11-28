@@ -31,7 +31,6 @@ try:
 except ImportError:
     _psutil = None  # type: ignore[assignment]
     _HAS_PSUTIL = False
-from agent_gateway.agent_client_mode import is_runtime_agent_client
 from agent_gateway.enterprise.edition import is_enterprise as _is_enterprise_edition
 from agent_gateway.channel_manager.web.channel_sync import schedule_channel_config
 from agent_gateway.channel_manager.web.task_asr import (
@@ -1922,6 +1921,7 @@ class WebHandlersBindParams:
     topic_prepare_service: Any = None
     topic_service: Any = None
     topic_outcome_queue: Any = None
+    gateway_owns_config: bool | None = None
 
 
 _CONTAINER_FILE_API_METHODS = (
@@ -2220,6 +2220,25 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if isinstance(ref, dict):
             return ref.get(key)
         return ref
+
+    from agent_gateway.channel_manager.client_policies import select_gateway_config_location
+
+    gateway_owns_config = bind.gateway_owns_config
+    if gateway_owns_config is None:
+        gateway_owns_config = select_gateway_config_location(_resolve(agent_client))
+
+    # Legacy references can be populated after registration. Select the resolver
+    # once, while ordinary startup injects a fixed configuration owner.
+    if isinstance(agent_client, dict):
+        config_owner = select_gateway_config_location
+    else:
+        def config_owner(_client: Any) -> bool:
+            return bool(gateway_owns_config)
+
+    def _config_use_local_handler(resolved_client: Any, *, enterprise: bool | None = None) -> bool:
+        from agent_gateway.enterprise import is_enterprise
+
+        return (is_enterprise() if enterprise is None else enterprise) and config_owner(resolved_client)
 
     def _schedule_clear_agent_config_cache(name: str) -> None:
         asyncio.create_task(
@@ -2610,14 +2629,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
         try:
-            # Personal config writes live in AgentServer, not Gateway's startup env.
-            from agent_gateway.routing.e2a_proxy import is_legacy_shared_directory_client
-
             resolved_client = _resolve(agent_client)
-            use_local_config = _is_enterprise_edition() and (
-                resolved_client is None
-                or is_runtime_agent_client(resolved_client)
-                or is_legacy_shared_directory_client(resolved_client)
+            use_local_config = _config_use_local_handler(
+                resolved_client, enterprise=_is_enterprise_edition()
             )
             if use_local_config:
                 text = await transcribe_task_audio(params)
@@ -3775,17 +3789,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         "project.git.turn_diff",
         doc="查询指定轮次 Diff 详情。",
     )
-
-    def _config_use_local_handler(resolved_client: Any) -> bool:
-        """Whether a config/models request must stay in the Gateway process."""
-        from agent_gateway.enterprise import is_enterprise
-        from agent_gateway.routing.e2a_proxy import is_legacy_shared_directory_client
-
-        return is_enterprise() and (
-            resolved_client is None
-            or is_runtime_agent_client(resolved_client)
-            or is_legacy_shared_directory_client(resolved_client)
-        )
 
     async def _path_get(ws, req_id, params, session_id, user_id=None):
         """读 browser.chrome_path 并返回给前端（会解析环境变量）。"""

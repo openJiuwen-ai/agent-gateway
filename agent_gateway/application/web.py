@@ -62,9 +62,17 @@ def assemble_web(
         path=web_path,
         ws_permessage_deflate=web_ws_deflate,
     )
+    from agent_gateway.channel_manager.client_policies import (
+        select_attachment_overwrite,
+        select_gateway_config_location,
+        select_web_frame_projector,
+    )
+
     web_channel = WebChannel(
         web_config, _DummyBus(), agent_client=client,
         auth_service_provider=auth_service_provider, credential_update_sink=credential_update_sink,
+        frame_projector=select_web_frame_projector(client),
+        attachment_overwrite=select_attachment_overwrite(client),
     )
     register_3rdagent_web_method(web_channel)
 
@@ -130,6 +138,7 @@ def assemble_web(
             cron_controller=cron_controller,
             heartbeat_controller=heartbeat_controller,
             updater_service=updater_service,
+            gateway_owns_config=select_gateway_config_location(client),
         )
     )
 

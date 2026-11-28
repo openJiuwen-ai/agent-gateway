@@ -115,6 +115,9 @@ class AdxRouterClient(AdxFileMixin, SouthboundAgentClient):
         self._router.set_or_update_server_config(config=config, env=env)
         self._control.agent_idle_timeout_seconds = self._router._sandbox_idle_timeout_seconds
 
+    async def update_channel_config(self, channels: dict[str, Any]) -> bool:
+        return await self._router.update_channel_config(channels)
+
     async def send_request(self, envelope: E2AEnvelope, *, timeout: float | None = None) -> AgentResponse:
         if envelope.channel == HEALTH_CHECK_CHANNEL_ID:
             if self._router._closed:

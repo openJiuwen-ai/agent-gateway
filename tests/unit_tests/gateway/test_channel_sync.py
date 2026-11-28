@@ -9,6 +9,7 @@ from agent_gateway.channel_manager.web.channel_sync import (
     merge_channel_snapshots,
     schedule_channel_snapshot,
     select_channel_snapshot,
+    sync_channel_config,
 )
 from agent_gateway.extensions.agentos.agentos_router.agent_manager import BUILTIN_AGENT_TYPE
 from agent_gateway.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
@@ -25,6 +26,29 @@ def test_select_channel_snapshot_keeps_as_channels_and_minimal_other_channels() 
         "feishu": {"apps": [{"app_id": "a"}], "send_file_allowed": True},
         "telegram": {"send_file_allowed": False},
     }
+
+
+@pytest.mark.asyncio
+async def test_single_channel_sync_uses_client_update_contract() -> None:
+    class Client:
+        async def update_channel_config(self, channels):
+            assert channels == {"telegram": {"send_file_allowed": True}}
+            return True
+
+    assert await sync_channel_config(
+        Client(), "telegram", {"send_file_allowed": True, "bot_token": "secret"}
+    )
+
+
+@pytest.mark.asyncio
+async def test_legacy_managed_channel_sync_requires_fanout() -> None:
+    class Client:
+        managed_routing = True
+
+        async def send_request(self, envelope):
+            pytest.fail("Managed channel sync must not issue a contextless request")
+
+    assert not await sync_channel_config(Client(), "feishu", {"apps": []})
 
 
 @pytest.mark.asyncio

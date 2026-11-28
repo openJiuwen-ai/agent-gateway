@@ -297,11 +297,16 @@ class WebChannel(BaseWsChannel):
         self, config: WebChannelConfig, router: RobotMessageRouter, agent_client: Any = None,
         *, auth_service_provider: Callable[[], AuthService] | None = None,
         credential_update_sink: CredentialUpdateSink | None = None,
+        frame_projector: Callable[[Any], Any] | None = None,
+        attachment_overwrite: bool | None = None,
     ):
         super().__init__(config, router)
         self.config: WebChannelConfig = config
         # Phase 2：注入 AgentServerClient，供 _process_files 文件导入 E2A 转发使用
-        self.agent_client: Any = agent_client
+        self._bind_agent_client(
+            agent_client, frame_projector=frame_projector,
+            attachment_overwrite=attachment_overwrite,
+        )
         self.auth_service_provider = auth_service_provider
         self.credential_update_sink = credential_update_sink
         self._listener: UvicornListener | None = None
@@ -362,6 +367,34 @@ class WebChannel(BaseWsChannel):
         self.web_proxy_http_session: Any = None
         self._web_proxy_session_lock = asyncio.Lock()
 
+
+    @property
+    def agent_client(self) -> Any:
+        return self._agent_client
+
+    @agent_client.setter
+    def agent_client(self, client: Any) -> None:
+        self._bind_agent_client(client)
+
+    def _bind_agent_client(
+        self, client: Any, *,
+        frame_projector: Callable[[Any], Any] | None = None,
+        attachment_overwrite: bool | None = None,
+    ) -> None:
+        """Bind a client together with its deployment-specific Web policies."""
+        from agent_gateway.channel_manager.client_policies import (
+            select_attachment_overwrite,
+            select_web_frame_projector,
+        )
+
+        self._agent_client = client
+        self._project_frame = (
+            select_web_frame_projector(client) if frame_projector is None else frame_projector
+        )
+        self._attachment_overwrite = (
+            select_attachment_overwrite(client)
+            if attachment_overwrite is None else attachment_overwrite
+        )
 
     @staticmethod
     def _coalescible_stream_frame(
@@ -543,14 +576,7 @@ class WebChannel(BaseWsChannel):
     def _enqueue_send(self, ws: Any, data: Any) -> None:
         # All unary, streamed and pushed frames converge here, after internal
         # callbacks and busy-state tracking have consumed the canonical values.
-        from agent_gateway.routing.e2a_proxy import is_agentos_routing_client
-
-        if is_agentos_routing_client(self.agent_client):
-            from agent_gateway.channel_manager.web.agentos_compat import (
-                project_agentos_web_frame,
-            )
-
-            data = project_agentos_web_frame(data)
+        data = self._project_frame(data)
         # HTTP/SSE Outbound：不入 WS writer 队列，直接投递到请求级队列。
         if getattr(ws, "is_http_outbound", False):
             from agent_gateway.channel_manager.web.outbound import _normalize_frame
@@ -920,10 +946,7 @@ class WebChannel(BaseWsChannel):
             logger.warning("[WebChannel] 文件导入跳过：AgentServer 不可用")
             return params
 
-        from agent_gateway.routing.e2a_proxy import (
-            fetch_agent_unary,
-            is_agentos_routing_client,
-        )
+        from agent_gateway.routing.e2a_proxy import fetch_agent_unary
 
         ok, payload = await fetch_agent_unary(
             agent_client=ac,
@@ -934,7 +957,7 @@ class WebChannel(BaseWsChannel):
             # user artifact.
             params={
                 "files": url_files,
-                "overwrite": not is_agentos_routing_client(ac),
+                "overwrite": self._attachment_overwrite,
             },
             session_id=session_id,
             user_id=user_id or None,

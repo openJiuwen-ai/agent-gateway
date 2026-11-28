@@ -2053,6 +2053,9 @@ class ManagedRouter(SouthboundAgentClient):
                 sandbox_id,
             )
 
+    async def update_channel_config(self, channels: dict[str, Any]) -> bool:
+        return await self.sync_channel_config(channels)
+
     async def sync_channel_config(self, channels: Mapping[str, Any]) -> bool:
         """Push one global channel snapshot to every ready builtin AS."""
         if not isinstance(channels, Mapping) or not channels:

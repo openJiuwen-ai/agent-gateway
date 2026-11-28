@@ -10,12 +10,8 @@ from copy import deepcopy
 from dataclasses import dataclass
 import logging
 from typing import Any
-from uuid import uuid4
 
-from e2a.message import ReqMethod
-from e2a.models import E2AEnvelope
-
-from agent_gateway.routing.e2a_proxy import is_agentos_routing_client
+from agent_gateway.common.client.agent_client import update_agent_channel_config
 
 logger = logging.getLogger(__name__)
 
@@ -159,43 +155,13 @@ async def sync_channel_config(
     if not changes:
         return False
 
-    if is_agentos_routing_client(agent_client):
-        fanout = getattr(agent_client, "sync_channel_config", None)
-        if not callable(fanout):
-            return False
-        try:
-            return bool(
-                await asyncio.wait_for(
-                    fanout(changes),
-                    timeout=_SYNC_TIMEOUT_SECONDS,
-                )
-            )
-        except Exception as exc:  # noqa: BLE001 - best effort
-            logger.warning(
-                "[ChannelSync] %s fanout snapshot push failed: %s",
-                channel_id,
-                type(exc).__name__,
-            )
-            return False
-
-    envelope = E2AEnvelope(
-        request_id=uuid4().hex,
-        channel="web",
-        method=ReqMethod.JIUWENMATE_CHANNEL_CONFIG_SYNC.value,
-        params={"channels": changes},
-    )
     try:
-        response = await asyncio.wait_for(
-            agent_client.send_request(envelope), timeout=_SYNC_TIMEOUT_SECONDS
+        accepted = await asyncio.wait_for(
+            update_agent_channel_config(agent_client, changes), timeout=_SYNC_TIMEOUT_SECONDS
         )
     except Exception as exc:  # noqa: BLE001 - best effort
-        logger.warning(
-            "[ChannelSync] %s snapshot push failed: %s",
-            channel_id,
-            type(exc).__name__,
-        )
+        logger.warning("[ChannelSync] %s snapshot push failed: %s", channel_id, type(exc).__name__)
         return False
-    if not getattr(response, "ok", False):
+    if not accepted:
         logger.warning("[ChannelSync] %s snapshot rejected by AgentServer", channel_id)
-        return False
-    return True
+    return bool(accepted)

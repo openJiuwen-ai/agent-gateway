@@ -10,7 +10,7 @@ from pathlib import Path
 import subprocess
 import sys
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import ANY, AsyncMock, Mock
 
 import pytest
 
@@ -369,7 +369,8 @@ async def test_service_assembly_preserves_selection_storage_order_and_single_ins
         handler_factory.assert_called_once_with(
             value.client, session_login_bindings=value.session_login_bindings,
         )
-        cm_factory.assert_called_once_with(handler, config={})
+        cm_factory.assert_called_once_with(handler, config={}, im_attachment_guard=ANY)
+        cm_factory.call_args.kwargs["im_attachment_guard"]()
         handler.set_channel_manager.assert_called_once_with(cm)
         handler.set_inbound_pipeline.assert_called_once_with(inbound)
         handler.set_outbound_pipeline.assert_called_once_with(outbound)

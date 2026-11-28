@@ -243,14 +243,13 @@ async def test_agentos_attachment_never_falls_back_to_gateway_workspace(monkeypa
     AgentOS 态安装的是明确失败的 stub hook（等 IM 多用户路由）——
     该安全路径在 A1g 中保留，此处防止回归。
     """
-    monkeypatch.setattr(
-        "agent_gateway.routing.e2a_proxy.is_agentos_routing_client",
-        lambda _client: True,
-    )
     from agent_gateway.channel_manager.channel_manager import ChannelManager
 
+    class ManagedClient:
+        managed_routing = True
+
     channel = _FakePersistChannel()
-    manager = ChannelManager(_FakeMessageHandlerWithClient(agent_client=object()))
+    manager = ChannelManager(_FakeMessageHandlerWithClient(agent_client=ManagedClient()))
     manager._try_wire_file_persist_hook(channel)
 
     assert channel.hook is not None
