@@ -63,14 +63,17 @@ _ALLOWED_UNREGISTERED = frozenset(
         "JIUWENSWARM_FILE_DOWNLOAD_SECRET",
         "JIUWENSWARM_DOWNLOAD_ASSET_ROOT",
         "JIUWENSWARM_WORKSPACE",
-        "JIUWENCLAW_LOG_MASKING_PROBE",
-        "JIUWENCLAW_REQUEST_EXT_FORWARD_HEADERS",
     }
 )
 
 _ALLOWED = _ALLOWED_UNREGISTERED | frozenset(
     name for var in env_names.ALL for name in var.legacy
 )
+
+
+def _declares(text: str, name: str) -> bool:
+    """Return True when the template declares *name* as a setting."""
+    return re.search(r"(?m)^\s*#?\s*" + re.escape(name) + r"\s*=", text) is not None
 
 
 def test_only_registered_legacy_names_are_read() -> None:
@@ -97,12 +100,12 @@ def test_env_example_covers_every_public_runner_variable() -> None:
     assert _ENV_EXAMPLE.is_file(), "add .env.example at the repository root"
     text = _ENV_EXAMPLE.read_text(encoding="utf-8")
 
-    missing = [var.name for var in env_names.ALL if not var.internal and var.name not in text]
+    missing = [var.name for var in env_names.ALL if not var.internal and not _declares(text, var.name)]
     assert not missing, ".env.example is missing: %s" % missing
 
 
 def test_internal_variables_are_not_documented_as_runner_settings() -> None:
     text = _ENV_EXAMPLE.read_text(encoding="utf-8")
 
-    documented = [var.name for var in env_names.ALL if var.internal and var.name in text]
+    documented = [var.name for var in env_names.ALL if var.internal and _declares(text, var.name)]
     assert not documented, ".env.example must not document internal handshakes: %s" % documented
