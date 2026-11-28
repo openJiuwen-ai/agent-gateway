@@ -88,14 +88,16 @@ def sort_by_order(rows: list[dict[str, Any]], order_by: str) -> list[dict[str, A
     if not field:
         return rows
 
-    def _key(row: dict[str, Any]) -> Any:
+    def _key(row: dict[str, Any]) -> tuple[int, Any]:
+        # 分组元组键：(数值, 字符串, None)，组间永不互比，避免
+        # Python3 中 int 与 str（如 None 归一为 0 的旧行为）直接比较抛 TypeError。
         value = row.get(field)
         if value is None:
-            return 0
+            return (2, 0)
         try:
-            return int(value)
+            return (0, int(value))
         except (TypeError, ValueError):
-            return value
+            return (1, str(value))
 
     return sorted(rows, key=_key, reverse=reverse)
 
