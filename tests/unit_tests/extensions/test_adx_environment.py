@@ -12,7 +12,9 @@ from agent_gateway.extensions.adx.config import load_router_config
 from agent_gateway.extensions.adx.control_client import (
     AdxControlClient, AdxControlError, AdxCreateTimeout, AdxCreateUncertain, AdxGenerationMismatch,
 )
-from agent_gateway.extensions.agentos.agentos_router.backend import AGENT_GENERATION_ENV
+from agent_gateway.extensions.agentos.agentos_router.backend import (
+    AGENT_GENERATION_ENV, DEFAULT_RUNTIME_PROBE_SETTINGS,
+)
 
 
 def config(monkeypatch, tmp_path):
@@ -92,21 +94,27 @@ def test_workspace_preflight_reports_invalid_utf8(tmp_path, name):
 @pytest.mark.asyncio
 async def test_replayed_create_never_deletes_a_different_generation():
     from agent_gateway.extensions.agentos.agentos_router.agent_manager import AgentRebuildPending
-    from agent_gateway.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
-
-    router = SimpleNamespace(_request_sandbox_delete=AsyncMock())
-    attempt = SimpleNamespace(
-        deterministic_id='test-alice',
-        create=AsyncMock(side_effect=AdxGenerationMismatch('another Agent generation')),
+    from agent_gateway.southbound.orchestration.instance_lifecycle import (
+        AgentOSInstanceLifecycle, AgentOSSandboxAttempt, AgentOSSandboxLifecycle,
     )
-    lifecycle = SimpleNamespace(attempt=attempt, retired_instance='previous-instance')
+
+    # The router delegates replay to the shared lifecycle service.
+    control = SimpleNamespace(query=AsyncMock(), delete=AsyncMock(), verify_generation=AsyncMock())
+    lifecycle_service = AgentOSInstanceLifecycle(
+        control, DEFAULT_RUNTIME_PROBE_SETTINGS, cleanup_step=lambda step, outcome, reason: None,
+    )
+    attempt = AgentOSSandboxAttempt(
+        'generation', 'test-alice',
+        AsyncMock(side_effect=AdxGenerationMismatch('another Agent generation')),
+    )
+    lifecycle = AgentOSSandboxLifecycle(attempt=attempt, retired_instance='previous-instance')
     with pytest.raises(AgentRebuildPending, match='generation did not match'):
-        await AgentOSRouterClient._post_sandbox_attempt(
-            router, lifecycle, attempt, asyncio.get_running_loop().time() + 1,
+        await lifecycle_service.post_sandbox_attempt(
+            lifecycle, attempt, asyncio.get_running_loop().time() + 1,
         )
     assert lifecycle.attempt is None
     assert lifecycle.retired_instance == 'previous-instance'
-    router._request_sandbox_delete.assert_not_awaited()
+    control.delete.assert_not_awaited()
 
 
 @pytest.mark.asyncio
