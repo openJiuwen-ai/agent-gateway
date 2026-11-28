@@ -9,6 +9,7 @@ from typing import Any, TypeVar
 
 import portalocker
 
+from agent_gateway.common.ingress_identity import IngressIdentity, LocalIdentityPolicy
 from agent_gateway.common.paths import get_cron_jobs_path
 from agent_gateway.common.work_mode import DEFAULT_WEB_WORK_MODE
 from agent_gateway.runtime.cron.cron_job_mutations import (
@@ -19,8 +20,9 @@ from agent_gateway.runtime.cron.cron_job_mutations import (
     ensure_proactive_deletable,
     migrate_work_mode_on_items,
     parse_cron_jobs,
+    sort_cron_jobs,
 )
-from agent_gateway.runtime.cron.models import CronJob, CronTarget
+from agent_gateway.runtime.cron.models import CronJob, CronTarget, is_valid_target_channel_id
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +83,111 @@ class FileCronJobStore:
 
     async def get_revision(self) -> int:
         return self._file_revision()
+
+    @staticmethod
+    def _parse_snapshot(data: dict[str, Any]) -> list[CronJob]:
+        """Validate the sharding view without old permissive owner/target coercion."""
+        if (
+            not isinstance(data, dict)
+            or type(data.get("version", 1)) is not int
+            or data.get("version", 1) != 1
+            or not isinstance(data.get("jobs"), list)
+        ):
+            raise ValueError("invalid cron snapshot schema")
+        jobs: list[CronJob] = []
+        seen: set[str] = set()
+        policy = LocalIdentityPolicy()
+        for index, original in enumerate(data["jobs"]):
+            try:
+                if not isinstance(original, dict):
+                    raise ValueError()
+                item = dict(original)
+                job_id = item.get("id")
+                if (
+                    not isinstance(job_id, str) or not job_id
+                    or job_id != job_id.strip() or job_id in seen
+                    or any(ord(character) < 32 for character in job_id)
+                ):
+                    raise ValueError()
+                for key in ("user_id", "group_id", "bot_id"):
+                    value = item.get(key, "")
+                    if not isinstance(value, str):
+                        raise ValueError()
+                    if value:
+                        IngressIdentity(
+                            contract_id=policy.contract_id, mode="local_compat",
+                            domain=policy.domain, kind="named", business_user_id=value,
+                        )
+                for key in ("enabled", "expired", "delete_after_run"):
+                    if key in item and type(item[key]) is not bool:
+                        raise ValueError()
+                ref = item.get("credential_ref", "")
+                if not isinstance(ref, str) or ref != ref.strip():
+                    raise ValueError()
+                if "model_selection" in item and item["model_selection"] is not None:
+                    if not isinstance(item["model_selection"], dict):
+                        raise ValueError()
+                if "work_mode" in item and item["work_mode"] not in ("code", "work"):
+                    raise ValueError()
+                if "wake_offset_seconds" in item:
+                    offset = item["wake_offset_seconds"]
+                    if type(offset) is not int or offset < 0:
+                        raise ValueError()
+                targets = item.get("targets")
+                if isinstance(targets, list):
+                    if len(targets) != 1 or any(not isinstance(t, dict) for t in targets):
+                        raise ValueError()
+                    channel_ids = [t.get("channel_id") for t in targets]
+                else:
+                    channel_ids = [targets]
+                if any(not isinstance(t, str) or not is_valid_target_channel_id(t) for t in channel_ids):
+                    raise ValueError()
+                # Legacy work-mode inference is safe only in this detached copy.
+                migrate_work_mode_on_items([item])
+                job = CronJob.from_dict(item)
+                seen.add(job.id)
+                jobs.append(job)
+            except Exception:
+                # Parser exceptions may embed model/description values. Do not
+                # propagate their text into an operator-facing preflight report.
+                raise ValueError(f"invalid cron snapshot record at index {index}") from None
+        return sort_cron_jobs(jobs)
+
+    def _read_snapshot_data(self) -> dict[str, Any]:
+        """Read the exact schema; only an absent file means an empty inventory."""
+        try:
+            raw = self._path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return {"version": 1, "jobs": []}
+        except UnicodeError:
+            raise ValueError("invalid cron snapshot encoding") from None
+        try:
+            return json.loads(raw)
+        except ValueError:
+            raise ValueError("invalid cron snapshot JSON") from None
+
+    async def read_snapshot(self) -> list[CronJob]:
+        """Read one atomic-replace generation, with no data/lock/directory writes.
+
+        File writers replace the whole JSON atomically. Opening it therefore
+        observes one complete old or new generation; no sidecar lock is needed.
+        This is an inventory, not a transaction spanning subsequent mutations.
+        """
+        return await asyncio.to_thread(lambda: self._parse_snapshot(self._read_snapshot_data()))
+
+    async def insert_job(self, job: CronJob) -> CronJob:
+        """Create exclusively under the file lock; unlike legacy create, no upsert."""
+        def body() -> CronJob:
+            data = self._read_snapshot_data()
+            self._parse_snapshot({'version': 1, 'jobs': [job.to_dict()]})
+            existing = self._parse_snapshot(data)
+            if any(item.id == job.id for item in existing):
+                raise ValueError("cron job already exists")
+            data["jobs"].append(job.to_dict())
+            self._write_json_unlocked(data)
+            return job
+
+        return await self._run_locked(body)
 
     async def list_jobs(self, *, strict: bool = False) -> list[CronJob]:
         # 惰性迁移:在同一个锁内 read + 推断缺 work_mode 的老 job + writeback,
@@ -231,7 +338,13 @@ class FileCronJobStore:
         await self._upsert_job(job)
         return job
 
-    async def update_job(self, job_id: str, patch: dict[str, Any]) -> CronJob:
+    async def update_job(
+        self,
+        job_id: str,
+        patch: dict[str, Any],
+        *,
+        guard: Callable[[CronJob], None] | None = None,
+    ) -> CronJob:
         job_id = str(job_id or "").strip()
         if not job_id:
             raise ValueError("id is required")
@@ -240,23 +353,33 @@ class FileCronJobStore:
         # 标 expired/enabled 与执行完成回写 last_session_id 是并发写入者，
         # 读与写分开加锁时后写者会基于过期快照整条覆盖前者的字段。
         def _body() -> CronJob:
-            data = self._read_json_unlocked()
+            data = self._read_snapshot_data() if guard is not None else self._read_json_unlocked()
+            if guard is not None:
+                self._parse_snapshot(data)
             jobs_raw = data.get("jobs") or []
             if not isinstance(jobs_raw, list):
                 jobs_raw = []
             # 与 get_job 的读取路径保持一致：兜底缺 work_mode 的老数据。
-            jobs_raw, _ = migrate_work_mode_on_items(jobs_raw)
+            if guard is None:
+                jobs_raw, _ = migrate_work_mode_on_items(jobs_raw)
             for index, item in enumerate(jobs_raw):
                 if not isinstance(item, dict):
                     continue
                 if str(item.get("id") or "").strip() != job_id:
                     continue
                 try:
+                    if guard is not None:
+                        item = dict(item)
+                        migrate_work_mode_on_items([item])
                     existing = CronJob.from_dict(item)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("Ignoring invalid cron job id=%s: %s", job_id, exc)
                     raise KeyError("job not found") from None
+                if guard is not None:
+                    guard(existing)
                 updated = apply_cron_job_patch(existing, dict(patch or {}))
+                if guard is not None:
+                    guard(updated)
                 jobs_raw[index] = updated.to_dict()
                 data["version"] = int(data.get("version") or 1)
                 data["jobs"] = jobs_raw
@@ -266,15 +389,23 @@ class FileCronJobStore:
 
         return await self._run_locked(_body)
 
-    async def delete_job(self, job_id: str, *, force: bool = False) -> bool:
+    async def delete_job(
+        self,
+        job_id: str,
+        *,
+        force: bool = False,
+        guard: Callable[[CronJob], None] | None = None,
+    ) -> bool:
         job_id = str(job_id or "").strip()
         if not job_id:
             return False
-        if not force:
+        if not force and guard is None:
             ensure_proactive_deletable(await self.get_job(job_id), force=False)
 
         def _body() -> bool:
-            data = self._read_json_unlocked()
+            data = self._read_snapshot_data() if guard is not None else self._read_json_unlocked()
+            if guard is not None:
+                self._parse_snapshot(data)
             jobs_raw = data.get("jobs") or []
             if not isinstance(jobs_raw, list):
                 jobs_raw = []
@@ -284,6 +415,10 @@ class FileCronJobStore:
                 if not isinstance(item, dict):
                     continue
                 if str(item.get("id") or "").strip() == job_id:
+                    if guard is not None:
+                        existing = CronJob.from_dict(item)
+                        guard(existing)
+                        ensure_proactive_deletable(existing, force=force)
                     deleted = True
                     continue
                 kept.append(item)

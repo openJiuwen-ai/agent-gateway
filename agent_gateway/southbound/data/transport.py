@@ -87,14 +87,16 @@ class AgentDataTransport:
         return TransportError("request transport failed", delivery=state, source=source)
 
     async def send_request(self, target: ConnectionTarget, envelope: E2AEnvelope,
-                           *, timeout: float | None = None) -> UnaryResult:
+                           *, timeout: float | None = None,
+                           on_written: Callable[[], None] | None = None) -> UnaryResult:
         source = self._source(target, envelope)
         client = await self._get_for_request(target, source)
         try:
             if isinstance(client, HttpSseConnection):
                 payload = await client.send_request(envelope, base_url=target.endpoint, timeout=timeout)
             else:
-                payload = await client.send_request(envelope, timeout=timeout)
+                kwargs = {} if on_written is None else {"on_written": on_written}
+                payload = await client.send_request(envelope, timeout=timeout, **kwargs)
         except Exception as exc:
             raise self._failure(exc, source) from exc
         return Sourced(payload, source)
@@ -139,6 +141,9 @@ class StaticWebSocketTransport(AgentDataTransport):
         self._target = target
         self._connection = WebSocketConnection(ping_interval=ping_interval, ping_timeout=ping_timeout)
         super().__init__(websocket_factory=lambda: self._connection)
+
+    def set_credential_runtime(self, runtime) -> None:
+        self._connection.set_credential_runtime(runtime)
 
     async def _open(self, target: ConnectionTarget) -> Connection:
         if target != self._target:

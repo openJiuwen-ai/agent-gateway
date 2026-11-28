@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
@@ -23,8 +24,10 @@ class StarletteWsAdapter:
         *,
         authenticated_user_id: str | None = None,
         verified_user_id: str | None = None,
+        frame_allowed: Callable[[str | bytes], bool] | None = None,
     ) -> None:
         self._ws = websocket
+        self._frame_allowed = frame_allowed
         self.authenticated_user_id = authenticated_user_id
         # The declared user the handshake bound to the token ("" when none was
         # declared); None when no check ran. WebChannel uses it as the identity.
@@ -99,10 +102,14 @@ class StarletteWsAdapter:
         if msg_type == "websocket.disconnect":
             self._mark_closed(message.get("code", 1006), message.get("reason", ""))
             raise self._closed_exc()
-        if "text" in message and message["text"] is not None:
-            return message["text"]
-        if "bytes" in message and message["bytes"] is not None:
-            return message["bytes"]
+        data = message.get("text")
+        if data is None:
+            data = message.get("bytes")
+        if data is not None:
+            if self._frame_allowed is not None and not self._frame_allowed(data):
+                await self.close(code=1008, reason="unsupported Worker request")
+                raise self._closed_exc()
+            return data
         self._mark_closed(1006, "empty websocket frame")
         raise self._closed_exc()
 

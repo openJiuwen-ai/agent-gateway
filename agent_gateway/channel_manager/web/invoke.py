@@ -10,6 +10,7 @@ from typing import Any
 
 from e2a.message import Message
 
+from agent_gateway.auth.credential_access import CredentialAccessError
 from agent_gateway.common.protocol_methods import (
     SKILL_UPLOAD_FINALIZE,
     SKILL_UPLOAD_STAGE,
@@ -246,9 +247,14 @@ async def dispatch_web_request(
     handled_by_callback = False
     on_message_cb = _on_message_cb(channel)
     if on_message_cb is not None:
-        result = on_message_cb(user_message)
-        if inspect.isawaitable(result):
-            result = await result
+        try:
+            result = on_message_cb(user_message)
+            if inspect.isawaitable(result):
+                result = await result
+        except CredentialAccessError:
+            await channel.send_response(outbound, request_id, ok=False, error="Remote credential access failed",
+                                        code="CREDENTIAL_SERVICE_FAILED")
+            return
         handled_by_callback = bool(result)
     else:
         bus = getattr(channel, "bus", None)

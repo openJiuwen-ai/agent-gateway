@@ -728,7 +728,7 @@ class ChannelManager(ABC):
             key = ChannelKey(channel_id, self._resolve_app_id(channel))
         self._channels[key] = channel
 
-    async def deliver_to_message_handler(self, msg: "Message") -> None:
+    async def deliver_to_message_handler(self, msg: "Message") -> bool:
         """将消息交给 MessageHandler（供自定义入站路径使用）。
 
         Web/TUI 走这条路径而不是 ``_on_channel_message``。入站队列满时，
@@ -752,13 +752,14 @@ class ChannelManager(ABC):
             channel = self._get_channel_by_id(msg.channel_id)
             reject = getattr(channel, "reject_inbound", None)
             if callable(reject) and await self._reject_inbound_busy(msg, reject):
-                return
+                return False
             # No channel-level busy response (IM, or Web peer already gone):
             # keep the message and apply real backpressure in handle_message.
         elif self._inbound_busy:
             logger.info("[ChannelManager] inbound queue recovered")
             self._inbound_busy = False
         await self._message_handler.handle_message(msg)
+        return True
 
     # ── Channel 连接事件 ──
 
