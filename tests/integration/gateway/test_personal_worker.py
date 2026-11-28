@@ -390,7 +390,7 @@ async def test_personal_web_reads_use_the_regular_handlers(personal):
 
 
 @pytest.mark.parametrize("method", ["cron.job.list", "skills.install", "path.set", "models.replace_all",
-                                    "permissions.tools.set", "openai_account.auth.status", "locale.set_conf"])
+                                    "permissions.tools.set", "openai_account.auth.status"])
 async def test_personal_web_listener_keeps_ungated_writes_out(personal, method):
     group, stub = personal
     async with connect(web_url(group), additional_headers=ORIGIN) as web:
@@ -399,11 +399,49 @@ async def test_personal_web_listener_keeps_ungated_writes_out(personal, method):
     assert not sent(stub, method)
 
 
+async def test_web_language_and_tool_permission_settings(personal):
+    group, stub = personal
+    stub.replies["locale.set_conf"] = {"preferred_language": "en"}
+    stub.replies["permissions.tools.update"] = {"write_file": "deny"}
+    stub.replies["permissions.tools.delete"] = {}
+    async with connect(web_url(group), additional_headers=ORIGIN) as web:
+        for request_id, method, params in (
+            ("language", "locale.set_conf", {"preferred_language": "en"}),
+            ("deny", "permissions.tools.update", {"tool": "write_file", "level": "deny"}),
+            ("forget", "permissions.tools.delete", {"tool": "write_file"}),
+        ):
+            await web.send(request(request_id, method, params))
+            assert await answer(web, request_id) == {
+                "type": "res", "id": request_id, "ok": True, "payload": stub.replies[method],
+            }, method
+        for request_id, method, params in (
+            ("language-code", "locale.set_conf", {"preferred_language": "fr"}),
+            ("language-user", "locale.set_conf", {"preferred_language": "en", "user_id": "bob"}),
+            ("level-shape", "permissions.tools.update", {"tool": "write_file", "level": {"*": "allow", "p": "deny"}}),
+            ("level-value", "permissions.tools.update", {"tool": "write_file", "level": "always"}),
+            ("two-tools", "permissions.tools.update", {"tool": "a", "name": "b", "level": "allow"}),
+            ("no-level", "permissions.tools.update", {"tool": "write_file"}),
+            ("delete-user", "permissions.tools.delete", {"tool": "write_file", "user_id": "bob"}),
+        ):
+            await web.send(request(request_id, method, params))
+            refused = await answer(web, request_id)
+            assert (refused["ok"], refused["code"]) == (False, "BAD_REQUEST"), (request_id, refused)
+        # Replacing the whole tool table or another user's row stays closed.
+        await web.send(request("replace", "permissions.tools.set", {"tools": {}}))
+        assert await answer(web, "replace") == {"id": "replace", "closed": 1008}
+    assert sorted((request["method"], request["params"], request["user_id"]) for request in stub.requests) == [
+        ("locale.set_conf", {"preferred_language": "en"}, USER),
+        ("permissions.tools.delete", {"tool": "write_file"}, USER),
+        ("permissions.tools.update", {"tool": "write_file", "level": "deny"}, USER),
+    ]
+
+
 async def test_protocol_listener_keeps_web_settings_out(personal):
     group, stub = personal
     stub.replies["config.get"] = {"preferred_language": "zh", "model_api_key": "synthetic-settings-readback"}
     host, port = group.addresses[1]
     for route, method in (("/tui", "config.set"), ("/tui", "config.save_all"), ("/tui", "models.upsert"),
+                          ("/tui", "locale.set_conf"), ("/tui", "permissions.tools.update"),
                           ("/acp", "config.get"), ("/acp", "models.list")):
         async with connect(f"ws://{host}:{port}{route}?user_id={USER}", additional_headers=ORIGIN) as protocol:
             await protocol.send(request(method, method, {}))

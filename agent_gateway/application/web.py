@@ -158,6 +158,7 @@ def assemble_web(
             cron_controller=cron_controller,
             heartbeat_controller=heartbeat_controller,
             updater_service=updater_service,
+            personal_settings=personal_settings,
         )
     )
 

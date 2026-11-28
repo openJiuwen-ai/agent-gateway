@@ -1922,6 +1922,9 @@ class WebHandlersBindParams:
     topic_prepare_service: Any = None
     topic_service: Any = None
     topic_outcome_queue: Any = None
+    #: The account-free personal Worker: settings never fall back to the
+    #: Gateway's own configuration, even without a resolved client.
+    personal_settings: bool = False
 
 
 _CONTAINER_FILE_API_METHODS = (
@@ -4348,7 +4351,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
         resolved_client = _resolve(agent_client)
-        if resolved_client is None:
+        if not bind.personal_settings and resolved_client is None:
             try:
                 cfg = get_config()
                 lang = str(cfg.get("preferred_language") or "zh").strip().lower()
@@ -4424,7 +4427,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
         resolved_client = _resolve(agent_client)
-        if resolved_client is None:
+        if not bind.personal_settings and resolved_client is None:
             try:
                 update_preferred_language_in_config(lang)
                 await channel.send_response(ws, req_id, ok=True, payload={"preferred_language": lang})

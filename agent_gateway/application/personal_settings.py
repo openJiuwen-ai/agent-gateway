@@ -20,6 +20,7 @@ PERSONAL_SETTINGS_METHODS = frozenset({
     'models.list', 'models.get', 'models.upsert', 'models.delete', 'models.refresh_status',
     'model_groups.upsert', 'model_groups.delete', 'session.selection.set',
     'vendors.list', 'vendors.fetch_models',
+    'locale.set_conf', 'permissions.tools.update', 'permissions.tools.delete',
 })
 
 _LOOPBACK_HOSTS = frozenset({'127.0.0.1', '::1', 'localhost'})
@@ -115,6 +116,28 @@ def validate_settings_params(method: str, params: dict[str, Any]) -> None:
         raise ValueError('Account settings are unavailable in this Worker')
     if method in _EMPTY_PARAMS and params:
         raise ValueError('This settings method takes no parameters')
+    if method == 'locale.set_conf':
+        language = params.get('preferred_language')
+        if set(params) != {'preferred_language'} or not isinstance(language, str) or (
+            language.strip().lower() not in ('zh', 'en')
+        ):
+            raise ValueError('preferred_language must be zh or en')
+        return
+    if method in ('permissions.tools.update', 'permissions.tools.delete'):
+        updating = method == 'permissions.tools.update'
+        tool_fields = params.keys() & {'tool', 'name'}
+        if len(tool_fields) != 1 or set(params) != tool_fields | ({'level'} if updating else set()):
+            raise ValueError('Expected one tool and the fields for this permission operation')
+        tool = params[next(iter(tool_fields))]
+        if not isinstance(tool, str) or not tool.strip() or len(tool) > 256 or any(ord(c) < 32 for c in tool):
+            raise ValueError('Invalid tool name')
+        if updating:
+            level = params['level']
+            if isinstance(level, dict) and set(level) == {'*'}:
+                level = level['*']
+            if not isinstance(level, str) or level not in ('allow', 'ask', 'deny'):
+                raise ValueError('Invalid tool permission level')
+        return
     if method == 'config.set':
         if not params or not params.keys() <= (_PANEL_SWITCH_FIELDS | {'permissions_profile'}):
             raise ValueError('This Worker cannot change one or more of the requested panel settings')

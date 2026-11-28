@@ -18,6 +18,7 @@ from agent_gateway.application.web import _PersonalSettingsRegistration
 from agent_gateway.application.worker_data import (
     _DATA_METHODS, PERSONAL_WEB_WORKER_METHODS, is_data_frame, personal_web_methods,
 )
+from agent_gateway.channel_manager.web import app_web_handlers
 from agent_gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
 from agent_gateway.routing.agent_client import WebSocketAgentServerClient
 from agent_gateway.routing.agent_request_timeout import AgentRequestTimeoutError
@@ -249,6 +250,23 @@ def test_settings_requires_single_http_origin(monkeypatch):
     ("config.set", {"setup_guide_enabled": "maybe"}),
     ("config.set", {"permissions_profile": "owner"}),
     ("config.validate_model", {"model": {"source": "huawei-maas-login"}}),
+    ("locale.set_conf", {"preferred_language": "other"}),
+    ("locale.set_conf", {}),
+    ("locale.set_conf", {"preferred_language": "en", "user_id": "another"}),
+    ("locale.set_conf", {"preferred_language": None}),
+    ("permissions.tools.update", {"tool": "read_file", "level": {"*": "allow", "path": "deny"}}),
+    ("permissions.tools.update", {"tool": "read_file", "level": "ask", "session_id": "s"}),
+    ("permissions.tools.update", {"tool": "a", "name": "b", "level": "allow"}),
+    ("permissions.tools.update", {"tool": "read_file"}),
+    ("permissions.tools.update", {"tool": "read_file", "level": "always"}),
+    ("permissions.tools.update", {"tool": "read_file", "level": True}),
+    ("permissions.tools.update", {"tool": "read\x00file", "level": "allow"}),
+    ("permissions.tools.update", {"tool": "", "level": "allow"}),
+    ("permissions.tools.update", {"tool": "x" * 257, "level": "allow"}),
+    ("permissions.tools.delete", {"tool": "read_file", "user_id": "another"}),
+    ("permissions.tools.delete", {"tool": "read_file", "level": "allow"}),
+    ("permissions.tools.delete", {}),
+    ("permissions.tools.delete", {"tool": "a", "name": "b"}),
 ])
 def test_settings_rejects_unsupported_write_and_private_payloads(method, params):
     with pytest.raises(ValueError):
@@ -256,6 +274,11 @@ def test_settings_rejects_unsupported_write_and_private_payloads(method, params)
 
 
 @pytest.mark.parametrize("method, params", [
+    ("locale.set_conf", {"preferred_language": "en"}),
+    ("locale.set_conf", {"preferred_language": " ZH "}),
+    ("permissions.tools.update", {"tool": "read_file", "level": "deny"}),
+    ("permissions.tools.update", {"name": "read_file", "level": {"*": "ask"}}),
+    ("permissions.tools.delete", {"name": "read_file"}),
     ("config.get", {}),
     ("models.list", {}),
     ("config.set", {"setup_guide_enabled": True}),
@@ -264,6 +287,9 @@ def test_settings_rejects_unsupported_write_and_private_payloads(method, params)
     ("config.save_all", {"config": {"vision_api_key": "k", "music_gen_protocol": "p", "ttse_enabled": None}}),
     ("models.upsert", {"model": {"model": "m", "name": "display"}}),
     ("vendors.fetch_models", {"vendor": "openai"}),
+    ("locale.set_conf", {"preferred_language": "en"}),
+    ("permissions.tools.update", {"tool": "write_file", "level": "deny"}),
+    ("permissions.tools.delete", {"tool": "write_file"}),
 ])
 def test_settings_accept_what_the_old_page_sends(method, params):
     validate_settings_params(method, params)
@@ -304,3 +330,57 @@ def test_personal_web_listener_admits_only_its_methods():
     assert is_data_frame(json.dumps({"type": "req", "method": "config.get", "params": []}), web=True, personal=True)
     with pytest.raises(ValueError):
         validate_settings_params("config.get", [])
+
+
+@pytest.mark.parametrize("method, params, payload", [
+    ("locale.get_conf", {}, {"preferred_language": "en"}),
+    ("locale.set_conf", {"preferred_language": "en"}, {"preferred_language": "en"}),
+    ("permissions.tools.get", {}, {"tools": {"read_file": "ask"}}),
+    ("permissions.tools.update", {"tool": "read_file", "level": "deny"}, {"read_file": "deny"}),
+    ("permissions.tools.update", {"name": "read_file", "level": {"*": "ask"}}, {}),
+    ("permissions.tools.delete", {"tool": "read_file"}, {}),
+])
+async def test_personal_settings_route_panel_operations_to_as(monkeypatch, method, params, payload):
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: False)
+    requests = []
+
+    class Client:
+        async def send_request(self, request):
+            requests.append(request)
+            return SimpleNamespace(ok=True, payload=payload)
+
+    channel = register(Channel(), agent_client=Client(), personal_settings=True)
+    assert {"permissions.tools.set", "permissions.tools.update_user"} <= channel.methods.keys()
+    await channel.methods[method](
+        SimpleNamespace(request_headers=Headers({"Origin": "http://localhost:5173"})), "panel", params, "session", "user",
+    )
+    assert [(request.method, request.params or {}) for request in requests] == [(method, params)]
+    assert requests[0].user_id == "user"
+    assert channel.responses[-1]["payload"] == payload
+
+
+async def test_personal_settings_never_read_or_write_the_gateway_config(monkeypatch):
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: False)
+    touched = []
+
+    def read_config():
+        touched.append("read")
+        return {"preferred_language": "zh"}
+
+    monkeypatch.setattr(app_web_handlers, "get_config", read_config)
+    monkeypatch.setattr(app_web_handlers, "update_preferred_language_in_config",
+                        lambda language: touched.append(language))
+    ws = SimpleNamespace(request_headers=Headers({"Origin": "http://127.0.0.1:5173"}))
+    # Without a reachable AgentServer the personal Worker answers unavailable...
+    channel = register(Channel(), agent_client=None, personal_settings=True)
+    await channel.methods["locale.get_conf"](ws, "get", {}, "session", "user")
+    await channel.methods["locale.set_conf"](ws, "set", {"preferred_language": "en"}, "session", "user")
+    assert touched == []
+    assert [response["code"] for response in channel.responses] == ["SERVICE_UNAVAILABLE"] * 2
+    # ...where the single process keeps its local fallback, as before.
+    plain = Channel()
+    _register_web_handlers(WebHandlersBindParams(channel=plain, agent_client=None))
+    await plain.methods["locale.get_conf"](ws, "get", {}, "session", "user")
+    await plain.methods["locale.set_conf"](ws, "set", {"preferred_language": "en"}, "session", "user")
+    assert touched == ["read", "en"]
+    assert [response["ok"] for response in plain.responses] == [True, True]
