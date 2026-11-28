@@ -61,3 +61,119 @@ class TestInvalidMatchExprFallback:
             OwnerIdentity(user_id="u1"),
         )
         assert limits.max_teams_per_user == 7
+
+
+class TestUserPolicyZFallback:
+    """A user-scoped policy that carries Z must still enforce the org cap.
+
+    When no org-scoped policy exists, ``_limits_for_rows`` falls back to the Z
+    of the policy that matched the user, so a single user/workspace policy that
+    sets both X and Z still enforces the organization team cap. This covers the
+    issue-110 scenario where X=3 and Z=3 are configured on one user policy.
+    """
+
+    @staticmethod
+    def test_select_limits_surfaces_user_policy_z(monkeypatch):
+        monkeypatch.setattr(quota_policy, "matches", lambda _expr, _ident: True)
+        limits = quota_policy._select_limits(
+            [
+                {
+                    "policy_id": "user",
+                    "enabled": True,
+                    "match_expr": "user_id == 'u1'",
+                    "max_teams_per_user": 3,
+                    "max_teammates_per_team": 5,
+                    "max_teams_per_org": 3,
+                }
+            ],
+            OwnerIdentity(user_id="u1", group_id="g1", bot_id="b1"),
+        )
+        assert limits.max_teams_per_user == 3
+        assert limits.max_teams_per_org == 3
+
+    @staticmethod
+    def test_select_limits_skips_bot_scoped_z(monkeypatch):
+        """An agent-scoped (bot_id) policy must not widen its Z into an org cap."""
+        monkeypatch.setattr(quota_policy, "matches", lambda _expr, _ident: True)
+        limits = quota_policy._select_limits(
+            [
+                {
+                    "policy_id": "agent",
+                    "enabled": True,
+                    "match_expr": "bot_id == 'b1'",
+                    "max_teams_per_user": 3,
+                    "max_teammates_per_team": 5,
+                    "max_teams_per_org": 3,
+                }
+            ],
+            OwnerIdentity(user_id="u1", group_id="g1", bot_id="b1"),
+        )
+        assert limits.max_teams_per_user == 3
+        assert limits.max_teams_per_org == 0
+
+    @staticmethod
+    def test_limits_for_rows_falls_back_to_user_policy_z(monkeypatch):
+        monkeypatch.setattr(quota_policy, "matches", lambda _expr, _ident: True)
+
+        class _Store(quota_policy.TeamQuotaPolicyStore):
+            pass
+
+        store = _Store()
+        rows = [
+            {
+                "policy_id": "user",
+                "enabled": True,
+                "match_expr": "user_id == 'u1'",
+                "priority": 10,
+                "max_teams_per_user": 3,
+                "max_teammates_per_team": 5,
+                "max_teams_per_org": 3,
+                "updated_at": "",
+            }
+        ]
+        limits = store._limits_for_rows(
+            rows, OwnerIdentity(user_id="u1", group_id="g1", bot_id="b1")
+        )
+        assert limits.max_teams_per_user == 3
+        assert limits.max_teams_per_org == 3
+
+    @staticmethod
+    def test_explicit_org_zero_is_honored_not_tightened(monkeypatch):
+        """An org-scoped policy that explicitly sets Z=0 stays unlimited.
+
+        The fallback must not tighten an explicit "no org cap" (Z=0) to the
+        user-policy Z. Only a missing org-scoped policy triggers the fallback.
+        """
+        monkeypatch.setattr(quota_policy, "matches", lambda _expr, _ident: True)
+
+        class _Store(quota_policy.TeamQuotaPolicyStore):
+            pass
+
+        store = _Store()
+        rows = [
+            {
+                "policy_id": "org",
+                "enabled": True,
+                "match_expr": "group_id == 'g1'",
+                "priority": 5,
+                "max_teams_per_user": 5,
+                "max_teammates_per_team": 5,
+                "max_teams_per_org": 0,
+                "updated_at": "",
+            },
+            {
+                "policy_id": "user",
+                "enabled": True,
+                "match_expr": "user_id == 'u1'",
+                "priority": 10,
+                "max_teams_per_user": 3,
+                "max_teammates_per_team": 5,
+                "max_teams_per_org": 3,
+                "updated_at": "",
+            },
+        ]
+        limits = store._limits_for_rows(
+            rows, OwnerIdentity(user_id="u1", group_id="g1", bot_id="b1")
+        )
+        assert limits.max_teams_per_user == 3
+        assert limits.max_teams_per_org == 0
