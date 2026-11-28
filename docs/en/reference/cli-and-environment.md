@@ -16,6 +16,10 @@ Entry points: `agent-gateway` (gateway + channels) and `agent-gateway-acp` (ACP 
 | `--dotenv <path>` | none | Load environment variables from the given `.env` at startup (startup phase only) |
 | `-h, --help` | none | Show help and exit |
 
+### Local multiprocess trial
+
+Use `--mode multiprocess --workers 2` to start two Workers on loopback in the personal edition. The default remains single-process. The trial serves Web `/ws`, health probes and data operations over TUI/ACP, and connects to a single `ws://127.0.0.1:<port>` AgentServer. Keep using single mode for account management, Cron and optional channels.
+
 ## Environment variables
 
 ### Downstream AgentServer
