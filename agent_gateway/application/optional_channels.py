@@ -1129,32 +1129,42 @@ class OptionalChannels:
             self._channel_manager.unregister_channel(self._a2a_channel.channel_id)
             self._a2a_channel = None
 
+    @staticmethod
+    async def _await_channel_task_stopped(task, channel_name: str) -> None:
+        """Cancel a channel task and wait for it; a failed start must not break shutdown.
+
+        The task may have ended with an exception long before shutdown (bad
+        credentials, unreachable platform). That failure was logged when it
+        happened; re-raising it here would skip the remaining channels,
+        ``services.stop()`` and a requested restart, and turn a clean stop into
+        a crash exit.
+        """
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:  # noqa: BLE001 - optional channel isolation
+            logger.warning(
+                "[App] ignored exception while waiting for %s channel task: %s",
+                channel_name,
+                e,
+            )
+
     async def stop_channels(self) -> None:
         """Stop optional channels after Web, retaining the original order."""
         if self._channels_stopped:
             return
         if self._feishu_channel is not None and self._feishu_task is not None:
-            self._feishu_task.cancel()
-            try:
-                await self._feishu_task
-            except asyncio.CancelledError:
-                pass
+            await self._await_channel_task_stopped(self._feishu_task, "feishu")
             await self._feishu_channel.stop()
         for bot_key, task in list(self._feishu_enterprise_tasks.items()):
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+            await self._await_channel_task_stopped(task, f"feishu_enterprise[{bot_key}]")
             channel = self._feishu_enterprise_channels.get(bot_key)
             if channel is not None:
                 await channel.stop()
         if self._xiaoyi_channel is not None and self._xiaoyi_task is not None:
-            self._xiaoyi_task.cancel()
-            try:
-                await self._xiaoyi_task
-            except asyncio.CancelledError:
-                pass
+            await self._await_channel_task_stopped(self._xiaoyi_task, "xiaoyi")
             await self._xiaoyi_channel.stop()
         # ---- 从 channel_manager 清理所有动态注册的 channel 实例 ----
         runtime = getattr(self._channel_manager, "_welink_runtime", None)
@@ -1164,61 +1174,29 @@ class OptionalChannels:
             for ch in self._channel_manager.pop_channels_by_id(_cid):
                 task = getattr(ch, "start_task", None)
                 if task is not None:
-                    task.cancel()
-                    try:
-                        await task
-                    except asyncio.CancelledError:
-                        pass
+                    await self._await_channel_task_stopped(task, _cid)
                 await ch.stop()
         # -----------------------------------
         if self._telegram_channel is not None and self._telegram_task is not None:
-            self._telegram_task.cancel()
-            try:
-                await self._telegram_task
-            except asyncio.CancelledError:
-                pass
+            await self._await_channel_task_stopped(self._telegram_task, "telegram")
             await self._telegram_channel.stop()
         if self._discord_channel is not None and self._discord_task is not None:
-            self._discord_task.cancel()
-            try:
-                await self._discord_task
-            except asyncio.CancelledError:
-                pass
+            await self._await_channel_task_stopped(self._discord_task, "discord")
             await self._discord_channel.stop()
         if self._slack_channel is not None and self._slack_task is not None:
-            self._slack_task.cancel()
-            try:
-                await self._slack_task
-            except asyncio.CancelledError:
-                pass
+            await self._await_channel_task_stopped(self._slack_task, "slack")
             await self._slack_channel.stop()
         if self._whatsapp_channel is not None and self._whatsapp_task is not None:
-            self._whatsapp_task.cancel()
-            try:
-                await self._whatsapp_task
-            except asyncio.CancelledError:
-                pass
+            await self._await_channel_task_stopped(self._whatsapp_task, "whatsapp")
             await self._whatsapp_channel.stop()
         if self._wecom_channel is not None and self._wecom_task is not None:
-            self._wecom_task.cancel()
-            try:
-                await self._wecom_task
-            except asyncio.CancelledError:
-                pass
+            await self._await_channel_task_stopped(self._wecom_task, "wecom")
             await self._wecom_channel.stop()
         if self._wechat_channel is not None and self._wechat_task is not None:
-            self._wechat_task.cancel()
-            try:
-                await self._wechat_task
-            except asyncio.CancelledError:
-                pass
+            await self._await_channel_task_stopped(self._wechat_task, "wechat")
             await self._wechat_channel.stop()
         if self._ssh_channel is not None and self._ssh_task is not None:
-            self._ssh_task.cancel()
-            try:
-                await self._ssh_task
-            except asyncio.CancelledError:
-                pass
+            await self._await_channel_task_stopped(self._ssh_task, "ssh")
             await self._ssh_channel.stop()
             self._set_agentos_ssh_key_issuer(None)
 
