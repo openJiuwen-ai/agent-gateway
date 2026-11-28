@@ -75,6 +75,8 @@
 - 与其他 harness 一起部署时，请用 `AGENT_GATEWAY_DATA_DIR` 显式指定 Gateway 的数据目录。harness 自己使用的 `JIUWENSWARM_*` 变量（例如 agent-core 读取的 `JIUWENSWARM_DATA_DIR`）只设给 harness 进程，不要传给 Gateway。
 - Gateway 注入给 AgentServer 的 JWS 专属变量保持原变量名。
 
+仓库根目录的 `.env.example` 列出了独立部署时常用的变量，都带默认值，可以复制为 `.env` 后修改。
+
 ## 配置文件
 
 默认路径：`$AGENT_GATEWAY_DATA_DIR/config/config.yaml`；未设置 `AGENT_GATEWAY_DATA_DIR` 时为 `$AGENT_GATEWAY_HOME/.jiuwenswarm/config/config.yaml`。

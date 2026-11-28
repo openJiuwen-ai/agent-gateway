@@ -37,11 +37,13 @@ class EnvVar:
         name: 新名，``AGENT_GATEWAY_*``。
         legacy: 旧名，按查找顺序排列。
         is_path: 是否为路径；路径类变量的新旧取值冲突时报错。
+        internal: 是否只由启动方与 Gateway 之间的握手使用；这类变量不写入 `.env.example`。
     """
 
     name: str
     legacy: tuple[str, ...]
     is_path: bool = False
+    internal: bool = False
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -66,10 +68,11 @@ REQUEST_EXT_FORWARD_HEADERS = EnvVar(
     "AGENT_GATEWAY_REQUEST_EXT_FORWARD_HEADERS",
     ("JIUWENSWARM_REQUEST_EXT_FORWARD_HEADERS", "JIUWENCLAW_REQUEST_EXT_FORWARD_HEADERS"),
 )
-SUPERVISOR_PID = EnvVar("AGENT_GATEWAY_SUPERVISOR_PID", ("JIUWENSWARM_SUPERVISOR_PID",))
+SUPERVISOR_PID = EnvVar("AGENT_GATEWAY_SUPERVISOR_PID", ("JIUWENSWARM_SUPERVISOR_PID",), internal=True)
 RUNTIME_WORKSPACE_READY = EnvVar(
     "AGENT_GATEWAY_RUNTIME_WORKSPACE_READY",
     ("JIUWENSWARM_RUNTIME_WORKSPACE_READY",),
+    internal=True,
 )
 
 ALL: tuple[EnvVar, ...] = (

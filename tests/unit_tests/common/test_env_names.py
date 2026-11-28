@@ -113,6 +113,14 @@ def test_equivalent_path_spellings_do_not_conflict(tmp_path: Path) -> None:
     assert env_names.get(env_names.DATA_DIR, environ=environ) == spelled_with_separator
 
 
+def test_identical_path_values_do_not_fail_startup(tmp_path: Path) -> None:
+    # Deployments may temporarily dual-write the new and legacy names; equal
+    # values must keep working instead of turning into a startup failure.
+    environ = {"AGENT_GATEWAY_DATA_DIR": str(tmp_path), "JIUWENSWARM_DATA_DIR": str(tmp_path)}
+
+    assert env_names.lookup(env_names.DATA_DIR, environ=environ) == ("AGENT_GATEWAY_DATA_DIR", str(tmp_path))
+
+
 @pytest.mark.parametrize(
     ("environ", "expected"),
     [
