@@ -5,9 +5,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Protocol, TypedDict
+from typing import TYPE_CHECKING, Any, Mapping, Protocol, TypedDict
 
 from agent_gateway.southbound.control.interfaces import ManagedControl
+
+
+if TYPE_CHECKING:
+    from agent_gateway.extensions.agentos.agentos_router.registry_client import RegistryClient
 
 
 class AgentMount(TypedDict, total=False):
@@ -98,6 +102,18 @@ class ManagedSandboxControl(ManagedControl[SandboxCreateRequest, SandboxInfo, di
 
     def web_ws_url(self, instance_id: str, port: int) -> str:
         raise NotImplementedError
+
+    async def find_reusable(
+        self, request: SandboxCreateRequest, *, registry: RegistryClient, user: str, framework: str, logical_name: str,
+    ) -> SandboxInfo | None:
+        """Find a recoverable instance before the first create of a generation."""
+        return None
+
+    async def retain_after_disconnect(
+        self, instance_id: str, runtime_spec: Mapping[str, Any], *, builtin: bool,
+    ) -> bool:
+        """Whether the platform still owns recovery of this instance."""
+        return False
 
     async def create(self, request: SandboxCreateRequest) -> SandboxInfo:
         kwargs: dict[str, Any] = {
