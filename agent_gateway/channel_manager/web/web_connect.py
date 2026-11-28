@@ -382,7 +382,7 @@ class WebChannel(BaseWsChannel):
         attachment_overwrite: bool | None = None,
     ) -> None:
         """Bind a client together with its deployment-specific Web policies."""
-        from agent_gateway.channel_manager.client_policies import (
+        from agent_gateway.application.client_policies import (
             select_attachment_overwrite,
             select_web_frame_projector,
         )

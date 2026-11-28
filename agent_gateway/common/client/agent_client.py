@@ -60,12 +60,6 @@ class AgentServerClient(ABC):
         """Synchronize selected channel settings with the target AgentServer."""
         from uuid import uuid4
 
-        # Compatibility for external implementations written against the
-        # original interface. Managed clients override this method directly.
-        if getattr(self, "managed_routing", False) is True:
-            fanout = getattr(self, "sync_channel_config", None)
-            return bool(await fanout(channels)) if callable(fanout) else False
-
         from e2a.message import ReqMethod
 
         response = await self.send_request(E2AEnvelope(
@@ -87,6 +81,13 @@ class AgentServerClient(ABC):
 async def update_agent_channel_config(client: Any, channels: dict[str, Any]) -> bool:
     """Invoke the update contract, adapting clients from older extensions."""
     update = getattr(client, "update_channel_config", None)
+    # Older managed extensions expose fanout without implementing the update
+    # contract. Explicit overrides take precedence over this compatibility path.
+    inherited_update = getattr(update, "__func__", None) is AgentServerClient.update_channel_config
+    if not callable(update) or inherited_update:
+        if getattr(client, "managed_routing", False) is True:
+            fanout = getattr(client, "sync_channel_config", None)
+            return bool(await fanout(channels)) if callable(fanout) else False
     if callable(update):
         return await update(channels)
     return await AgentServerClient.update_channel_config(client, channels)

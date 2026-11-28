@@ -21,16 +21,16 @@ from agent_gateway.southbound.orchestration.static_router import StaticRouter
 class SouthboundAgentClient(AgentServerClient):
     """Common northbound entry point with explicit deployment capabilities.
 
-    agent_client_mode identifies the client mode. The runtime selection and
-    Web handlers use "runtime" explicitly; other values describe the client.
+    agent_client_mode identifies the mode for application assembly and
+    deployment configuration validation.
     Extension registration still validates configuration against extension IDs.
 
     shared_directory_layout indicates a shared single-user directory and is
-    consumed by is_legacy_shared_directory_client in channel handlers.
+    consumed during application business-policy selection.
     requires_initial_connection tells application.services to connect to the
     configured URI with retries during startup.
-    managed_routing is consumed by is_agentos_routing_client for managed
-    per-user AgentOS/ADX routing.
+    managed_routing identifies managed per-user routing when selecting
+    application policies.
     """
 
     agent_client_mode: str | None = None

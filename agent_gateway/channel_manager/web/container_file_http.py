@@ -624,7 +624,7 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
     )
     from agent_gateway.extensions.auth.common import headers_to_dict
 
-    from agent_gateway.channel_manager.client_policies import select_container_file_backend
+    from agent_gateway.application.client_policies import select_container_file_backend
 
     client = select_container_file_backend(getattr(channel, "container_file_client", None))
     if client is None:

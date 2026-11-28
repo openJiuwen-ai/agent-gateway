@@ -22,8 +22,11 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 from urllib.parse import urlsplit
+
+if TYPE_CHECKING:
+    from agent_gateway.application.client_policies import WebHandlerPolicies
 
 try:
     import psutil as _psutil
@@ -1922,6 +1925,7 @@ class WebHandlersBindParams:
     topic_service: Any = None
     topic_outcome_queue: Any = None
     gateway_owns_config: bool | None = None
+    handler_policies: WebHandlerPolicies | None = None
 
 
 _CONTAINER_FILE_API_METHODS = (
@@ -2221,24 +2225,24 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return ref.get(key)
         return ref
 
-    from agent_gateway.channel_manager.client_policies import select_gateway_config_location
+    from agent_gateway.application.client_policies import select_web_handler_policies
 
-    gateway_owns_config = bind.gateway_owns_config
-    if gateway_owns_config is None:
-        gateway_owns_config = select_gateway_config_location(_resolve(agent_client))
+    # A mutable legacy reference can be filled after handler registration.
+    # Normal application assembly injects a fixed policy for the bound client.
+    fixed_policies = bind.handler_policies
+    if fixed_policies is None and not isinstance(agent_client, dict):
+        fixed_policies = select_web_handler_policies(agent_client)
 
-    # Legacy references can be populated after registration. Select the resolver
-    # once, while ordinary startup injects a fixed configuration owner.
-    if isinstance(agent_client, dict):
-        config_owner = select_gateway_config_location
-    else:
-        def config_owner(_client: Any) -> bool:
-            return bool(gateway_owns_config)
+    def policies(client: Any) -> WebHandlerPolicies:
+        return fixed_policies if fixed_policies is not None else select_web_handler_policies(client)
 
     def _config_use_local_handler(resolved_client: Any, *, enterprise: bool | None = None) -> bool:
         from agent_gateway.enterprise import is_enterprise
 
-        return (is_enterprise() if enterprise is None else enterprise) and config_owner(resolved_client)
+        owner = bind.gateway_owns_config
+        if owner is None or isinstance(agent_client, dict):
+            owner = policies(resolved_client).gateway_owns_config
+        return (is_enterprise() if enterprise is None else enterprise) and owner
 
     def _schedule_clear_agent_config_cache(name: str) -> None:
         asyncio.create_task(
@@ -3992,17 +3996,14 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         """
         from e2a.message import ReqMethod
 
-        from agent_gateway.routing.e2a_proxy import (
-            is_legacy_shared_directory_client,
-            proxy_unary_request,
-        )
+        from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
         # A local single-user deployment historically opened a native picker in
         # the Gateway process.  Keep that UI contract there; AgentOS cannot use
         # a deployment-side picker because it would expose the wrong machine and
         # user directory.
         resolved_client = _resolve(agent_client)
-        if is_legacy_shared_directory_client(resolved_client):
+        if policies(resolved_client).native_file_picker:
             if not isinstance(params, dict):
                 params = {}
             initial_dir = params.get("initial_dir")
@@ -4048,13 +4049,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         """
         from e2a.message import ReqMethod
 
-        from agent_gateway.routing.e2a_proxy import (
-            is_legacy_shared_directory_client,
-            proxy_unary_request,
-        )
+        from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
         resolved_client = _resolve(agent_client)
-        if is_legacy_shared_directory_client(resolved_client):
+        if policies(resolved_client).native_file_picker:
             if not isinstance(params, dict):
                 params = {}
             initial_dir = params.get("initial_dir")
@@ -5259,11 +5257,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         return job
 
     def _is_local_cron_browser(ws, client) -> bool:
-        from agent_gateway.routing.e2a_proxy import is_legacy_shared_directory_client
-
         loopback = {"localhost", "127.0.0.1", "::1"}
         peer = getattr(ws, "remote_address", None)
-        if not is_legacy_shared_directory_client(client) or not peer or peer[0] not in loopback:
+        if not policies(client).personal_cron_browser or not peer or peer[0] not in loopback:
             return False
         local_address = getattr(ws, "local_address", None)
         # HTTP outbounds do not carry the accepted socket address.
@@ -5403,10 +5399,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
             return
         try:
-            from agent_gateway.routing.e2a_proxy import (
-                is_legacy_shared_directory_client,
-            )
-
             if session_id:
                 params["session_id"] = session_id
             # 企业版 HTTP 创建要 group/bot/user；前端常只放在请求头。
@@ -5423,7 +5415,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             # 仅共享目录单用户可由 Gateway 从 session metadata 补 project_dir。
             # 显式传空串 "" 等价于归默认项目，不可覆盖——用 key presence 区分。
             if (
-                is_legacy_shared_directory_client(_resolve(agent_client))
+                policies(_resolve(agent_client)).inherit_cron_project
                 and "project_dir" not in params
                 and session_id
             ):
@@ -5893,8 +5885,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         # legacy 共享目录的外部 CLI 依赖安装门控仍保留在 gateway。
 
         async def _handler(ws, req_id, params, session_id, user_id=None):
-            from agent_gateway.routing.e2a_proxy import is_legacy_shared_directory_client
-
             resolved_client = _resolve(agent_client)
             # 仅企业版允许 Gateway 本地 config/models；个人版始终 E2A。
             use_local_handler = _config_use_local_handler(resolved_client)
@@ -5909,7 +5899,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 _ConfigReq.CONFIG_SET,
                 _ConfigReq.CONFIG_SAVE_ALL,
             ) and isinstance(params, dict):
-                if resolved_client is not None and is_legacy_shared_directory_client(resolved_client):
+                if resolved_client is not None and policies(resolved_client).install_external_cli:
                     install_payload = _external_cli_install_gate(params)
                     if install_payload is not None:
                         await channel.send_response(ws, req_id, ok=True, payload=install_payload)
@@ -6685,7 +6675,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         """Return (route, ambiguous), preserving Host/subscription/cache/default order."""
         from agent_gateway.routing.keys import AgentRef, RoutingKey
         from e2a.message import ReqMethod
-        from agent_gateway.routing.e2a_proxy import fetch_agent_unary, is_legacy_shared_directory_client
+        from agent_gateway.routing.e2a_proxy import fetch_agent_unary
 
         from agent_gateway.common.request_identity import apply_routing_metadata
 
@@ -6724,7 +6714,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 return None, True
             if len(matches) == 1:
                 agent_id = next(iter(matches))
-            elif is_legacy_shared_directory_client(ac):
+            elif policies(ac).restore_local_a4p_route:
                 # Preserve legacy local compatibility only with no candidate.
                 agent_id = "default"
         if isinstance(mode, str) and mode.strip() and isinstance(agent_id, str) and agent_id.strip():
@@ -6777,9 +6767,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 cached_routes = channel.a4p_pending_routes(routes, ws=ws, session_id=session_id)
                 if len(cached_routes) == 1:
                     route = next(iter(cached_routes))
-            from agent_gateway.routing.e2a_proxy import is_legacy_shared_directory_client
 
-            is_local = is_legacy_shared_directory_client(ac)
+            is_local = policies(ac).restore_local_a4p_route
             is_anonymous = channel.connection_user_id(ws) is None
             restore_session_query = session_query and (not is_anonymous or is_local)
             restore_legacy_session = is_local and (is_anonymous or len(cached_routes) > 1)

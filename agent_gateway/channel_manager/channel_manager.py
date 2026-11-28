@@ -615,7 +615,7 @@ class ChannelManager(ABC):
         agent_client = getattr(self._message_handler, "agent_client", None)
         if agent_client is None:
             return
-        from agent_gateway.channel_manager.client_policies import select_im_attachment_guard
+        from agent_gateway.application.client_policies import select_im_attachment_guard
 
         # Bind the guard to the same client captured by the persistence hook.
         guard = self._im_attachment_guard

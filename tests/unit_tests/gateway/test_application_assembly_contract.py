@@ -15,6 +15,36 @@ from unittest.mock import ANY, AsyncMock, Mock
 import pytest
 
 
+@pytest.mark.parametrize(
+    "mode,shared,managed,owns_config",
+    [
+        ("websocket", True, False, True),
+        ("websocket", False, False, False),
+        ("runtime", False, False, True),
+        ("adx_router", False, True, False),
+    ],
+)
+def test_deployment_business_policies(mode, shared, managed, owns_config):
+    from agent_gateway.application.client_policies import (
+        select_harmonyos_local_execution,
+        select_web_handler_policies,
+    )
+
+    client = SimpleNamespace(
+        agent_client_mode=mode,
+        shared_directory_layout=shared,
+        managed_routing=managed,
+    )
+    policies = select_web_handler_policies(client)
+    assert policies.gateway_owns_config is owns_config
+    assert policies.native_file_picker is shared
+    assert policies.personal_cron_browser is shared
+    assert policies.inherit_cron_project is shared
+    assert policies.install_external_cli is shared
+    assert policies.restore_local_a4p_route is shared
+    assert select_harmonyos_local_execution(client) is shared
+
+
 @pytest.mark.parametrize('module', ['services', 'web', 'tui_acp', 'single', 'config_saved_effects'])
 def test_application_import_does_not_initialize_entrypoint(tmp_path: Path, module: str) -> None:
     env = os.environ.copy()

@@ -406,7 +406,7 @@ async def assemble_services(
     # suppressing every later channel or terminating the Gateway.
     from agent_gateway.channel_manager.persistent_output import resolve_output_file
 
-    from agent_gateway.channel_manager.client_policies import select_im_attachment_guard
+    from agent_gateway.application.client_policies import select_im_attachment_guard
 
     channel_manager = ChannelManager(
         message_handler, config={}, im_attachment_guard=select_im_attachment_guard(client)
