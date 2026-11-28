@@ -291,6 +291,20 @@ def sent(stub, *methods):
     return [request for request in stub.requests if request["method"] in methods]
 
 
+# What the Worker sends on its own behalf when a Web socket closes. It follows
+# the socket's cleanup, so it can reach the AgentServer just after a test's
+# sockets are gone; it is never part of what a client call forwarded.
+SOCKET_CLOSE_NOTICES = frozenset({"webui.connection.closed"})
+
+
+def requests_sent(stub, *methods):
+    """The requests that client calls forwarded, in order."""
+    return [
+        request for request in stub.requests
+        if request["method"] not in SOCKET_CLOSE_NOTICES and (not methods or request["method"] in methods)
+    ]
+
+
 async def test_web_settings_are_forwarded_once_for_a_browser_origin(personal):
     group, stub = personal
     stub.replies["config.get"] = {"preferred_language": "zh", "model_api_key": "synthetic-settings-readback"}
@@ -324,7 +338,7 @@ async def test_web_settings_are_forwarded_once_for_a_browser_origin(personal):
         await web.send(request("status", "connection.status", {}))
         assert (await answer(web, "status"))["ok"] is True
     assert [(request["method"], request["params"], request["channel"], request["user_id"])
-            for request in stub.requests] == [
+            for request in requests_sent(stub)] == [
         ("config.get", {}, "web", USER),
         ("config.save_all", {"config": {"free_search_ddg_enabled": "true"}}, "web", USER),
     ]
@@ -355,7 +369,11 @@ async def test_web_listener_rejects_an_ambiguous_origin_at_the_handshake(persona
         }):
             pass
     assert refused.value.response.status_code == 400
-    assert not stub.requests
+    # The WebSocket library answers 400 for two Origin headers, after the channel
+    # has already accepted the socket and run its connect hooks. A settings
+    # handler never runs, and nothing is forwarded for the refused socket beyond
+    # its own close notice (see SOCKET_CLOSE_NOTICES).
+    assert requests_sent(stub) == []
 
 
 async def test_personal_web_reads_use_the_regular_handlers(personal):
@@ -380,13 +398,13 @@ async def test_personal_web_reads_use_the_regular_handlers(personal):
         await web.send(request("write", "project.create", {"name": "p", "dir": "/tmp"}))
         assert await answer(web, "write") == {"id": "write", "closed": 1008}
     # project.list also starts the regular lifecycle event poll of the Web channel.
-    assert sorted(request["method"] for request in stub.requests) == [
+    assert sorted(request["method"] for request in requests_sent(stub)) == [
         "mcp.list", "project.lifecycle", "project.list", "skills.list",
     ], stub.requests
     assert sorted((request["method"], request["params"]) for request in sent(stub, "mcp.list", "project.list", "skills.list")) == [
         ("mcp.list", {}), ("project.list", {"work_mode": "work"}), ("skills.list", {}),
     ]
-    assert all(request["channel"] == "web" and request["user_id"] == USER for request in stub.requests)
+    assert all(request["channel"] == "web" and request["user_id"] == USER for request in requests_sent(stub))
 
 
 @pytest.mark.parametrize("method", ["cron.job.list", "skills.install", "path.set", "models.replace_all",
@@ -429,7 +447,7 @@ async def test_web_language_and_tool_permission_settings(personal):
         # Replacing the whole tool table or another user's row stays closed.
         await web.send(request("replace", "permissions.tools.set", {"tools": {}}))
         assert await answer(web, "replace") == {"id": "replace", "closed": 1008}
-    assert sorted((request["method"], request["params"], request["user_id"]) for request in stub.requests) == [
+    assert sorted((request["method"], request["params"], request["user_id"]) for request in requests_sent(stub)) == [
         ("locale.set_conf", {"preferred_language": "en"}, USER),
         ("permissions.tools.delete", {"tool": "write_file"}, USER),
         ("permissions.tools.update", {"tool": "write_file", "level": "deny"}, USER),
