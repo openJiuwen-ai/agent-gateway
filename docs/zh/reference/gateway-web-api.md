@@ -1872,7 +1872,7 @@ HTTP：`GET /api/v1/cron/jobs` → `cron.job.list`。
 |------|------|------|
 | `models.get` **E2A 代理** | `model_id`（必填） | 完整条目 + `source/is_agentos/read_only/write_only_fields`；服务端分支 defaults 源非登录模型时**下发明文 api_key**；agentos 源不出 key 且 read_only；`MODEL_SELECTION_NOT_FOUND` |
 | `models.upsert` **E2A 代理** | `model`（dict 必填；扁平或嵌套 model_client_config/model_config_obj 均可） | 合并语义（未提交字段保留；api_key 空或未变保留原值、变更则加密）；`model_id` 缺省生成 `mdl_`；`is_default:true` 独占；agentos 模型 → `MODEL_SELECTION_FORBIDDEN`"AgentOS models are read-only" |
-| `models.delete` **E2A 代理** | `model_id`（必填） | 直接转发 AgentServer 删除，网关不按 session/agent/team 等引用拒绝（旧会话/任务由运行时回退或提示重选）；agentos → FORBIDDEN；删除时级联剪路由、空组移除 |
+| `models.delete` **E2A 代理** | `model_id`（必填） | 个人版直接转发 AgentServer 删除，网关不按 session/agent/team 等引用拒绝（旧会话/任务由运行时回退或提示重选）；企业版本地 handler 仍保留引用检查；agentos → FORBIDDEN；删除时级联剪路由、空组移除 |
 | `models.references` **E2A 代理** | `ModelSelection` 本体（整个 params 作 schema） | `{references:[{scope, scope_id}]}`，scope ∈ model_group/session/cron/agent/team；仅用于展示引用信息，不构成删除门禁；元数据不可读 → `MODEL_RUNTIME_UNAVAILABLE` |
 
 #### model_groups.list / upsert / delete
