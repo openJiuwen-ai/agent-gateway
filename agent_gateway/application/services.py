@@ -22,13 +22,37 @@ logger = logging.getLogger("gateway")
 _REMOVED_AGENT_CLIENT_TYPES = frozenset({"yuanrong"})
 
 
+def _validate_agent_client_registration(
+    config: dict[str, Any] | None,
+    extension: Any,
+    *,
+    required_type: str | tuple[str, ...] | None = None,
+) -> None:
+    gateway = (config or {}).get("gateway") or {}
+    selected = str((gateway.get("agent_client") or {}).get("type") or "websocket").strip().lower()
+    registered = extension.metadata.id if extension is not None else "none"
+    if required_type is None and registered == "openjiuwen_runtime_management":
+        # The registry installs this override only for an explicit runtime mode.
+        if extension.get_client() is not None:
+            return
+    requirements = (required_type,) if isinstance(required_type, str) else required_type
+    if requirements is None and selected == "websocket":
+        return
+    expected = requirements or (selected,)
+    if extension is None or selected not in expected or registered != selected or extension.get_client() is None:
+        raise RuntimeError(
+            f"Configured AgentServerClient {' or '.join(expected)} is not registered (selected: {selected}, "
+            f"registered: {registered}). Check gateway.agent_client.type and extension loading logs."
+        )
+
+
 def _reject_removed_agent_client_type(agent_client_config: dict[str, Any]) -> None:
     """已移除的 ``gateway.agent_client.type`` 直接拒绝，不静默回落 WebSocket."""
     client_type = str(agent_client_config.get("type") or "").strip().lower()
     if client_type in _REMOVED_AGENT_CLIENT_TYPES:
         raise RuntimeError(
             f"gateway.agent_client.type={client_type} 已移除（FaaS invoke 链路已删除），"
-            "请改用 agentos_router（YuanRong 部署）或 websocket（本地 AgentServer）"
+            "请改用 agentos_router（ADX 部署）或 websocket（本地 AgentServer）"
         )
 
 
@@ -41,7 +65,6 @@ class GatewayServices:
     client: Any
     third_agent: Any
     agent_server_ext: Any
-    using_adx_router: Any
     extension_registry: Any
     extension_manager: Any
     storage_ctx: Any
@@ -99,6 +122,7 @@ async def assemble_services(
     log_stage: Callable[[str], None],
     startup_t0: float,
     connect_with_retry: Callable[..., Awaitable[None]] = _connect_with_retry,
+    required_client_type: str | tuple[str, ...] | None = None,
 ) -> GatewayServices:
     from openjiuwen.core.runner import Runner
     from agent_gateway.channel_manager.channel_manager import ChannelManager
@@ -161,9 +185,10 @@ async def assemble_services(
     max_retries = int(os.getenv("AGENT_CONNECT_RETRY", "20"))
     retry_interval = float(os.getenv("AGENT_CONNECT_RETRY_INTERVAL", "3"))
 
-    # 从扩展注册表获取 AgentServerClient（WebSocket 或 Yuanrong 等扩展实现）
+    # 从扩展注册表获取 AgentServerClient（WebSocket 或其他扩展实现）
     agent_server_ext = extension_registry.get_agent_server_client_extension()
     full_cfg = get_config()
+    _validate_agent_client_registration(full_cfg, agent_server_ext, required_type=required_client_type)
     configure_gateway_telemetry(
         full_cfg or {},
         user_id_formatter=lambda value: mask_sensitive(f"user_id={value}").removeprefix("user_id="),
@@ -171,10 +196,6 @@ async def assemble_services(
     gateway_config = full_cfg.get("gateway") or {}
     agent_client_config = gateway_config.get("agent_client") or {}
     _reject_removed_agent_client_type(agent_client_config)
-    using_adx_router = str(agent_client_config.get("type") or "").strip().lower() == "adx_router"
-    if using_adx_router:
-        if agent_server_ext is None or agent_server_ext.metadata.id != "adx_router":
-            raise RuntimeError("Selected adx_router extension failed to load; check gateway.adx configuration")
     client = resolve_agent_server_client(
         agent_server_ext,
         mode=agent_client_mode,
@@ -375,7 +396,6 @@ async def assemble_services(
         client=client,
         third_agent=third_agent,
         agent_server_ext=agent_server_ext,
-        using_adx_router=using_adx_router,
         extension_registry=extension_registry,
         extension_manager=extension_manager,
         storage_ctx=storage_ctx,

@@ -2,9 +2,12 @@
 """Deployment settings for Gateway-owned ADX Environments."""
 from __future__ import annotations
 
+import ipaddress
+import json
 import math
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from agent_gateway.extensions.agentos.agentos_router.config import (
@@ -15,26 +18,27 @@ from agent_gateway.extensions.agentos.agentos_router.config import (
 )
 
 
+MIGRATION_ERROR_FILE = 'adx-migration-error.json'
+DEFAULT_RESTART_POLICY = {'maxAttempts': 3, 'initialBackoffSeconds': 1, 'maxBackoffSeconds': 30}
+
+
 @dataclass(frozen=True)
 class AdxRouterConfig:
     ingress_url: str
     tenant: str
     token: str = field(repr=False)
     router: RouterConfig = field(repr=False)
-    builtin_image: str = 'jiuwenswarm-agent-runtime:latest'
+    builtin_image: str | None = None
     runtime_class: str = 'runc'
     workspace_target: str = '/home/agentos'
     ssh_user: str = 'agentos'
     ssh_known_hosts: str = ''
-    restart_policy: dict[str, int] | None = None
+    restart_policy: dict[str, int] | None = field(default_factory=lambda: dict(DEFAULT_RESTART_POLICY))
     connect_timeout_seconds: float = 60.0
     builtin_process_from_image: bool = False
+    builtin_launch: dict | None = field(default=None, repr=False)
 
 
-def adx_router_selected(config: dict) -> bool:
-    gateway = config.get('gateway') or {}
-    client = gateway.get('agent_client') or {}
-    return str(client.get('type') or '').strip().lower() == 'adx_router'
 
 
 def _text_setting(settings: dict, key: str, default: str | None = None) -> str:
@@ -46,10 +50,10 @@ def _text_setting(settings: dict, key: str, default: str | None = None) -> str:
     return value
 
 
-def _restart_policy(value: object) -> dict[str, int] | None:
+def normalize_restart_policy(value: object, *, field_name: str = 'gateway.adx.restart_policy') -> dict[str, int] | None:
     if value is None:
         return None
-    error = 'gateway.adx.restart_policy requires attempts and ordered positive backoff seconds'
+    error = f'{field_name} requires attempts and ordered positive backoff seconds'
     fields = {'maxAttempts', 'initialBackoffSeconds', 'maxBackoffSeconds'}
     if not isinstance(value, dict) or set(value) != fields:
         raise ValueError(error)
@@ -63,26 +67,53 @@ def _restart_policy(value: object) -> dict[str, int] | None:
     return dict(value)
 
 
+def validate_local_rootfs(value: dict, source: str) -> None:
+    if not isinstance(value, dict) or value.get('type') != 'local':
+        raise ValueError(f'{source}.rootfs requires type=local and an absolute node path')
+    path = value.get('path')
+    if not isinstance(path, str) or not path.startswith('/'):
+        raise ValueError(f'{source}.rootfs.path must be an absolute node path')
+    if (any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in path)
+            or any(part in ('.', '..') for part in path.split('/'))):
+        raise ValueError(f'{source}.rootfs.path cannot contain traversal or control characters')
+
+
+def is_loopback_ingress(host: str) -> bool:
+    if host == 'localhost':
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def load_router_config(config: dict) -> AdxRouterConfig:
     settings = (config.get('gateway') or {}).get('adx') or {}
     if not isinstance(settings, dict) or settings.keys() - {
-        'ingress_url', 'tenant', 'token_env', 'builtin_image', 'runtime_class', 'workspace_target',
+        'ingress_url', 'allow_loopback_http', 'tenant', 'token_env', 'builtin_image', 'runtime_class', 'workspace_target',
         'connect_timeout_seconds', 'ssh_user', 'ssh_known_hosts', 'restart_policy',
-        'builtin_process_from_image',
+        'builtin_process_from_image', 'builtin_launch', 'local_images',
+        # Accepted for upgrades; initialization is owned by Enterprise.
+        'workspace_config_template',
     }:
         raise ValueError('gateway.adx contains invalid settings')
     url = settings.get('ingress_url', '')
-    origin_error = 'gateway.adx.ingress_url must be an HTTPS origin'
+    origin_error = 'gateway.adx.ingress_url must be an HTTP(S) origin'
     if not isinstance(url, str) or any(ord(char) < 33 for char in url):
         raise ValueError(origin_error)
     parsed = urlsplit(url)
-    if parsed.scheme != 'https' or not parsed.hostname:
+    if parsed.scheme not in ('http', 'https') or not parsed.hostname:
         raise ValueError(origin_error)
     if parsed.username is not None or parsed.password is not None:
         raise ValueError(origin_error)
     if parsed.path not in ('', '/') or '?' in url or '#' in url:
         raise ValueError(origin_error)
     parsed.port
+    allow_loopback_http = settings.get('allow_loopback_http', False)
+    if not isinstance(allow_loopback_http, bool):
+        raise ValueError('gateway.adx.allow_loopback_http must be a boolean')
+    if parsed.scheme == 'http' and not (allow_loopback_http and is_loopback_ingress(parsed.hostname)):
+        raise ValueError('gateway.adx.ingress_url requires HTTPS; loopback HTTP requires allow_loopback_http=true')
     env_name = settings.get('token_env')
     token = os.environ.get(env_name, '') if isinstance(env_name, str) else ''
     if not token or not token.isascii() or any(char.isspace() for char in token):
@@ -91,10 +122,35 @@ def load_router_config(config: dict) -> AdxRouterConfig:
     if not math.isfinite(timeout) or not 0 < timeout <= 86400:
         raise ValueError('gateway.adx.connect_timeout_seconds must be in (0, 86400]')
     tenant = _text_setting(settings, 'tenant')
-    builtin_image = _text_setting(settings, 'builtin_image', 'jiuwenswarm-agent-runtime:latest')
+    builtin_image = settings.get('builtin_image')
+    if 'builtin_image' not in settings and not settings.get('builtin_launch'):
+        builtin_image = 'jiuwenswarm-agent-runtime:latest'
+    elif builtin_image not in (None, ''):
+        builtin_image = _text_setting(settings, 'builtin_image')
+    else:
+        builtin_image = None
     builtin_process_from_image = settings.get('builtin_process_from_image', False)
     if not isinstance(builtin_process_from_image, bool):
         raise ValueError('gateway.adx.builtin_process_from_image must be a boolean')
+    builtin_launch = settings.get('builtin_launch')
+    if builtin_launch is not None:
+        if not isinstance(builtin_launch, dict) or set(builtin_launch) - {
+                'process', 'rootfs', 'mounts', 'env', 'image_env', 'workspace_mount_options', 'network'}:
+            raise ValueError('gateway.adx.builtin_launch contains invalid settings')
+        if not isinstance(builtin_launch.get('process'), dict) or not builtin_launch['process'].get('commands'):
+            raise ValueError('gateway.adx.builtin_launch requires process.commands')
+        if 'rootfs' in builtin_launch:
+            validate_local_rootfs(builtin_launch['rootfs'], 'gateway.adx.builtin_launch')
+        image_env = builtin_launch.get('image_env', {})
+        if not isinstance(image_env, dict) or any(
+                not isinstance(k, str) or not isinstance(v, str) for k, v in image_env.items()):
+            raise ValueError('gateway.adx.builtin_launch.image_env requires literal string values')
+        if 'network' in builtin_launch:
+            from agent_gateway.extensions.adx.network import validate_network_settings
+            network = builtin_launch['network']
+            if not isinstance(network, dict):
+                raise ValueError('gateway.adx.builtin_launch.network must be a mapping')
+            validate_network_settings(network)
     runtime_class = _text_setting(settings, 'runtime_class', 'runc')
     workspace_target = _text_setting(settings, 'workspace_target', '/home/agentos')
     if not workspace_target.startswith('/') or any(part in ('.', '..') for part in workspace_target.split('/')):
@@ -105,12 +161,62 @@ def load_router_config(config: dict) -> AdxRouterConfig:
     ssh_known_hosts = settings.get('ssh_known_hosts', '')
     if not isinstance(ssh_known_hosts, str) or any(ord(char) < 32 for char in ssh_known_hosts):
         raise ValueError('gateway.adx.ssh_known_hosts must be a local known_hosts path')
-    restart_policy = _restart_policy(settings.get('restart_policy'))
+    restart_policy = normalize_restart_policy(settings.get('restart_policy', DEFAULT_RESTART_POLICY))
+    sandbox = config.get('sandbox')
+    tool_defaults = sandbox if isinstance(sandbox, dict) and sandbox.get('type') == 'adx-environment' else None
     return AdxRouterConfig(
         ingress_url=url.rstrip('/'), tenant=tenant, token=token,
-        router=load_agentos_config(config, require_frontend_endpoint=False),
+        router=load_agentos_config(config, tool_sandbox_defaults=tool_defaults),
         builtin_image=builtin_image, runtime_class=runtime_class,
-        builtin_process_from_image=builtin_process_from_image,
+        builtin_process_from_image=builtin_process_from_image, builtin_launch=builtin_launch,
         workspace_target=workspace_target, connect_timeout_seconds=timeout, ssh_user=ssh_user,
         ssh_known_hosts=ssh_known_hosts, restart_policy=restart_policy,
     )
+
+
+def runtime_environment_settings() -> dict:
+    return {
+        'preserve_env': ['JIUWENSWARM_ADX_NODE_INGRESS_URL', 'JIUWENSWARM_ADX_NODE_CONTEXT_FILE',
+                         'ADX_TOKEN'],
+    }
+
+
+def managed_sandbox_settings() -> dict:
+    return {
+        'type': 'adx-environment',
+        'managed_connection': {
+            'url_env': 'JIUWENSWARM_ADX_NODE_INGRESS_URL',
+            'context_file_env': 'JIUWENSWARM_ADX_NODE_CONTEXT_FILE',
+            'replace_connection_fields': ['server_address', 'gateway_address', 'token', 'token_provider',
+                                           'use_tls', 'gateway_use_tls', 'verify_tls'],
+            'credential_fields': ['ADX_TOKEN', 'ADX_GATEWAY_TOKEN', 'JIUWENSWARM_ADX_API_TOKEN'],
+        },
+        'launcher_config': {'workspace_mounts': True, 'shared_scope': 'default'},
+    }
+
+
+def check_workspace_config(config_path: str | Path, *, require_prepared: bool = False) -> None:
+    """Reject only this workspace; deployment owns migration and error removal."""
+    path = Path(config_path)
+    marker = path.with_name(MIGRATION_ERROR_FILE)
+    try:
+        if marker.is_file():
+            record = json.loads(marker.read_text(encoding="utf-8"))
+            reason = record.get('reason') if isinstance(record, dict) else None
+            if not isinstance(reason, str) or not reason:
+                reason = 'invalid deployment migration status'
+            raise ValueError(f'WORKSPACE_CONFIG_INVALID: {path}: {reason}; '
+                             'fix this user configuration and rerun deployment configuration')
+        if require_prepared:
+            if not path.is_file():
+                raise ValueError(f'WORKSPACE_CONFIG_INVALID: {path}: application workspace initialization required')
+            import yaml
+            try:
+                document = yaml.safe_load(path.read_text(encoding="utf-8"))
+            except yaml.YAMLError:
+                raise ValueError(f'WORKSPACE_CONFIG_INVALID: {path}: invalid YAML') from None
+            sandbox = document.get('sandbox') if isinstance(document, dict) else None
+            if not isinstance(sandbox, dict) or sandbox.get('type') != 'adx-environment':
+                raise ValueError(f'WORKSPACE_CONFIG_INVALID: {path}: deployment migration required')
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        raise ValueError(f'WORKSPACE_CONFIG_INVALID: {path}: cannot read workspace deployment status') from None

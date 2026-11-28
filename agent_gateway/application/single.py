@@ -132,6 +132,7 @@ async def run_single(
         startup_import_phases: list[tuple[str, float]],
         preprocessor: MessagePreprocessor,
         connect_with_retry: Callable[..., Awaitable[None]],
+        required_client_type: str | tuple[str, ...] | None = None,
 ) -> None:
     from agent_gateway.common.config import get_config
 
@@ -159,11 +160,11 @@ async def run_single(
     services = await assemble_services(
         agent_server_url, log_stage=log_startup_stage, startup_t0=startup_t0,
         connect_with_retry=connect_with_retry,
+        required_client_type=required_client_type,
     )
     client = services.client
     third_agent = services.third_agent
     agent_server_ext = services.agent_server_ext
-    using_adx_router = services.using_adx_router
     message_handler = services.message_handler
     im_inbound = services.im_inbound
     im_outbound = services.im_outbound
@@ -179,7 +180,7 @@ async def run_single(
     prewarm_sync_debounce_task: asyncio.Task[None] | None = None
 
     async def _sync_agent_prewarm_channels() -> None:
-        if using_adx_router or not _agent_prewarm_enabled():
+        if not _agent_prewarm_enabled():
             return
         try:
             prewarm_channels = {
@@ -213,7 +214,7 @@ async def run_single(
     ) -> None:
         """Coalesce startup/config/channel churn into one settled sync."""
         nonlocal prewarm_sync_debounce_task
-        if using_adx_router or not _agent_prewarm_enabled():
+        if not _agent_prewarm_enabled():
             return
         previous = prewarm_sync_debounce_task
         if previous is not None and not previous.done():
@@ -272,7 +273,7 @@ async def run_single(
             _periodic_agent_prewarm_sync(),
             name="agent-prewarm-periodic-sync",
         )
-        if not using_adx_router and _agent_prewarm_enabled()
+        if _agent_prewarm_enabled()
         else None
     )
 
