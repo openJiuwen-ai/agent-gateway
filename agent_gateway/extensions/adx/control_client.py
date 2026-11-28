@@ -17,10 +17,23 @@ import httpx
 from agent_gateway.extensions.adx.config import AdxRouterConfig
 from agent_gateway.extensions.yuanrong_frontend_client import (
     SandboxInfo, YuanrongAgentApiError, YuanrongAgentNotFoundError, YuanrongAgentTimeoutError,
+    TRACE_ID_HEADER, bind_southbound_trace_id,
 )
+from agent_gateway.trace_context import outbound_trace_headers, resolve_trace_id
 
 
 logger = logging.getLogger(__name__)
+
+
+def trace_headers(headers: dict[str, str], trace_id: str | None = None) -> dict[str, str]:
+    """Propagate business tracing independently of ADX operation identities."""
+    carrier = outbound_trace_headers(headers, trace_id)
+    carrier[TRACE_ID_HEADER] = bind_southbound_trace_id(carrier[TRACE_ID_HEADER])
+    return carrier
+
+
+def _resolve_trace_id(trace_id: str | None = None) -> str:
+    return bind_southbound_trace_id(resolve_trace_id(trace_id))
 
 
 class AdxControlError(YuanrongAgentApiError):
@@ -69,8 +82,8 @@ class AdxControlClient:
 
     async def _request(self, method: str, path: str, *, body: dict | None = None,
                        request_id: str | None = None, params: dict | None = None,
-                       missing_ok: bool = False) -> Any:
-        headers = {'Authorization': 'Bearer ' + self.config.token}
+                       missing_ok: bool = False, trace_id: str | None = None) -> Any:
+        headers = trace_headers({'Authorization': 'Bearer ' + self.config.token}, trace_id)
         if request_id:
             headers['X-Request-Id'] = request_id
         try:
@@ -110,8 +123,11 @@ class AdxControlClient:
                 raise AdxControlError('Invalid ADX response envelope') from exc
         return value
 
-    async def _lookup(self, instance: str) -> dict | None:
-        value = await self._request('GET', '/api/instances', params={'instance_id': instance}, missing_ok=True)
+    async def _lookup(self, instance: str, *, trace_id: str | None = None) -> dict | None:
+        value = await self._request(
+            'GET', '/api/instances', params={'instance_id': instance},
+            missing_ok=True, trace_id=trace_id,
+        )
         if value is None or value == []:
             return None
         if not isinstance(value, list) or len(value) != 1:
@@ -123,8 +139,8 @@ class AdxControlClient:
         return entry
 
     async def get_agent_info(self, instance_id: str, *, trace_id: str | None = None) -> dict:
-        del trace_id
-        value = await self._lookup(instance_id)
+        trace_id = _resolve_trace_id(trace_id)
+        value = await self._lookup(instance_id, trace_id=trace_id)
         if value is None:
             self._deletes.pop(instance_id, None)
             raise AdxEnvironmentNotFoundError('ADX Environment not found', code='NOT_FOUND')
@@ -139,7 +155,8 @@ class AdxControlClient:
         deadline: float | None = None,
     ) -> dict:
         # The Environment ID embeds the generation in its name, so it cannot belong to another one.
-        del trace_id, expected_generation
+        trace_id = _resolve_trace_id(trace_id)
+        del expected_generation
         try:
             timeout = (
                 asyncio.timeout_at(deadline)
@@ -148,7 +165,7 @@ class AdxControlClient:
             )
             async with timeout:
                 while True:
-                    value = await self.get_agent_info(instance_id)
+                    value = await self.get_agent_info(instance_id, trace_id=trace_id)
                     if value.get('status') in ('running', 'paused', 'pausing', 'resuming'):
                         return value
                     if value.get('status') in ('failed', 'deleted', 'deleting'):
@@ -222,11 +239,11 @@ class AdxControlClient:
     async def create_sandbox(self, *, namespace: str, name: str, workspace: str, runtime_spec: dict,
                              env_vars: dict | None = None, mounts: list | None = None,
                              trace_id: str | None = None) -> SandboxInfo:
-        del trace_id
+        trace_id = _resolve_trace_id(trace_id)
         instance = f'{namespace}-{name}'
-        existing = await self._lookup(instance)
+        existing = await self._lookup(instance, trace_id=trace_id)
         if existing is not None:
-            return await self._ready_sandbox_info(instance)
+            return await self._ready_sandbox_info(instance, trace_id=trace_id)
         if instance in self._deletes:
             # A previous DELETE lost its response. Absence is the confirmation
             # that permits a new create identity for this stable Environment ID.
@@ -241,6 +258,7 @@ class AdxControlClient:
         try:
             result = await self._request(
                 'POST', '/api/environment/v1/environments', body=body, request_id=operation,
+                trace_id=trace_id,
             )
         except AdxControlError as exc:
             if getattr(exc, 'status_code', None) == 429 and previous_operation is None:
@@ -252,33 +270,37 @@ class AdxControlClient:
             raise
         if not isinstance(result, dict) or result.get('environmentId') != instance:
             raise AdxControlError('ADX create returned an unexpected Environment ID')
-        return await self._ready_sandbox_info(instance)
+        return await self._ready_sandbox_info(instance, trace_id=trace_id)
 
-    async def _ready_sandbox_info(self, instance: str) -> SandboxInfo:
+    async def _ready_sandbox_info(self, instance: str, *, trace_id: str | None = None) -> SandboxInfo:
         # Registry requires placement on the initial POST. Read the actual ADX
         # runtime before publishing the sandbox to the business router.
-        view = await self.wait_until_running(instance)
+        trace_id = _resolve_trace_id(trace_id)
+        view = await self.wait_until_running(instance, trace_id=trace_id)
         metadata = {**view, 'node': view.get('node_ip') or '',
-                    'address': view.get('sandbox_ip') or ''}
+                    'address': view.get('sandbox_ip') or '', 'trace_id': trace_id}
         return SandboxInfo(instance, metadata=metadata)
 
     async def delete_sandbox(self, sandbox_id: str, *, trace_id: str | None = None) -> None:
-        del trace_id
+        trace_id = _resolve_trace_id(trace_id)
         operation = self._deletes.setdefault(sandbox_id, 'delete-' + uuid.uuid4().hex)
         await self._request(
             'DELETE', f'/api/environment/v1/environments/{quote(sandbox_id, safe="")}',
-            request_id=operation, missing_ok=True,
+            request_id=operation, missing_ok=True, trace_id=trace_id,
         )
         logger.info('[ADX] environment.delete.ok instance_id=%s request_id=%s', sandbox_id, operation)
         self._deletes.pop(sandbox_id, None)
         self._creates.pop(sandbox_id, None)
 
-    async def invoke(self, environment: str, action: str, args: dict) -> dict:
+    async def invoke(self, environment: str, action: str, args: dict,
+                     *, trace_id: str | None = None) -> dict:
         rid = 'invoke-' + uuid.uuid4().hex
         try:
             response = await self.http.post(
                 urljoin(self.config.ingress_url, f'/direct/{quote(environment, safe="")}/invoke'),
-                headers={'Authorization': 'Bearer ' + self.config.token, 'X-ADX-Request-ID': rid},
+                headers=trace_headers({
+                    'Authorization': 'Bearer ' + self.config.token, 'X-ADX-Request-ID': rid,
+                }, trace_id),
                 json={'action': action, 'args': args, 'requestId': rid},
             )
         except httpx.RequestError as exc:

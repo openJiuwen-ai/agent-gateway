@@ -10,7 +10,7 @@ import inspect
 import logging
 import time
 from abc import ABC
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
@@ -66,6 +66,7 @@ class ChannelEvent:
     event_type: str  # "connected" | "disconnected"
     channel_type: str  # "tui" | "web" | ...
     user_id: str
+    trace_context: dict[str, str] = field(default_factory=dict)
 
 
 def _build_mention_target(names: list[str]) -> dict[str, Any]:
@@ -773,12 +774,17 @@ class ChannelManager(ABC):
         event_type: str,
         channel_type: str,
         user_id: str,
+        trace_context: dict[str, str] | None = None,
     ) -> None:
         """上报 Channel 连接事件，通知所有订阅者。"""
         event = ChannelEvent(
             event_type=event_type,
             channel_type=channel_type,
             user_id=user_id,
+            trace_context={
+                str(key): str(value)
+                for key, value in dict(trace_context or {}).items()
+            },
         )
         for cb in self._channel_event_callbacks:
             asyncio.create_task(cb(event))

@@ -58,6 +58,7 @@ from agent_gateway.common.ws_diagnostics import (
     describe_ws_peer,
     format_ws_diagnostics,
 )
+from agent_gateway.trace_context import trace_context_from_headers
 from agent_gateway.routing.base_ws_channel import BaseWsChannel
 from agent_gateway.routing.keys import AgentRef, RoutingKey
 from agent_gateway.routing.session_sharing import RoutingTarget
@@ -68,6 +69,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _WEB_CONNECTION_USER_ID_ATTR = "_web_connection_user_id"
+
+
+def _trace_context_from_ws(ws: Any) -> dict[str, str]:
+    """Read caller trace headers from the WebSocket handshake."""
+    headers = getattr(ws, "headers", None) or getattr(ws, "request_headers", None)
+    return trace_context_from_headers(headers)
 
 
 def _resolve_ws_auth_session(
@@ -2479,7 +2486,9 @@ class WebChannel(BaseWsChannel):
                     req_id, method, channel=self.channel_id, connection_id=str(id(ws)),
                     user_id=self._connection_user_id(ws) or "",
                     session_id=explicit_session if isinstance(explicit_session, str) else "",
-                    trace_context=data.get("trace_context"),
+                    trace_context=(
+                        data.get("trace_context") or _trace_context_from_ws(ws)
+                    ),
                 )
                 if operation is not None and not self._track_request_trace(ws, operation):
                     operation.finish("incomplete", reason="capacity")
