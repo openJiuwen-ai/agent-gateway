@@ -9,13 +9,23 @@ import json
 import logging
 import mimetypes
 import time
+import uuid
 from collections.abc import Awaitable, Callable
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Annotated, Any, Mapping
 from urllib.parse import quote
 
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.types import ASGIApp, Receive, Scope, Send
+
+from agent_gateway.telemetry import (
+    bind_request_trace,
+    current_request_trace,
+    start_request_trace,
+)
+from agent_gateway.trace_context import trace_context_from_headers
 
 if TYPE_CHECKING:
     from agent_gateway.channel_manager.web.web_connect import WebChannel
@@ -247,6 +257,75 @@ def _file_api_ids(request: Request) -> tuple[str, str]:
     if not sid:
         sid = str(request.query_params.get("session_id") or "").strip()
     return uid, sid
+
+
+def _incoming_trace_context(request: Request) -> dict[str, str]:
+    """Collect caller trace headers; traceparent wins in telemetry extraction."""
+    return trace_context_from_headers(request.headers)
+
+
+@asynccontextmanager
+async def _bind_file_api_request_trace(request: Request):
+    """Continue a caller trace for file-api HTTP requests.
+
+    The file upload path creates the user sandbox, so the request trace must be
+    bound before the route handler runs.  ``start_request_trace`` gives
+    ``traceparent`` priority and falls back to ``X-Trace-Id`` / ``trace_id``.
+    """
+    existing = current_request_trace()
+    if existing is not None:
+        yield existing
+        return
+    carrier = _incoming_trace_context(request)
+    if not carrier:
+        yield None
+        return
+    operation = start_request_trace(
+        str(request.headers.get("x-request-id") or "").strip()
+        or f"file-api-{uuid.uuid4().hex}",
+        request.method.lower(),
+        channel="file-api",
+        connection_id=_request_remote(request),
+        user_id=_header_user_id(request),
+        trace_context=carrier,
+    )
+    if operation is None:
+        yield None
+        return
+    with bind_request_trace(operation):
+        try:
+            yield operation
+        except BaseException as exc:
+            operation.record_outcome(
+                "timeout" if isinstance(exc, TimeoutError) else "failed",
+                reason="file_api_exception",
+            )
+            raise
+        finally:
+            operation.complete()
+
+
+class _FileApiTraceMiddleware:
+    """Bind the caller trace outside ``BaseHTTPMiddleware``.
+
+    ``BaseHTTPMiddleware`` runs the endpoint in a child task.  Without an
+    outer pure-ASGI bind, ``current_request_trace()`` can be empty in the
+    route task even though the access-log middleware saw the header.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if (
+            scope.get("type") != "http"
+            or not str(scope.get("path") or "").startswith(FILE_API_PREFIX)
+        ):
+            await self.app(scope, receive, send)
+            return
+        request = Request(scope, receive)
+        async with _bind_file_api_request_trace(request):
+            await self.app(scope, receive, send)
 
 
 _FILE_API_DONE_KEYS = (
@@ -642,32 +721,33 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
         if not str(request.url.path or "").startswith(prefix):
             return await call_next(request)
         started = time.monotonic()
-        denied = await _authenticate_file_api(request)
-        if denied is not None:
-            status = int(getattr(denied, "status_code", 401) or 401)
+        async with _bind_file_api_request_trace(request):
+            denied = await _authenticate_file_api(request)
+            if denied is not None:
+                status = int(getattr(denied, "status_code", 401) or 401)
+                _log_file_api_done(
+                    request,
+                    status=status,
+                    latency_ms=max(0, int((time.monotonic() - started) * 1000)),
+                    error="user_mismatch" if status == 403 else "unauthorized",
+                )
+                return denied
+            try:
+                response = await call_next(request)
+            except Exception as exc:
+                _log_file_api_done(
+                    request,
+                    status=500,
+                    latency_ms=max(0, int((time.monotonic() - started) * 1000)),
+                    error=type(exc).__name__,
+                )
+                raise
             _log_file_api_done(
                 request,
-                status=status,
+                status=int(getattr(response, "status_code", 500) or 500),
                 latency_ms=max(0, int((time.monotonic() - started) * 1000)),
-                error="user_mismatch" if status == 403 else "unauthorized",
             )
-            return denied
-        try:
-            response = await call_next(request)
-        except Exception as exc:
-            _log_file_api_done(
-                request,
-                status=500,
-                latency_ms=max(0, int((time.monotonic() - started) * 1000)),
-                error=type(exc).__name__,
-            )
-            raise
-        _log_file_api_done(
-            request,
-            status=int(getattr(response, "status_code", 500) or 500),
-            latency_ms=max(0, int((time.monotonic() - started) * 1000)),
-        )
-        return response
+            return response
 
     async def _authenticate_file_api(request: Request) -> JSONResponse | None:
         path = str(request.url.path or "")
@@ -1104,6 +1184,10 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                 "created": bool(created),
             }
         )
+
+    # Keep the caller trace visible to the endpoint task, not only to the
+    # BaseHTTPMiddleware access-log task.
+    app.add_middleware(_FileApiTraceMiddleware)
 
     logger.info(
         "WebChannel /file-api enabled: upload, raw-file, file-content, list-files, list-markdown, mkdir",

@@ -32,7 +32,7 @@ class _AdxManagedRouter(ManagedRouter):
     def _sandbox_physical_name(self, agent_info) -> str:
         return f'{sandbox_name(agent_info.user_id, agent_info.agent_type)}-{agent_info.agent_id[:12]}'
 
-    async def _create_agent_impl(self, agent_info, operation):
+    async def _create_agent_impl(self, agent_info, operation, trace_id: str = ""):
         if agent_info.agent_type == BUILTIN_AGENT_TYPE:
             from agent_gateway.extensions.adx.workspace import check_workspace_config
             try:
@@ -44,7 +44,7 @@ class _AdxManagedRouter(ManagedRouter):
                 # No Environment was requested. A later successful deployment
                 # can admit this user without restarting Gateway or clearing caches.
                 raise AgentPreCreateError(str(exc)) from exc
-        return await super()._create_agent_impl(agent_info, operation)
+        return await super()._create_agent_impl(agent_info, operation, trace_id)
 
 
 class AdxRouterClient(AdxFileMixin, SouthboundAgentClient):

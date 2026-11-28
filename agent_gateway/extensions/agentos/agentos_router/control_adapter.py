@@ -12,8 +12,8 @@ from agent_gateway.telemetry import inject_request_headers
 
 
 class YuanRongControl(ManagedSandboxControl):
-    def ws_headers(self) -> dict[str, str]:
-        return inject_request_headers(apply_trace_header({}))
+    def ws_headers(self, trace_id: str | None = None) -> dict[str, str]:
+        return apply_trace_header(inject_request_headers({}), trace_id or None)
 
     def _url(self, instance_id: str, port: int, protocol: str) -> str:
         parsed = urlsplit(str(self.backend.frontend_endpoint or "").rstrip("/"))
