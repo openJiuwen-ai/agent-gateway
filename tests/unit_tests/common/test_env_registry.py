@@ -70,6 +70,15 @@ _ALLOWED = _ALLOWED_UNREGISTERED | frozenset(
     name for var in env_names.ALL for name in var.legacy
 )
 
+# Launcher-to-Gateway handshakes; they are not operator settings, so the
+# standalone template does not list them.
+_HANDSHAKE_NAMES = frozenset(
+    {
+        env_names.SUPERVISOR_PID.name,
+        env_names.RUNTIME_WORKSPACE_READY.name,
+    }
+)
+
 
 def _declares(text: str, name: str) -> bool:
     """Return True when the template declares *name* as a setting."""
@@ -100,12 +109,16 @@ def test_env_example_covers_every_public_runner_variable() -> None:
     assert _ENV_EXAMPLE.is_file(), "add .env.example at the repository root"
     text = _ENV_EXAMPLE.read_text(encoding="utf-8")
 
-    missing = [var.name for var in env_names.ALL if not var.internal and not _declares(text, var.name)]
+    missing = [
+        var.name
+        for var in env_names.ALL
+        if var.name not in _HANDSHAKE_NAMES and not _declares(text, var.name)
+    ]
     assert not missing, ".env.example is missing: %s" % missing
 
 
-def test_internal_variables_are_not_documented_as_runner_settings() -> None:
+def test_handshake_variables_are_not_documented_as_runner_settings() -> None:
     text = _ENV_EXAMPLE.read_text(encoding="utf-8")
 
-    documented = [var.name for var in env_names.ALL if var.internal and _declares(text, var.name)]
-    assert not documented, ".env.example must not document internal handshakes: %s" % documented
+    documented = [name for name in _HANDSHAKE_NAMES if _declares(text, name)]
+    assert not documented, ".env.example must not document launcher handshakes: %s" % documented
