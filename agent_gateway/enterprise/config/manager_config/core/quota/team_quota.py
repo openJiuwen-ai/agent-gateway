@@ -16,6 +16,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import text
+from sqlalchemy.exc import DataError
 
 from agent_gateway.common.match_expr import coerce_match_expr
 from agent_gateway.config.enterprise.expressions import matches, validate_match_expr
@@ -30,7 +31,7 @@ from agent_gateway.enterprise.db.team_store_actor import (
     use_shared_team_store,
 )
 
-from ...schemas.quota_schemas import TeamQuotaPolicyUpsertRequest
+from ...schemas.quota_schemas import INT32_MAX, INT32_MIN, TeamQuotaPolicyUpsertRequest
 
 KIND_TEAM_CREATE = "team_create"
 KIND_TEAMMATE_SPAWN = "teammate_spawn"
@@ -283,7 +284,14 @@ class TeamQuotaPolicyService:
 
             await run_tx(actor.handler, _tx)
 
-        actor.call(_op)
+        try:
+            actor.call(_op)
+        except DataError as exc:
+            # 兜底：Schema 校验被绕过时落库的 MySQL 1264 也要转成可读 4xx（issue #200）。
+            # 不外泄原始 SQL/绑定参数：仅给出字段范围提示。
+            raise ValueError(
+                f"field out of MySQL INT range ({INT32_MIN}~{INT32_MAX}): {type(exc).__name__}"
+            ) from exc
         return {**row, "match_expr": expr, "enabled": bool(req.enabled)}
 
     async def delete(self, policy_id: str) -> None:

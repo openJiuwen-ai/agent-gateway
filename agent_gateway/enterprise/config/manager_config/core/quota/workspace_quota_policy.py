@@ -7,6 +7,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from sqlalchemy.exc import DataError
+
 from agent_gateway.config.enterprise.expressions import validate_match_expr
 from agent_gateway.config.enterprise.tables.quota_models import (
     WORKSPACE_QUOTA_POLICY_TABLE_DEF,
@@ -14,7 +16,7 @@ from agent_gateway.config.enterprise.tables.quota_models import (
 
 from ...infrastructure.repository_access import require_enterprise_repository
 from ...infrastructure.utils import parse_iso_datetime, utc_now
-from ...schemas.quota_schemas import PolicyUpsertRequest
+from ...schemas.quota_schemas import INT32_MAX, INT32_MIN, PolicyUpsertRequest
 
 _TABLE = WORKSPACE_QUOTA_POLICY_TABLE_DEF.table_name
 _PAGE = 500
@@ -92,10 +94,33 @@ class WorkspaceQuotaPolicyService:
         now = utc_now()
         source = req.source
         source_order_num = req.source_order_num
-        if existing is None:
-            await repo.create(
+        try:
+            if existing is None:
+                await repo.create(
+                    {
+                        "policy_id": pid,
+                        "policy_name": req.policy_name,
+                        "policy_desc": req.policy_desc,
+                        "match_expr": expr,
+                        "priority": priority,
+                        "limit_bytes": int(req.limit_bytes),
+                        "soft_percent": int(req.soft_percent),
+                        "hard_percent": int(req.hard_percent),
+                        "source": source,
+                        "source_order_num": source_order_num,
+                        "enabled": enabled,
+                        "data": None,
+                        "created_at": now,
+                        "created_by": None,
+                        "updated_at": now,
+                        "updated_by": None,
+                    }
+                )
+                return
+            created_at = parse_iso_datetime(existing.get("created_at")) or now
+            updated = await repo.update(
+                {"policy_id": pid},
                 {
-                    "policy_id": pid,
                     "policy_name": req.policy_name,
                     "policy_desc": req.policy_desc,
                     "match_expr": expr,
@@ -106,34 +131,19 @@ class WorkspaceQuotaPolicyService:
                     "source": source,
                     "source_order_num": source_order_num,
                     "enabled": enabled,
-                    "data": None,
-                    "created_at": now,
-                    "created_by": None,
                     "updated_at": now,
-                    "updated_by": None,
-                }
+                    "created_at": created_at,
+                },
             )
-            return
-        created_at = parse_iso_datetime(existing.get("created_at")) or now
-        updated = await repo.update(
-            {"policy_id": pid},
-            {
-                "policy_name": req.policy_name,
-                "policy_desc": req.policy_desc,
-                "match_expr": expr,
-                "priority": priority,
-                "limit_bytes": int(req.limit_bytes),
-                "soft_percent": int(req.soft_percent),
-                "hard_percent": int(req.hard_percent),
-                "source": source,
-                "source_order_num": source_order_num,
-                "enabled": enabled,
-                "updated_at": now,
-                "created_at": created_at,
-            },
-        )
-        if updated is None:
-            raise ValueError(f"failed to upsert workspace quota policy id={pid!r}")
+            if updated is None:
+                raise ValueError(f"failed to upsert workspace quota policy id={pid!r}")
+        except DataError as exc:
+            # 兜底：即便 Schema 校验被绕过（如直调 Gateway），落库时的 MySQL 1264
+            # 也要转成可读的 4xx，不再以 500 Internal Server Error 暴露（issue #200）。
+            # 不外泄原始 SQL/绑定参数：仅给出字段范围提示。
+            raise ValueError(
+                f"field out of MySQL INT range ({INT32_MIN}~{INT32_MAX}): {type(exc).__name__}"
+            ) from exc
 
     async def delete(self, policy_id: str) -> None:
         pid = str(policy_id or "").strip()
