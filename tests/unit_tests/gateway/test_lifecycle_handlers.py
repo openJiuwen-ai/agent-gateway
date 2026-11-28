@@ -578,3 +578,74 @@ async def test_replacement_socket_does_not_inherit_replay_through_a_recycled_id(
     assert [(ws is first, ws is second, event) for ws, event, _ in channel.events] == [
         (True, False, "project.lifecycle"), (False, True, "project.lifecycle"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_malformed_event_entry_does_not_poison_the_batch(monkeypatch):
+    """单条畸形事件（缺字段/类型不符/未知 kind）不得打穿轮询，其后合法事件仍需投递."""
+    channel = _FakeChannel()
+    channel.clients.append(object())
+
+    async def fake_call(*args, **kwargs):
+        return True, {"events": [
+            # 畸形条目们：payload 缺 resource_id / revision 非法 / entry 缺 payload
+            {"event": "session.lifecycle", "payload": {"project_id": "p1"}, "completed": True},
+            {"event": "session.lifecycle", "payload": {"resource_id": "s0", "revision": "2"}},
+            {"event": "session.lifecycle", "completed": True},
+            # 合法条目：应正常处理
+            {
+                "event": "session.lifecycle",
+                "kind": "archive",
+                "completed": True,
+                "payload": {"resource_id": "s1", "revision": 3},
+                "result": {"session_id": "s1", "ok": True},
+            },
+        ]}
+
+    original_sleep = asyncio.sleep
+
+    async def stop_after_first(delay):
+        channel.clients.clear()
+        await original_sleep(0)
+
+    monkeypatch.setattr(lifecycle_handlers, "fetch_agent_unary", fake_call)
+    monkeypatch.setattr(lifecycle_handlers.asyncio, "sleep", stop_after_first)
+    lifecycle_handlers.register_lifecycle_handlers(channel, lambda: None, lambda: None)
+    channel.ensure_lifecycle_watch("u1")
+    watcher = next(task for task in asyncio.all_tasks() if task.get_name() == "web-lifecycle-events")
+    await asyncio.wait_for(watcher, 1)
+
+    assert channel.cleared == ["s1"]
+
+    # 未知 completed kind 不抛 KeyError，只跳过 completion notice。
+    # 轮询脚本：第 1 轮 rev=1 被 first 首轮语义跳过；第 2 轮 rev=2（递增，
+    # first=False）真正进入投递与 suffix 映射；第 3 轮清空收件人结束。
+    channel2 = _FakeChannel()
+    ws_a, ws_b = object(), object()
+    channel2.clients.extend([ws_a, ws_b])  # 双收件人：可捕捉"提前 break 漏投"回归
+    polls2 = 0
+
+    async def fake_call_unknown_kind(*args, **kwargs):
+        nonlocal polls2
+        polls2 += 1
+        if polls2 > 2:
+            channel2.clients.clear()
+        return True, {"events": [{
+            "event": "session.lifecycle",
+            "kind": "restore",
+            "completed": True,
+            "payload": {"resource_id": "s2", "revision": min(polls2, 2)},
+            "result": {"session_id": "s2", "ok": True},
+        }]}
+
+    monkeypatch.setattr(lifecycle_handlers, "fetch_agent_unary", fake_call_unknown_kind)
+    lifecycle_handlers.register_lifecycle_handlers(channel2, lambda: None, lambda: None)
+    channel2.ensure_lifecycle_watch("u1")
+    watcher2 = next(task for task in asyncio.all_tasks() if task.get_name() == "web-lifecycle-events")
+    await asyncio.wait_for(watcher2, 1)
+
+    # 明确断言：主事件两个收件人都收到；未知 kind 的 completion notice 不投递
+    delivered_ws_events = [(ws, e) for ws, e, _ in channel2.events]
+    assert (ws_a, "session.lifecycle") in delivered_ws_events
+    assert (ws_b, "session.lifecycle") in delivered_ws_events
+    assert all(e != "session.restored" for _, e in delivered_ws_events)
