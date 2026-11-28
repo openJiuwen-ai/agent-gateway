@@ -14,11 +14,21 @@
 | `--web-path <PATH>` | `WEB_PATH` 或 `/ws` | WebChannel WebSocket 路径 |
 | `--name <name>` | 无 | 启动 `instances.yaml` 中的命名实例 |
 | `--dotenv <path>` | 无 | 启动时从指定 `.env` 加载环境变量（仅启动阶段生效） |
+| `--enable-cron` | 关闭 | 在 `--mode multiprocess` 中启用受支持的文件模式个人版 Cron 任务；使用账号登录或非默认项目的任务会被拒绝 |
+| `--check-cron` | 关闭 | 配合 `--mode multiprocess --enable-cron` 使用：以 JSON 输出只读的 Cron 预检报告并退出 |
 | `-h, --help` | 无 | 显示帮助并退出 |
 
 ### 本地多进程试点
 
-仅用于个人版 IPv4 回环部署。显式使用 `--mode multiprocess --workers 2` 启动两个 Worker；省略 `--mode` 仍走原单进程。北向仅开放试点支持的 Web `/ws`、健康探针和 TUI／ACP 数据操作；南向连接单个 `ws://127.0.0.1:<端口>`。账号管理、Cron 和可选渠道请继续使用单进程。
+仅用于个人版 IPv4 回环部署。显式使用 `--mode multiprocess --workers 2` 启动两个 Worker；省略 `--mode` 仍走原单进程。北向仅开放试点支持的 Web `/ws`、健康探针和 TUI／ACP 数据操作；南向连接单个 `ws://127.0.0.1:<端口>`。账号管理和可选渠道请继续使用单进程。试点中的 Cron 默认关闭，需显式传入 `--enable-cron`。
+
+### Cron 迁移预检
+
+```bash
+agent-gateway --mode multiprocess --enable-cron --check-cron --workers 4
+```
+
+使用准备上线的 Worker 数：每个用户的任务固定归属其中一个 Worker，归属由该数量决定。命令读取 `<root>/profile/agent/home/cron_jobs.json` 和 Gateway 配置，输出一行 JSON 后退出；不修改任务，也不启动监听、Worker 或调度器。`issues` 按任务 ID 和归属 Worker 列出阻塞项与警告，不包含任务正文或凭据数据。退出码 `0` 表示所有已启用任务均受支持；`1` 表示存在不支持的启用任务，或配置、任务文件无法读取。`agentserver_checked: false` 表示未向 AgentServer 核验模型可用性与项目执行。带 `--enable-cron` 启动时会执行同一检查，存在不支持的启用任务时不开放监听。
 
 ## 环境变量
 

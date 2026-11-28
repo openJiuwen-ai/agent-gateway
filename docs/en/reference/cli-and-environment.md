@@ -14,11 +14,21 @@ Entry points: `agent-gateway` (gateway + channels) and `agent-gateway-acp` (ACP 
 | `--web-path <PATH>` | `WEB_PATH` or `/ws` | WebChannel WebSocket path |
 | `--name <name>` | none | Start a named instance from `instances.yaml` |
 | `--dotenv <path>` | none | Load environment variables from the given `.env` at startup (startup phase only) |
+| `--enable-cron` | off | Enable the supported file-backed personal Cron jobs in `--mode multiprocess`. Jobs that use account login or a non-default project are refused |
+| `--check-cron` | off | With `--mode multiprocess --enable-cron`: print the read-only Cron preflight report as JSON and exit |
 | `-h, --help` | none | Show help and exit |
 
 ### Local multiprocess trial
 
-Use `--mode multiprocess --workers 2` to start two Workers on loopback in the personal edition. The default remains single-process. The trial serves Web `/ws`, health probes and data operations over TUI/ACP, and connects to a single `ws://127.0.0.1:<port>` AgentServer. Keep using single mode for account management, Cron and optional channels.
+Use `--mode multiprocess --workers 2` to start two Workers on loopback in the personal edition. The default remains single-process. The trial serves Web `/ws`, health probes and data operations over TUI/ACP, and connects to a single `ws://127.0.0.1:<port>` AgentServer. Keep using single mode for account management and optional channels. Cron stays off in the trial unless `--enable-cron` is passed.
+
+### Preview Cron migration
+
+```bash
+agent-gateway --mode multiprocess --enable-cron --check-cron --workers 4
+```
+
+Use the Worker count you plan to start: each user's jobs belong to one fixed Worker, chosen from that count. The command reads `<root>/profile/agent/home/cron_jobs.json` and the Gateway configuration, prints one JSON report, and exits. It changes no job and starts no listener, Worker or scheduler. `issues` lists each blocking reason and warning by job ID and owner slot, without task text or credential data. Exit status `0` means every enabled job is supported; `1` means an enabled job is unsupported, or the configuration or job file could not be read. `agentserver_checked: false` means model availability and project execution were not checked against AgentServer. A start with `--enable-cron` runs the same check and opens no listener while an enabled job is unsupported.
 
 ## Environment variables
 

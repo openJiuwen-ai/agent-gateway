@@ -260,8 +260,9 @@ class WorkerPool:
         async def activated() -> None:
             await asyncio.gather(*(worker.cron_active.wait() for worker in self._workers))
 
-        async def pool_failed(self) -> None:
-            await asyncio.shield(self._failure)
+        async def pool_failed(self) -> RuntimeError | None:
+            # The first Worker failure, or None once a stop finished first.
+            return await asyncio.shield(self._failure)
 
         self._cron_activation_in_progress = True
         activation = asyncio.create_task(activated(), name="gateway-activate-cron")
