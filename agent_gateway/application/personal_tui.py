@@ -20,6 +20,9 @@ from agent_gateway.routing import e2a_proxy
 from agent_gateway.routing.agent_request_timeout import coerce_client_timeout_ms
 
 
+MODEL_SWITCH_CAPABILITY = "personal_tui_model_switch_v1"
+_MODEL_SWITCH_MARKER = "_personal_tui_model_switch_v1"
+
 _READ_METHODS = frozenset({
     ReqMethod.CONFIG_GET, ReqMethod.MODELS_LIST, ReqMethod.MEMORY_STATUS,
     ReqMethod.COMMAND_MODEL, ReqMethod.SESSION_PREVIEW, ReqMethod.HISTORY_LIST_TURNS,
@@ -173,6 +176,8 @@ class PersonalTuiRequests:
             return await self._write(ws, req_id, req_method, params, session_id, user_id, timeout_ms)
 
         key = None
+        if req_method == ReqMethod.COMMAND_MODEL and "model" in params:
+            return await self._switch_model(ws, req_id, params, session_id, user_id, timeout_ms)
         if req_method in (ReqMethod.CONFIG_GET, ReqMethod.COMMAND_MODEL, ReqMethod.MODELS_LIST):
             args = {name: value for name, value in params.items() if name not in _CONTEXT}
             if req_method == ReqMethod.CONFIG_GET:
@@ -194,6 +199,28 @@ class PersonalTuiRequests:
                 return await self._error(ws, req_id, payload["code"], "Could not read display configuration")
             return await self._error(ws, req_id, payload["code"], payload["error"])
         await self.runtime.send_response(ws, req_id, ok=True, payload=_project_read(req_method, payload, key))
+        return True
+
+    async def _switch_model(self, ws, req_id, params, session_id, user_id, timeout_ms):
+        args = {name: value for name, value in params.items() if name not in _CONTEXT}
+        if set(args) - {"model", "index"}:
+            return await self._error(ws, req_id, "UNSUPPORTED_REQUEST", "Only default model selection is supported")
+        model = args.get("model")
+        index = args.get("index")
+        if not isinstance(model, str) or not model.strip() or len(model) > 512:
+            return await self._error(ws, req_id, "BAD_REQUEST", "model must be a non-empty model name")
+        if index is not None and (type(index) is not int or index < 0):
+            return await self._error(ws, req_id, "BAD_REQUEST", "index must select a default model")
+        ok, result = await self._fetch(
+            ReqMethod.COMMAND_MODEL, {**args, _MODEL_SWITCH_MARKER: True}, session_id, user_id, timeout_ms,
+            required_capability=MODEL_SWITCH_CAPABILITY,
+        )
+        if not ok:
+            return await self._error(ws, req_id, result["code"], result["error"])
+        if result.get("type") != "switched" or result.get("applied") is not True:
+            return await self._error(ws, req_id, "UNSUPPORTED_REQUEST", "Only default model selection is supported")
+        payload = _scalar_fields(result, {"current", "requested", "type", "applied"})
+        await self.runtime.send_response(ws, req_id, ok=True, payload=payload)
         return True
 
     async def _check_session(self, method, session_id, user_id, timeout_ms):
@@ -294,7 +321,7 @@ class PersonalTuiRequests:
         )
         return True
 
-    async def _fetch(self, method, params, session_id, user_id, timeout_ms):
+    async def _fetch(self, method, params, session_id, user_id, timeout_ms, *, required_capability=None):
         metadata = {}
         timeout = coerce_client_timeout_ms(timeout_ms)
         if timeout is not None:
@@ -302,6 +329,7 @@ class PersonalTuiRequests:
         payload_ok, payload = await e2a_proxy.fetch_agent_unary(
             agent_client=self.client, req_method=method, params=params,
             session_id=session_id, user_id=user_id, channel_id="tui", metadata=metadata,
+            required_capability=required_capability,
         )
         if not isinstance(payload, dict):
             return False, {"code": "SERVICE_UNAVAILABLE", "error": "Invalid AgentServer response"}

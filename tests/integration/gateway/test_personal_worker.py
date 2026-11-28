@@ -8,7 +8,7 @@ records what the Workers actually forwarded.
 """
 
 import asyncio
-from contextlib import closing
+from contextlib import asynccontextmanager, closing
 import json
 import socket
 import time
@@ -94,8 +94,7 @@ async def answer(ws, request_id, *, timeout=10):
                 return frame
 
 
-@pytest.fixture
-async def personal(tmp_path, monkeypatch):
+def prepare_environment(tmp_path, monkeypatch):
     for name, directory in (("HOME", "home"), ("JIUWENSWARM_HOME", "home"),
                             ("JIUWENSWARM_DATA_DIR", "data"), ("AGENT_GATEWAY_DATA_DIR", "data"),
                             ("AGENTOS_GATEWAY_LOG_DIR", "logs")):
@@ -103,11 +102,14 @@ async def personal(tmp_path, monkeypatch):
         path.mkdir(exist_ok=True)
         monkeypatch.setenv(name, str(path))
     monkeypatch.setenv("JIUWENSWARM_EDITION", "personal")
-    stub = RecordingAgentServer().start()
-    group = WorkerGroup(stub.url, workers=1, web_port=0, protocol_port=0, handoff_timeout=2)
+
+
+@asynccontextmanager
+async def running(stub, **options):
+    group = WorkerGroup(stub.url, workers=1, web_port=0, protocol_port=0, handoff_timeout=2, **options)
     try:
         await group.start()
-        yield group, stub
+        yield group
     finally:
         try:
             await group.stop()
@@ -118,6 +120,14 @@ async def personal(tmp_path, monkeypatch):
         with closing(socket.socket()) as listener:
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             listener.bind(address)
+
+
+@pytest.fixture
+async def personal(tmp_path, monkeypatch):
+    prepare_environment(tmp_path, monkeypatch)
+    stub = RecordingAgentServer().start()
+    async with running(stub) as group:
+        yield group, stub
 
 
 def tui_url(group, *, user=USER):
@@ -232,6 +242,33 @@ async def test_tui_session_writes_check_the_owner_and_activity_before_the_write(
     assert all(request["params"] == {"session_id": request["session_id"], "enable_writeback": False}
                for request in checks)
     assert [request["user_id"] for request in checks] == [USER] * len(checks)
+
+
+async def test_default_model_switch_needs_the_agentserver_capability(tmp_path, monkeypatch):
+    prepare_environment(tmp_path, monkeypatch)
+    seen = {}
+    for name, capabilities in (("legacy", ()), ("capable", ("personal_tui_model_switch_v1",))):
+        stub = RecordingAgentServer(capabilities=capabilities).start()
+        stub.replies["command.model"] = {"type": "switched", "applied": True, "current": "m2", "requested": "m2",
+                                         "api_key": "do-not-project"}
+        async with running(stub) as group:
+            async with connect(tui_url(group)) as tui:
+                await tui.send(json.dumps({"type": "req", "id": "switch", "method": "command.model", "params": {
+                    "model": "m2", "index": 1, "session_id": "s1", "cwd": "/tmp",
+                }}))
+                seen[name] = await answer(tui, "switch")
+        seen[f"{name}-sent"] = [(request["method"], request["params"])
+                                for request in stub.requests if request["method"] == "command.model"]
+    # An AgentServer without the capability is answered without any write: the unmarked
+    # command.model of the display read path would be a different operation.
+    assert seen["legacy"]["code"] == "UNSUPPORTED_DATA_PLANE" and seen["legacy"]["ok"] is False
+    assert seen["legacy-sent"] == []
+    assert seen["capable"] == {"type": "res", "id": "switch", "ok": True, "payload": {
+        "type": "switched", "applied": True, "current": "m2", "requested": "m2",
+    }}
+    assert seen["capable-sent"] == [
+        ("command.model", {"model": "m2", "index": 1, "_personal_tui_model_switch_v1": True}),
+    ]
 
 
 async def test_web_listener_does_not_take_tui_compatibility_requests(personal):

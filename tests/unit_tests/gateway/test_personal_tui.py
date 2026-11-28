@@ -1,5 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
+import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -8,6 +9,7 @@ import pytest
 from websockets.datastructures import Headers
 
 from agent_gateway.application import tui_acp
+from agent_gateway.application import personal_tui
 
 
 async def assemble(*, enabled=True):
@@ -79,7 +81,7 @@ async def test_legacy_reads_require_native_loopback_and_do_not_open_management(m
             assert (await request(runtime, ws, 'models.list', {}))['code'] == 'FORBIDDEN'
         ws = window()
         for method, params in (
-            ('command.model', {'model': 'other', 'session_id': 's1'}),
+            ('command.model', {'model': 'other', 'config': {'api_key': 'secret'}}),
             ('command.model', {'action': 'add_model'}),
             ('command.mcp', {'action': 'enable', 'name': 'demo'}),
             ('config.get', {'key': 'model_api_key'}),
@@ -363,3 +365,95 @@ async def test_tui_disconnect_uses_the_regular_local_handler(monkeypatch):
         fetch.assert_not_awaited()
     finally:
         await assembly.stop()
+
+
+@pytest.mark.asyncio
+async def test_model_switch_requires_agent_capability_and_keeps_legacy_result(monkeypatch):
+    from agent_gateway.routing import e2a_proxy
+
+    fetch = AsyncMock(side_effect=[
+        (False, {'code': 'UNSUPPORTED_DATA_PLANE', 'error': 'missing capability'}),
+        (True, {'type': 'switched', 'applied': True, 'current': 'other', 'requested': 'other', 'api_key': 'excluded'}),
+    ])
+    monkeypatch.setattr(e2a_proxy, 'fetch_agent_unary', fetch)
+    assembly, _ = await assemble()
+    try:
+        runtime = assembly.protocol_runtime
+        ws = window(user='local-user')
+        params = {'model': 'other', 'index': 1, 'session_id': 's1', 'cwd': '/tmp', 'user_id': 'ignored'}
+        assert (await request(runtime, ws, 'command.model', params))['code'] == 'UNSUPPORTED_DATA_PLANE'
+        response = await request(runtime, ws, 'command.model', params)
+        assert response['ok'] and response['payload'] == {
+            'type': 'switched', 'applied': True, 'current': 'other', 'requested': 'other',
+        }
+        for call in fetch.await_args_list:
+            assert call.kwargs['required_capability'] == 'personal_tui_model_switch_v1'
+            assert call.kwargs['params'] == {'model': 'other', 'index': 1, '_personal_tui_model_switch_v1': True}
+            assert call.kwargs['user_id'] == 'local-user'
+        assert not runtime._pending_session_clients
+    finally:
+        await assembly.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('params', 'code'), [
+    ({'model': 'other', 'index': 1, 'action': 'add_model'}, 'UNSUPPORTED_REQUEST'),
+    ({'model': 'other', 'api_key': 'secret'}, 'UNSUPPORTED_REQUEST'),
+    ({'model': '   '}, 'BAD_REQUEST'),
+    ({'model': 'x' * 513}, 'BAD_REQUEST'),
+    ({'model': 7}, 'BAD_REQUEST'),
+    ({'model': 'other', 'index': True}, 'BAD_REQUEST'),
+    ({'model': 'other', 'index': -1}, 'BAD_REQUEST'),
+])
+async def test_model_switch_rejects_anything_but_a_default_model_selection(monkeypatch, params, code):
+    from agent_gateway.routing import e2a_proxy
+
+    fetch = AsyncMock()
+    monkeypatch.setattr(e2a_proxy, 'fetch_agent_unary', fetch)
+    assembly, _ = await assemble()
+    try:
+        assert (await request(assembly.protocol_runtime, window(), 'command.model', params))['code'] == code
+        fetch.assert_not_awaited()
+    finally:
+        await assembly.stop()
+
+
+@pytest.mark.asyncio
+async def test_model_switch_without_the_capability_never_sends_the_plain_model_command():
+    """A miss must not fall back to the unmarked command.model the TUI read path uses."""
+    from e2a.message import ReqMethod
+    from websockets.datastructures import Headers
+
+    from agent_gateway.routing import e2a_proxy
+    from agent_gateway.routing.agent_client import WebSocketAgentServerClient
+
+    class Socket:
+        def __init__(self):
+            self.sent = []
+
+        async def send(self, raw):
+            self.sent.append(raw)
+
+        async def close(self):
+            pass
+
+    class Client(WebSocketAgentServerClient):
+        socket = Socket()
+
+        def _send_wire_payload(self, payload):
+            return self.socket.send("written")
+
+    client = Client()
+    client._ws = client.socket
+    client._apply_connection_ack({'payload': {'capabilities': ['personal_tui_summary_rewind_v1']}})
+    try:
+        result = await asyncio.wait_for(e2a_proxy.fetch_agent_unary(
+            agent_client=client, req_method=ReqMethod.COMMAND_MODEL,
+            params={'model': 'other', '_personal_tui_model_switch_v1': True}, session_id=None, user_id=None,
+            channel_id='tui', required_capability=personal_tui.MODEL_SWITCH_CAPABILITY, timeout_seconds=5,
+        ), 5)
+    finally:
+        await client.disconnect()
+    assert result == (False, {'code': 'UNSUPPORTED_DATA_PLANE',
+                              'error': 'This AgentServer does not support the requested operation'})
+    assert client.socket.sent == [] and client._message_queues == {}
