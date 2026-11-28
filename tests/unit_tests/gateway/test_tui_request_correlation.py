@@ -336,7 +336,7 @@ async def test_answered_unary_correlations_are_bounded_per_socket(pair, monkeypa
 
     kept = server._tui_request_origins
     assert [request.id in kept for request in unary] == [False, False, False, True, True, True]
-    assert stream.id in kept  # The gateway cannot see where a stream ends.
+    assert stream.id in kept  # The stream is still running: no terminal event yet.
     forwarded_keys = {key[1] for key in server._request_to_client if key[1].startswith("tui-forward-")}
     assert forwarded_keys == set(kept)  # Both tables shrink together.
 
@@ -357,6 +357,68 @@ async def test_answered_unary_correlations_are_bounded_per_socket(pair, monkeypa
     await _settle()
     assert len(pair.sockets[0].frames) == 7
     assert pair.sockets[1].frames == []
+
+
+@pytest.mark.asyncio
+async def test_finished_stream_releases_its_correlation(pair, monkeypatch):
+    """A stream that reached chat.final must stop pinning its correlation forever."""
+    monkeypatch.setattr(runtime, "_TUI_ANSWERED_ORIGINS_KEPT", 3)
+    server = pair.server
+    streams = []
+    for number in range(6):
+        stream = await pair.send(0, f"stream-{number}", is_stream=True)
+        await pair.respond(
+            stream, type="event", event_type=SimpleNamespace(value="chat.final"),
+            payload={"content": "done", "request_id": stream.id},
+        )
+        streams.append(stream)
+    await pair.wait_frames(0, 6)
+
+    kept = server._tui_request_origins
+    assert [stream.id in kept for stream in streams] == [False, False, False, True, True, True]
+    forwarded_keys = {key[1] for key in server._request_to_client if key[1].startswith("tui-forward-")}
+    assert forwarded_keys == set(kept)  # Both tables shrink together once the turn ends.
+
+    # A finished turn stays referable while it is inside the recent window.
+    followup = await pair.send(0, "followup", request_id=streams[5].id)
+    assert followup.params["request_id"] == streams[5].id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event", ["chat.error", "runtime.error"])
+async def test_failed_stream_releases_its_correlation(pair, event):
+    """A stream that ends with an error is just as finished as a successful one."""
+    server = pair.server
+    stream = await pair.send(0, "stream-1", is_stream=True)
+    assert stream.id in server._tui_request_origins
+    await pair.respond(
+        stream, type="event", event_type=SimpleNamespace(value=event),
+        payload={"content": "boom", "request_id": stream.id},
+    )
+    await pair.wait_frames(0, 1)
+    answered = getattr(pair.sockets[0], "_tui_answered_requests")
+    assert list(answered) == [stream.id]
+    # A repeated terminal event must not enqueue the same correlation twice.
+    await pair.respond(
+        stream, type="event", event_type=SimpleNamespace(value=event),
+        payload={"content": "boom", "request_id": stream.id},
+    )
+    assert list(answered) == [stream.id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event", ["chat.delta", "chat.reasoning", "chat.file", "chat.tool_result"])
+async def test_running_stream_keeps_its_correlation(pair, event):
+    """Intermediate stream events must not settle a turn that is still running."""
+    server = pair.server
+    stream = await pair.send(0, "stream-1", is_stream=True)
+    await pair.respond(
+        stream, type="event", event_type=SimpleNamespace(value=event),
+        payload={"content": "part", "request_id": stream.id},
+    )
+    await pair.wait_frames(0, 1)
+    assert stream.id in server._tui_request_origins
+    assert getattr(pair.sockets[0], "_tui_answered_requests", None) is None
 
 
 async def _drop_mid_stream(pair):
