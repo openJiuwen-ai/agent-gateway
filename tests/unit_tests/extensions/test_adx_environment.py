@@ -13,6 +13,16 @@ from agent_gateway.extensions.adx.control_client import (
     AdxControlClient, AdxControlError, AdxCreateTimeout, AdxCreateUncertain, AdxGenerationMismatch,
 )
 from agent_gateway.extensions.agentos.agentos_router.backend import AGENT_GENERATION_ENV
+from agent_gateway import telemetry
+from agent_gateway.extensions.agentos.agentos_router.backend import (
+    TRACE_ID_HEADER,
+    normalize_trace_id,
+    extract_trace_id,
+    apply_trace_header,
+    clear_southbound_trace_id,
+    current_southbound_trace_id,
+    bind_southbound_trace_id,
+)
 
 
 def config(monkeypatch, tmp_path):
@@ -82,7 +92,7 @@ async def test_short_name_reuse_requires_the_full_generation(
 
 @pytest.mark.parametrize('name', ['config.yaml', 'adx-migration-error.json'])
 def test_workspace_preflight_reports_invalid_utf8(tmp_path, name):
-    from agent_gateway.extensions.adx.workspace import check_workspace_config
+    from agent_gateway.extensions.adx.config import check_workspace_config
 
     (tmp_path / name).write_bytes(b'\xff')
     with pytest.raises(ValueError, match='WORKSPACE_CONFIG_INVALID: .*cannot read workspace deployment status'):
@@ -522,3 +532,67 @@ async def test_redacted_failed_candidate_requires_confirmed_runtime(monkeypatch,
         assert requests == ["GET"]
     finally:
         await client.close()
+
+
+@pytest.mark.asyncio
+async def test_create_retries_keep_operation_identity_and_return_business_trace(monkeypatch, tmp_path):
+    calls = []
+    posts = []
+    exists = False
+
+    def handle(request):
+        nonlocal exists
+        calls.append(request)
+        if request.method == 'GET':
+            rows = [{'id': 'test-alice', 'tenant_id': 'tenant', 'status': 'running'}]
+            return httpx.Response(200, json=rows if exists else [])
+        if request.method == 'POST':
+            posts.append(request)
+            if len(posts) == 1:
+                return httpx.Response(503, json={'error': {'code': 'SERVICE_UNAVAILABLE'}})
+            exists = True
+            return httpx.Response(200, json=envelope({'environmentId': 'test-alice'}))
+        return httpx.Response(200, json={'success': True})
+
+    client = AdxControlClient(config(monkeypatch, tmp_path), transport=httpx.MockTransport(handle))
+    args = dict(namespace='test', name='alice', workspace='/mnt/alice',
+                runtime_spec={'rootfs': {'imageurl': 'agent:1'}, 'cmds': [['/bin/app']]})
+    try:
+        with telemetry.bind_request_trace(None):
+            with pytest.raises(AdxCreateUncertain):
+                await client.create_sandbox(**args, trace_id='first-business-trace')
+            result = await client.create_sandbox(**args, trace_id='second-business-trace')
+            assert result.metadata['trace_id'] == 'second-business-trace'
+            await client.wait_until_running('test-alice', trace_id='query-business-trace')
+            await client.delete_sandbox('test-alice', trace_id='delete-business-trace')
+        assert posts[0].headers['x-request-id'] == posts[1].headers['x-request-id']
+        assert posts[0].headers['x-request-id'].startswith('create-')
+        assert posts[0].headers['x-trace-id'] == 'first-business-trace'
+        assert posts[1].headers['x-trace-id'] == 'second-business-trace'
+        assert json.loads(posts[0].content) == json.loads(posts[1].content)
+        assert calls[-1].headers['x-trace-id'] == 'delete-business-trace'
+        assert calls[-1].headers['x-request-id'].startswith('delete-')
+        assert any(r.headers['x-trace-id'] == 'query-business-trace' for r in calls)
+    finally:
+        await client.close()
+
+
+def test_normalize_and_extract_trace_id():
+    assert normalize_trace_id("t-20260903-001") == "t-20260903-001"
+    assert len(normalize_trace_id("")) == 36
+    assert extract_trace_id({"X-Trace-Id": "abc"}) == "abc"
+    assert extract_trace_id({"x-trace-id": "abc"}) == "abc"
+    assert apply_trace_header({"Content-Type": "application/json"}, "req-1")[
+        TRACE_ID_HEADER
+    ] == "req-1"
+
+
+def test_bind_southbound_trace_id_is_task_local():
+    clear_southbound_trace_id()
+    assert current_southbound_trace_id() == ""
+    assert bind_southbound_trace_id("t-file-1") == "t-file-1"
+    assert current_southbound_trace_id() == "t-file-1"
+    apply_trace_header({}, "t-ws-2")
+    assert current_southbound_trace_id() == "t-ws-2"
+    clear_southbound_trace_id()
+    assert current_southbound_trace_id() == ""

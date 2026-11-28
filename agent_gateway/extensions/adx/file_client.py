@@ -2,16 +2,18 @@
 """Adapt existing Gateway container-file calls to ADX runtime primitives."""
 from __future__ import annotations
 
+import json
+import logging
+import mimetypes
+import shlex
+import uuid
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
-import mimetypes
+from pathlib import PurePosixPath
+from urllib.parse import quote
+
 import anyio
 import httpx
-
-from agent_gateway.extensions.adx.file_transport import file_request
-import shlex
-from pathlib import PurePosixPath
-import uuid
 
 from agent_gateway.extensions.adx.control_client import AdxControlError, AdxEnvironmentNotFoundError
 from agent_gateway.routing import container_files
@@ -24,6 +26,9 @@ from agent_gateway.routing.container_files import (
     upload_size_error,
     validate_file_mode,
 )
+from agent_gateway.telemetry import inject_request_headers
+
+logger = logging.getLogger(__name__)
 
 _FILE_TRANSFERS: ContextVar[dict | None] = ContextVar("adx_file_transfers", default=None)
 _CHUNK = 64 * 1024
@@ -40,6 +45,66 @@ def _file_size(info: dict) -> int:
         return value
     except (KeyError, TypeError, ValueError) as error:
         raise AgentOSFileTransferError("Invalid ADX file.stat size", code="INTERNAL_ERROR") from error
+
+
+async def _check_response(response: httpx.Response) -> None:
+    if response.status_code < 300:
+        return
+    # Never relay an unbounded backend error body or authentication headers.
+    body = bytearray()
+    async for chunk in response.aiter_bytes(chunk_size=4096):
+        body.extend(chunk[:4096 - len(body)])
+        if len(body) >= 4096:
+            break
+    code = {400: 'BAD_REQUEST', 401: 'UNAUTHORIZED', 403: 'FORBIDDEN',
+            404: 'NOT_FOUND', 409: 'CONFLICT', 413: 'FILE_TOO_LARGE',
+            416: 'BAD_REQUEST'}.get(response.status_code, 'SERVICE_UNAVAILABLE')
+    detail = body.decode('utf-8', errors='replace')
+    try:
+        value = json.loads(detail)
+    except ValueError:
+        value = None
+    payload = value if isinstance(value, dict) else {}
+    error = payload.get('error')
+    error_code = error.get('code') if isinstance(error, dict) else None
+    error_code = error_code or payload.get('error_code')
+    structured = error_code.strip() if isinstance(error_code, str) else ''
+    if structured.upper() == 'FILE_NOT_FOUND':
+        code = 'file_not_found'
+    elif structured.upper() in ('NOT_FOUND', 'INSTANCE_NOT_FOUND'):
+        code = 'instance_not_found'
+    elif structured:
+        code = structured
+    elif response.status_code == 400 and ('not found' in detail.lower() or 'no such file' in detail.lower()):
+        code = 'file_not_found'
+    raise AdxControlError(f'ADX file transfer returned HTTP {response.status_code}: {detail}',
+                          code=code, status_code=response.status_code)
+
+
+@asynccontextmanager
+async def file_request(control, environment: str, method: str, path: str, *,
+                       content=None, byte_range=None, pass_range_error: bool = False):
+    """Keep the native response open until the caller finishes or cancels."""
+    endpoint = 'upload' if method == 'POST' else 'download'
+    url = control.config.ingress_url.rstrip('/') + '/direct/' + quote(environment, safe='') + '/' + endpoint
+    headers = inject_request_headers({
+        'Authorization': 'Bearer ' + control.config.token,
+        'Accept-Encoding': 'identity',
+    })
+    headers.setdefault('X-Trace-Id', str(uuid.uuid4()))
+    if method == 'POST':
+        headers['Content-Type'] = 'application/octet-stream'
+    if byte_range:
+        headers['Range'] = byte_range
+    try:
+        async with control.http.stream(method, url, params={'path': path, 'type': 'file'},
+                                       headers=headers, content=content) as response:
+            if not (pass_range_error and byte_range and response.status_code == 416):
+                await _check_response(response)
+            logger.info('[ADX] file.%s.native environment=%s status=%s', endpoint, environment, response.status_code)
+            yield response
+    except httpx.RequestError as exc:
+        raise AdxControlError('ADX file transfer interrupted; outcome is unknown') from exc
 
 
 class AdxFileMixin:

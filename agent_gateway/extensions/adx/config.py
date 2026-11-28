@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import math
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from agent_gateway.extensions.agentos.agentos_router.config import (
@@ -16,6 +18,7 @@ from agent_gateway.extensions.agentos.agentos_router.config import (
 )
 
 
+MIGRATION_ERROR_FILE = 'adx-migration-error.json'
 DEFAULT_RESTART_POLICY = {'maxAttempts': 3, 'initialBackoffSeconds': 1, 'maxBackoffSeconds': 30}
 
 
@@ -169,3 +172,51 @@ def load_router_config(config: dict) -> AdxRouterConfig:
         workspace_target=workspace_target, connect_timeout_seconds=timeout, ssh_user=ssh_user,
         ssh_known_hosts=ssh_known_hosts, restart_policy=restart_policy,
     )
+
+
+def runtime_environment_settings() -> dict:
+    return {
+        'preserve_env': ['JIUWENSWARM_ADX_NODE_INGRESS_URL', 'JIUWENSWARM_ADX_NODE_CONTEXT_FILE',
+                         'ADX_TOKEN'],
+    }
+
+
+def managed_sandbox_settings() -> dict:
+    return {
+        'type': 'adx-environment',
+        'managed_connection': {
+            'url_env': 'JIUWENSWARM_ADX_NODE_INGRESS_URL',
+            'context_file_env': 'JIUWENSWARM_ADX_NODE_CONTEXT_FILE',
+            'replace_connection_fields': ['server_address', 'gateway_address', 'token', 'token_provider',
+                                           'use_tls', 'gateway_use_tls', 'verify_tls'],
+            'credential_fields': ['ADX_TOKEN', 'ADX_GATEWAY_TOKEN', 'JIUWENSWARM_ADX_API_TOKEN'],
+        },
+        'launcher_config': {'workspace_mounts': True, 'shared_scope': 'default'},
+    }
+
+
+def check_workspace_config(config_path: str | Path, *, require_prepared: bool = False) -> None:
+    """Reject only this workspace; deployment owns migration and error removal."""
+    path = Path(config_path)
+    marker = path.with_name(MIGRATION_ERROR_FILE)
+    try:
+        if marker.is_file():
+            record = json.loads(marker.read_text(encoding="utf-8"))
+            reason = record.get('reason') if isinstance(record, dict) else None
+            if not isinstance(reason, str) or not reason:
+                reason = 'invalid deployment migration status'
+            raise ValueError(f'WORKSPACE_CONFIG_INVALID: {path}: {reason}; '
+                             'fix this user configuration and rerun deployment configuration')
+        if require_prepared:
+            if not path.is_file():
+                raise ValueError(f'WORKSPACE_CONFIG_INVALID: {path}: application workspace initialization required')
+            import yaml
+            try:
+                document = yaml.safe_load(path.read_text(encoding="utf-8"))
+            except yaml.YAMLError:
+                raise ValueError(f'WORKSPACE_CONFIG_INVALID: {path}: invalid YAML') from None
+            sandbox = document.get('sandbox') if isinstance(document, dict) else None
+            if not isinstance(sandbox, dict) or sandbox.get('type') != 'adx-environment':
+                raise ValueError(f'WORKSPACE_CONFIG_INVALID: {path}: deployment migration required')
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        raise ValueError(f'WORKSPACE_CONFIG_INVALID: {path}: cannot read workspace deployment status') from None

@@ -207,6 +207,10 @@ class FakeControlClient:
         self.push_handler = handler
 
 
+# Existing handshake fixtures share the same fake control client.
+FakeYuanRongClient = FakeControlClient
+
+
 class FakeAgentWsClient:
     """create 后 WS 直连 instance 的假客户端：send 委托给 FakeControlClient 计数。"""
 

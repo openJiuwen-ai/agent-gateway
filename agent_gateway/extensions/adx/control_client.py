@@ -359,7 +359,7 @@ class AdxControlClient:
             body['env'] = {**copy.deepcopy(launch.get('image_env', {})), **body['env'],
                            **copy.deepcopy(launch.get('env', {}))}
         if builtin:
-            from agent_gateway.extensions.adx.runtime_config import (
+            from agent_gateway.extensions.adx.config import (
                 managed_sandbox_settings, runtime_environment_settings,
             )
             # The built-in AgentServer only reads the JIUWENSWARM_* names; keep them.

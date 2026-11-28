@@ -96,7 +96,7 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
 
     async def _create_agent_impl(self, agent_info, operation, trace_id=""):
         if agent_info.agent_type == BUILTIN_AGENT_TYPE:
-            from agent_gateway.extensions.adx.workspace import check_workspace_config
+            from agent_gateway.extensions.adx.config import check_workspace_config
             try:
                 workspace = resolve_agent_workspace(agent_info.user_id, workspace_root=self._workspace_root)
                 await asyncio.to_thread(check_workspace_config,
