@@ -294,7 +294,8 @@ class ProtocolConnectionRuntime:
         class DataProtocol(WebSocketServerProtocol):
             async def recv(self) -> str | bytes:
                 raw = await super().recv()
-                if not frame_allowed(raw, acp=self.path.partition("?")[0] == "/acp"):
+                route = self.path.partition("?")[0]
+                if not frame_allowed(raw, acp=route == "/acp", tui=route == "/tui"):
                     await self.close(code=1008, reason="unsupported Worker request")
                     await self.ensure_open()  # Raise the normal ConnectionClosed error.
                 return raw

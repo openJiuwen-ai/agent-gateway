@@ -74,6 +74,7 @@ async def assemble_tui_acp(
     heartbeat_controller: Any,
     preprocessor: MessagePreprocessor,
     log_stage: Callable[[str], None],
+    personal_tui: bool = False,
 ) -> TuiAcpAssembly:
     from agent_gateway.channel_manager.web.app_web_handlers import (
         _FORWARD_REQ_METHODS, _FORWARD_NO_LOCAL_HANDLER_METHODS, _DummyBus,
@@ -150,6 +151,11 @@ async def assemble_tui_acp(
     )
     protocol_runtime = ProtocolRuntime(protocol_runtime_config, _DummyBus())
     protocol_runtime.message_handler_ref = message_handler
+    if personal_tui:
+        from agent_gateway.application.personal_tui import PersonalTuiRequests
+
+        tui_route = protocol_runtime_config.routes["/tui"]
+        tui_route.unbound_request_handler = PersonalTuiRequests(protocol_runtime, client).handle
     for binding in route_bindings:
         route_config = protocol_runtime_config.routes[binding.path]
         # tui 出站已由 TuiChannel 接管（register_channel_with_inbound），

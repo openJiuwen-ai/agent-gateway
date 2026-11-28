@@ -55,11 +55,13 @@ class _DisabledAccounts:
 
 def is_data_frame(
     raw: str | bytes, *, acp: bool = False, accounts: bool = False, cron: bool = False,
+    tui: bool = False, personal: bool = False,
 ) -> bool:
     """Keep unadapted login, configuration and Cron out of this Worker host.
 
     ``cron=True`` admits only the owned Cron panel methods; a frame that still
     carries a credential selector is refused like every other Worker frame.
+    Native TUI compatibility is limited to the account-free personal profile.
     """
     from agent_gateway.application.worker_cron_ingress import CRON_PANEL_METHODS
 
@@ -73,6 +75,10 @@ def is_data_frame(
     methods = _ACP_METHODS if acp and frame.get("jsonrpc") == "2.0" else _DATA_METHODS
     if cron and not acp:
         methods = methods | CRON_PANEL_METHODS
+    if tui and personal and not acp:
+        from agent_gateway.application.personal_tui import PERSONAL_TUI_METHODS
+
+        methods = methods | PERSONAL_TUI_METHODS
     if not isinstance(method, str) or method not in methods:
         return False
     params = frame.get("params")
@@ -176,6 +182,8 @@ async def data_worker(
     from agent_gateway.southbound.orchestration.client import assemble_client
 
     async with AsyncExitStack() as cleanup:
+        from agent_gateway.application.personal_tui import enable_personal_tui
+
         registry = ExtensionRegistry.create_instance(
             callback_framework=None, callback_framework_factory=callback_framework, config={}, logger=logger,
         )
@@ -194,6 +202,10 @@ async def data_worker(
             if on_credentials is not None:
                 on_credentials(credentials)
         accounts = credentials.bindings if credentials is not None else _DisabledAccounts()
+        # The account-free profile is the personal Worker: it alone offers the
+        # native TUI compatibility requests, and only to a loopback AgentServer.
+        personal = credentials is None
+        personal_tui = personal and enable_personal_tui(agent_server_url)
         handler = MessageHandler(client, session_login_bindings=accounts)
         if credentials is not None:
             credentials.attach_handler(handler)
@@ -244,7 +256,7 @@ async def data_worker(
                 third_agent=get_unsupported_third_agent(), on_config_saved=_reject_config,
                 cron_controller=cron_runtime.controller if cron is not None else None,
                 heartbeat_controller=None, preprocessor=preprocessor,
-                log_stage=lambda _stage: None,
+                log_stage=lambda _stage: None, personal_tui=personal_tui,
             )
             northbound.push_async_callback(tui.stop)
             if cron is not None:
@@ -253,7 +265,7 @@ async def data_worker(
                 bind_owned_cron_handlers(web, tui.protocol_runtime)
             await tui.tui_channel.start()
             frame_allowed = partial(
-                is_data_frame, accounts=credentials is not None, cron=cron is not None,
+                is_data_frame, accounts=credentials is not None, cron=cron is not None, personal=personal,
             )
             web_app = _build_web_app(web, frame_allowed=frame_allowed)
             web_runtime = WebProtocolRuntime(
