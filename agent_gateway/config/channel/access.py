@@ -6,7 +6,10 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from agent_gateway.config.channel.repository import ChannelConfigRepository
+from agent_gateway.config.channel.repository import (
+    ChannelConfigRepository,
+    find_xiaoyi_app,
+)
 from agent_gateway.storage.async_bridge import run_awaitable
 
 _repo: ChannelConfigRepository | None = None
@@ -115,7 +118,12 @@ async def update_xiaoyi_runtime_in_config(
     if repo is None:
         from agent_gateway.common.config import update_xiaoyi_runtime_in_config as _yaml
 
-        _yaml(conf, api_id=api_id, agent_id=agent_id)
+        _yaml(
+            conf,
+            api_id=api_id,
+            agent_id=agent_id,
+            app_writer=find_xiaoyi_app,
+        )
         return
     await repo.update_xiaoyi_runtime(conf, api_id=api_id, agent_id=agent_id)
 

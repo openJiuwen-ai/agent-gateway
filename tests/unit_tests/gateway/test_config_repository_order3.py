@@ -11,7 +11,9 @@ import pytest
 from agent_gateway.config.channel.access import (
     clear_channel_config_repository,
     get_channel_config_repository,
+    update_xiaoyi_runtime_in_config,
 )
+from agent_gateway.config.channel.repository import find_xiaoyi_app
 from agent_gateway.config.enterprise.catalog import ENTERPRISE_RECORD_STORE_NAMES
 from agent_gateway.config.logging.access import (
     clear_logging_config_repository,
@@ -163,6 +165,53 @@ def test_enterprise_record_repositories_cover_catalog(monkeypatch: pytest.Monkey
     store = _DictPersistentStore()
     repos = create_enterprise_record_repositories(store)
     assert set(repos) == set(ENTERPRISE_RECORD_STORE_NAMES)
+
+
+def test_find_xiaoyi_app_updates_selected_app_and_ignores_invalid_apps() -> None:
+    apps = [{"agent_id": "agent"}, {"api_id": "api"}]
+
+    assert find_xiaoyi_app(None, "api", "agent", push_id="new") is None
+    assert find_xiaoyi_app(apps, "api", "agent", push_id="new") is apps[1]
+    assert apps[1]["push_id"] == "new"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("apps", "api_id", "agent_id", "selected"), [
+    ([{"is_default": True}, {"agent_id": "agent"}, {"api_id": " api "}], "api", "agent", 2),
+    ([{"is_default": True}, {"agent_id": "agent"}], "absent", " agent ", 1),
+    ([{}, {"is_default": True}, {"is_default": True}], "", "", 1),
+    ([{}], "", "", 0),
+    ([None, {}], "", "", None),
+])
+async def test_xiaoyi_push_id_selects_same_app_in_yaml_and_repository(
+    tmp_path, monkeypatch, apps, api_id, agent_id, selected,
+) -> None:
+    from agent_gateway.common import config
+
+    path = tmp_path / "config.yaml"
+    monkeypatch.setattr(config, "CONFIG_YAML_PATH", path)
+    config.dump_yaml_round_trip(path, {"channels": {"xiaoyi": {"apps": apps}}})
+    await update_xiaoyi_runtime_in_config(
+        {"push_id": "new"},
+        api_id=api_id,
+        agent_id=agent_id,
+    )
+    yaml_section = config.load_yaml_round_trip(path)["channels"]["xiaoyi"]
+
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    repo = create_channel_config_repository(_DictPersistentStore())
+    await repo.merge_body("xiaoyi", {"apps": apps})
+    await repo.update_xiaoyi_runtime({"push_id": "new"}, api_id=api_id, agent_id=agent_id)
+    saved = await repo.get("xiaoyi")
+    assert saved is not None
+
+    for section in (yaml_section, saved.body):
+        assert section["push_id"] == "new"
+        updated_indices = [
+            i for i, app in enumerate(section["apps"])
+            if isinstance(app, dict) and app.get("push_id") == "new"
+        ]
+        assert updated_indices == ([] if selected is None else [selected])
 
 
 def test_storage_repositories_flag_default_true(monkeypatch: pytest.MonkeyPatch) -> None:
