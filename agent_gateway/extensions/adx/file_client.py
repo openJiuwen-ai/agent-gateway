@@ -5,7 +5,6 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 import mimetypes
-import re
 import anyio
 import httpx
 
@@ -17,24 +16,17 @@ import uuid
 from agent_gateway.extensions.adx.control_client import AdxControlError, AdxEnvironmentNotFoundError
 from agent_gateway.routing import container_files
 from agent_gateway.routing.container_files import (
-    MAX_UPLOAD_FILE_SIZE,
     AgentFileDownloadChunk,
     AgentOSFileTransferError,
     normalize_agent_file_download_path,
     normalize_agent_file_upload_path,
     parse_single_byte_range,
+    upload_size_error,
+    validate_file_mode,
 )
 
 _FILE_TRANSFERS: ContextVar[dict | None] = ContextVar("adx_file_transfers", default=None)
 _CHUNK = 64 * 1024
-
-
-def _validate_mode(mode: str | None) -> str | None:
-    if mode is None or mode == "":
-        return None
-    if not isinstance(mode, str) or not re.fullmatch(r"[0-7]{3,4}", mode):
-        raise AgentOSFileTransferError("invalid mode: expected 3-4 octal digits", code="BAD_REQUEST")
-    return mode
 
 
 def _file_size(info: dict) -> int:
@@ -108,7 +100,7 @@ class AdxFileMixin:
         agent_type: str | None = None, session_id: str = "", instance_id: str | None = None,
         mode: str | None = None,
     ) -> dict:
-        mode = _validate_mode(mode)
+        mode = validate_file_mode(mode)
         path = normalize_agent_file_upload_path(path, dir_prefix=dir_prefix, user_id=user_id)
         async with self._file_environment(user_id, agent_type, instance_id, session_id) as environment:
             return await self._upload_file_stream(environment, path, chunks, mode=mode)
@@ -134,8 +126,8 @@ class AdxFileMixin:
             nonlocal size
             async for chunk in chunks:
                 size += len(chunk)
-                if size > MAX_UPLOAD_FILE_SIZE:
-                    raise AgentOSFileTransferError("upload exceeds 512 MiB", code="file_too_large")
+                if error := upload_size_error(size):
+                    raise AgentOSFileTransferError(error, code="file_too_large")
                 yield chunk
         try:
             async with file_request(self._control, environment, 'POST', temporary,
@@ -276,7 +268,7 @@ class AdxFileMixin:
         path = normalize_agent_file_download_path(path)
         if "\x00" in path:
             raise AgentOSFileTransferError("path must not contain NUL", code="BAD_REQUEST")
-        mode = _validate_mode(mode)
+        mode = validate_file_mode(mode)
         async with self._file_environment(user_id, agent_type, instance_id, session_id) as environment:
             if recursive:
                 result = await self._file_invoke(environment, "file.mkdir", {"path": path})

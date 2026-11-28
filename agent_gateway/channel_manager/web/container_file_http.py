@@ -20,9 +20,10 @@ from fastapi.responses import JSONResponse, PlainTextResponse, Response, Streami
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent_gateway.routing.container_files import (
-    MAX_UPLOAD_FILE_SIZE,
     AgentOSFileTransferError,
     parse_single_byte_range,
+    upload_size_error,
+    validate_file_mode,
 )
 
 if TYPE_CHECKING:
@@ -1013,7 +1014,7 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
         form = UploadForm.model_validate(
             {
                 "dir": str(form_data.get("dir") or ""),
-                "mode": form_data.get("mode"),
+                "mode": str(form_data.get("mode") or ""),
                 "session_id": str(form_data.get("session_id") or ""),
                 "user_id": (
                     str(form_data.get("user_id")).strip()
@@ -1055,24 +1056,31 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
             filename = str(item.filename or "upload.bin")
             # Multipart parsing records the actual file size; reject before
             # activating an AgentServer or forwarding bytes to its backend.
-            if item.size is not None and item.size > MAX_UPLOAD_FILE_SIZE:
-                errors.append({"filename": filename, "error": "upload exceeds 512 MiB"})
+            if error := upload_size_error(item.size):
+                errors.append({"filename": filename, "error": error})
                 await item.close()
                 continue
             try:
+                mode = validate_file_mode(form.mode)
                 if getattr(client, 'native_file_streaming', False) is True:
+                    stream_upload = getattr(client, 'upload_container_file_stream', None)
+                    if not callable(stream_upload):
+                        raise AgentOSFileTransferError("File client does not implement upload_container_file_stream")
+
                     async def chunks():
                         while True:
                             chunk = await item.read(_STREAM_CHUNK)
                             if not chunk:
                                 return
                             yield chunk
-                    result = await client.upload_container_file_stream(
+                    result = await stream_upload(
                         user_id=uid, path=filename, dir_prefix=upload_dir, chunks=chunks(),
                         agent_type=form.agent_type if isinstance(form.agent_type, str) else None, session_id=sid,
-                        mode=form.mode,
+                        mode=mode,
                     )
-                    size = int(result['size'])
+                    size = result.get("size") if isinstance(result, Mapping) else None
+                    if type(size) is not int or size < 0:
+                        raise AgentOSFileTransferError("Streaming upload response must include a non-negative integer size")
                 else:
                     content = await item.read()
                     result = await client.upload_container_file(

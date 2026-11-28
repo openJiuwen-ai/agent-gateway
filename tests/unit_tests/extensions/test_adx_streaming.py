@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from starlette.requests import ClientDisconnect
 
 from agent_gateway.channel_manager.web import container_file_http
+from agent_gateway.routing import container_files
 from tests.unit_tests.extensions.test_adx_control_files import _business_authenticator, _file_channel, _files
 
 
@@ -137,11 +138,11 @@ async def test_native_response_finalizes_transfer(failure):
 @pytest.mark.parametrize('streaming', [True, False])
 async def test_browser_upload_enforces_size_per_file(browser, monkeypatch, streaming):
     client, router, control = browser
-    monkeypatch.setattr(container_file_http, 'MAX_UPLOAD_FILE_SIZE', 5)
+    monkeypatch.setattr(container_files, 'MAX_UPLOAD_FILE_SIZE', 5)
     monkeypatch.setattr(router, 'native_file_streaming', streaming)
     control.invoke.return_value = {'exit_code': 0}
     large = ('file', ('large.txt', b'123456'))
-    expected_error = [{'filename': 'large.txt', 'error': 'upload exceeds 512 MiB'}]
+    expected_error = [{'filename': 'large.txt', 'error': 'upload exceeds 5 bytes'}]
     for files in ([large], [large, ('file', ('ok.txt', b'12345'))]):
         response = await client.post('/file-api/upload', data={'user_id': 'alice'}, files=files)
         assert response.status_code == 200 and response.json()['errors'] == expected_error
@@ -155,25 +156,47 @@ async def test_browser_upload_enforces_size_per_file(browser, monkeypatch, strea
 
 async def test_chunked_multipart_rejects_oversize_before_activation(browser, monkeypatch):
     client, router, control = browser
-    monkeypatch.setattr(container_file_http, 'MAX_UPLOAD_FILE_SIZE', 5)
+    monkeypatch.setattr(container_files, 'MAX_UPLOAD_FILE_SIZE', 5)
     multipart = client.build_request('POST', '/file-api/upload', data={'user_id': 'alice'},
                                      files={'file': ('large.txt', b'123456')})
     response = await client.post('/file-api/upload', content=aiter(multipart.stream),
                                  headers={'Content-Type': multipart.headers['Content-Type']})
     assert 'Content-Length' not in response.request.headers
-    assert response.json()['errors'] == [{'filename': 'large.txt', 'error': 'upload exceeds 512 MiB'}]
+    assert response.json()['errors'] == [{'filename': 'large.txt', 'error': 'upload exceeds 5 bytes'}]
     assert not router.test_api.creates and not router.test_api.transfers
     control.invoke.assert_not_awaited()
 
 
-async def test_multipart_upload_forwards_and_rejects_invalid_mode(browser):
+@pytest.mark.parametrize('result', ['missing_method', {}, None, {'size': -1}, {'size': '3'}, {'size': True}])
+async def test_native_upload_reports_client_errors_per_file(browser, monkeypatch, result):
+    client, router, _ = browser
+    missing_method = result == 'missing_method'
+    monkeypatch.setattr(router, 'upload_container_file_stream', None if missing_method else AsyncMock(return_value=result))
+    expected = 'does not implement upload_container_file_stream' if missing_method else 'non-negative integer size'
+    response = await client.post('/file-api/upload', data={'user_id': 'alice'}, files={'file': ('a.txt', b'abc')})
+    body = response.json()
+    assert response.status_code == 200 and body['files'] == []
+    error, = body['errors']
+    assert (error['filename'], error['code']) == ('a.txt', 'INTERNAL_ERROR') and expected in error['error']
+    assert not router.test_api.transfers
+
+
+async def test_multipart_upload_forwards_and_rejects_invalid_mode(browser, monkeypatch):
     client, router, control = browser
     control.invoke.return_value = {'exit_code': 0}
-    files = {'file': ('a.txt', b'a')}
-    invalid = await client.post('/file-api/upload', data={'user_id': 'alice', 'mode': '999'}, files=files)
-    assert invalid.json()['errors'] and not router.test_api.creates
+    files = {'file': ('empty.txt', b'')}
+    with monkeypatch.context() as patch:
+        stream, buffered = AsyncMock(), AsyncMock()
+        patch.setattr(router, 'upload_container_file_stream', stream)
+        patch.setattr(router, 'upload_container_file', buffered)
+        for native in (True, False):
+            patch.setattr(router, 'native_file_streaming', native)
+            invalid = await client.post('/file-api/upload', data={'user_id': 'alice', 'mode': '999'}, files=files)
+            assert invalid.json()['errors'][0]['code'] == 'BAD_REQUEST'
+        stream.assert_not_awaited()
+        buffered.assert_not_awaited()
     valid = await client.post('/file-api/upload', data={'user_id': 'alice', 'mode': '600'}, files=files)
-    assert valid.json()['files'] and not valid.json()['errors']
+    assert valid.json()['files'][0]['size_bytes'] == 0 and not valid.json()['errors']
     calls = [call.args[1:] for call in control.invoke.await_args_list]
     chmod = next(i for i, (action, args) in enumerate(calls) if action == 'cmd.run' and 'chmod -- 600 ' in args['cmd'])
     assert chmod < next(i for i, (action, _) in enumerate(calls) if action == 'file.rename')

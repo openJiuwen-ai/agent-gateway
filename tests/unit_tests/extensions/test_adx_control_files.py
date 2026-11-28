@@ -370,7 +370,7 @@ async def test_failed_upload_discards_temporary_and_releases_activity(file_route
     from agent_gateway.extensions.adx import file_client
 
     router, control = file_router
-    monkeypatch.setattr(file_client, 'MAX_UPLOAD_FILE_SIZE', 5)
+    monkeypatch.setattr(file_client.container_files, 'MAX_UPLOAD_FILE_SIZE', 5)
     transmitted = bytearray()
 
     async def chunks():
@@ -395,7 +395,7 @@ async def test_failed_upload_discards_temporary_and_releases_activity(file_route
     with pytest.raises(exception) as caught:
         await router.upload_container_file_stream(user_id='alice', path='a', chunks=chunks(), mode='600')
     if failure == 'oversize':
-        assert caught.value.code == 'file_too_large'
+        assert (caught.value.code, str(caught.value)) == ('file_too_large', 'upload exceeds 5 bytes')
     assert transmitted == b'12345'
     actions = [call.args[1] for call in control.invoke.await_args_list]
     assert 'file.rename' not in actions and actions[-1] == 'file.remove'

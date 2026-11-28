@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
@@ -33,6 +34,22 @@ class AgentOSFileTransferError(RuntimeError):
         super().__init__(message)
         self.code = str(code)
         self.status_code = status_code
+
+
+def validate_file_mode(mode: str | None) -> str | None:
+    if mode is None or mode == "":
+        return None
+    if not isinstance(mode, str) or not re.fullmatch(r"[0-7]{3,4}", mode):
+        raise AgentOSFileTransferError("invalid mode: expected 3-4 octal digits", code="BAD_REQUEST")
+    return mode
+
+
+def upload_size_error(size: int | None) -> str | None:
+    if size is None or size <= MAX_UPLOAD_FILE_SIZE:
+        return None
+    mib, remainder = divmod(MAX_UPLOAD_FILE_SIZE, 1024 * 1024)
+    limit = f"{MAX_UPLOAD_FILE_SIZE} bytes" if remainder else f"{mib} MiB"
+    return f"upload exceeds {limit}"
 
 
 # Upload: relative path (+ optional dir prefix) → ``/home/agentos/<relative>``.
