@@ -196,14 +196,22 @@ class AgentOSInstanceProvider:
             self._acquiring.discard(task)
 
     async def _acquire(self, route: OwnedRoute, existing_only: bool) -> TargetLease | None:
-        if existing_only:
-            runtime = await self.manager.get_agent(route.user_id, route.agent_type, acquire=True)
-            if runtime is None or not runtime.is_ready():
-                return None
-        else:
-            runtime = await self.manager.get_or_create_agent(
-                route.user_id, route.agent_type, creator=self._creator, acquire=True,
-            )
+        try:
+            if existing_only:
+                runtime = await self.manager.get_agent(route.user_id, route.agent_type, acquire=True)
+                if runtime is None or not runtime.is_ready():
+                    return None
+            else:
+                runtime = await self.manager.get_or_create_agent(
+                    route.user_id, route.agent_type, creator=self._creator, acquire=True,
+                )
+        except asyncio.CancelledError as exc:
+            if type(exc) is asyncio.CancelledError:
+                raise
+            # A creator may internalise its cancellation to keep unfinished work
+            # replayable. This task was still cancelled; the caller owns what that
+            # means (its own deadline is a TimeoutError), so no manager type crosses.
+            raise asyncio.CancelledError() from exc
         try:
             if self._closed or not await self.manager.is_current(runtime):
                 raise RuntimeError('instance acquisition became stale')

@@ -13,7 +13,7 @@ from agent_gateway.common.ingress_identity import LocalIdentityPolicy
 from agent_gateway.common.worker_affinity import WorkerManifest
 from agent_gateway.extensions.agentos.agentos_router.models import AgentStatus
 from agent_gateway.southbound.orchestration.agent_manager import (
-    AgentCreateFailed, AgentManager, AgentPreCreateError,
+    AgentCreateFailed, AgentCreateInterrupted, AgentManager, AgentPreCreateError,
 )
 from agent_gateway.southbound.orchestration.instance_provider import AgentOSInstanceProvider
 
@@ -158,6 +158,48 @@ async def test_cancelled_acquisition_and_close_reap_owned_tasks_without_delete()
     assert not owner.active_lease_count
     with pytest.raises(RuntimeError):
         await owner.acquire(owner.validate_owner('alice'))
+
+
+async def test_internalised_creator_cancellation_keeps_the_caller_contract() -> None:
+    class Interrupting(Creator):
+        """Keep unfinished work replayable by internalising the creator's cancellation."""
+
+        async def create(self, info):
+            self.calls.append(info.copy())
+            self.entered.set()
+            try:
+                await self.gate.wait()
+            except asyncio.CancelledError as exc:
+                raise AgentCreateInterrupted from exc
+            info.status = AgentStatus.READY
+            info.sandbox_id = f'instance-{info.agent_id}'
+            info.metadata.update(physical_generation=info.agent_id, agent_port=18092)
+            return info
+
+    # A caller's deadline is reported as its timeout, and leaves no runtime behind.
+    creator = Interrupting()
+    creator.gate.clear()
+    owner = provider(creator)
+    route = owner.validate_owner('alice')
+    with pytest.raises(TimeoutError):
+        await owner.acquire(route, deadline=asyncio.get_running_loop().time() + 0.05)
+    assert await owner.manager.get_agent('alice', 'jiuwenswarm') is None
+    assert owner.pending_acquisition_count == 0
+    await owner.close()
+
+    # A caller's own cancellation stays a plain cancellation for that caller.
+    creator = Interrupting()
+    creator.gate.clear()
+    owner = provider(creator)
+    task = asyncio.create_task(owner.acquire(owner.validate_owner('alice')))
+    await creator.entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError) as error:
+        await task
+    assert type(error.value) is asyncio.CancelledError
+    assert await owner.manager.get_agent('alice', 'jiuwenswarm') is None
+    assert owner.pending_acquisition_count == 0
+    await owner.close()
 
 
 async def test_unproven_physical_generation_is_rejected_and_hold_is_released() -> None:

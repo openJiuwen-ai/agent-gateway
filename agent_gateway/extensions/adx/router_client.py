@@ -34,9 +34,18 @@ from agent_gateway.southbound.orchestration.managed_router import ManagedRouter,
 logger = logging.getLogger(__name__)
 
 
+def adx_sandbox_name(user_id: str, agent_type: str, generation: str) -> str:
+    """Name one physical Environment: the logical sandbox plus a generation prefix.
+
+    The business router and a Worker's dynamic-instance leaf must agree, since
+    ADX derives the Environment ID from this name and replays a create by it.
+    """
+    return f'{sandbox_name(user_id, agent_type)}-{generation[:12]}'
+
+
 class _AdxManagedRouter(ManagedRouter):
     def _sandbox_physical_name(self, agent_info) -> str:
-        return f'{sandbox_name(agent_info.user_id, agent_info.agent_type)}-{agent_info.agent_id[:12]}'
+        return adx_sandbox_name(agent_info.user_id, agent_info.agent_type, agent_info.agent_id)
 
     async def _create_agent_impl(self, agent_info, operation, trace_id: str = ""):
         if agent_info.agent_type == BUILTIN_AGENT_TYPE:
