@@ -190,6 +190,17 @@ def _is_ip_host(host: str | None) -> bool:
         return False
 
 
+def _as_dict(value: Any) -> dict[str, Any]:
+    """平台 WS 帧的字段是外部不可信输入，可能是任意 JSON 类型。
+
+    ``dict.get(key, default)`` 的默认值只在 key 缺失时生效；key 存在但值不是
+    dict 时返回原值，后续链式 ``.get()`` 即抛 AttributeError，而处理异常会在
+    ``_connect`` 的 async for 外层被捕获、放弃整条 WebSocket 连接（坏帧通常
+    是确定性的 → 崩溃-重连死循环）。所有嵌套字段读取统一经此归一。
+    """
+    return value if isinstance(value, dict) else {}
+
+
 def _build_ssl_context(host: str | None) -> ssl.SSLContext:
     """Build the TLS context used by the Xiaoyi WebSocket connection.
 
@@ -1458,18 +1469,22 @@ class XiaoyiChannel(BaseChannel):
         # V2: 区分两层 sessionId —— 顶层 sessionId 是物理回发地址（临时），
         # conversationId / params.sessionId 是逻辑会话（跨请求稳定）。
         top_session_id = message.get("sessionId", "") or ""
+        params = _as_dict(message.get("params"))
         conversation_id = (
                 message.get("conversationId")
-                or message.get("params", {}).get("sessionId", "")
+                or params.get("sessionId", "")
                 or ""
         )
         # 兼容旧逻辑：inbound 的 session_id 取顶层（物理），逻辑会话独立存 metadata
         session_id = top_session_id or conversation_id
-        task_id = message.get("params", {}).get("id", "") or message.get("id", "") or ""
+        task_id = params.get("id", "") or message.get("id", "") or ""
         agent_id = message.get("agentId", "") or self.config.agent_id
         device_id = message.get("deviceId", "") or ""
-        user_message = message.get("params", {}).get("message", {})
-        parts = user_message.get("parts", [])
+        user_message = _as_dict(params.get("message"))
+        raw_parts = user_message.get("parts")
+        # 先校验容器类型再过滤：parts 为数字等不可迭代标量时，`or []` 不生效，
+        # 迭代会抛 TypeError（与 _get_a2a_parts / _extract_data_event 约定一致）
+        parts = [p for p in raw_parts if isinstance(p, dict)] if isinstance(raw_parts, list) else []
 
         # Mark session as active
         self._mark_session_active(session_id)
@@ -1487,6 +1502,11 @@ class XiaoyiChannel(BaseChannel):
                 text += part.get("text", "")
             elif kind == "file" and part.get("file"):
                 file_info = part["file"]
+                if not isinstance(file_info, dict):
+                    # 必须在 .get() 之前：file 为字符串/数字时 str.get 即抛
+                    # AttributeError，坏帧会打穿整条 WS 连接（崩溃-重连死循环）
+                    logger.warning(f"XiaoYi: File part with non-object file field, skipping: {file_info!r}")
+                    continue
                 uri = file_info.get("uri")
                 mime_type = file_info.get("mimeType", "")
                 name = file_info.get("name", "")
@@ -1520,7 +1540,7 @@ class XiaoyiChannel(BaseChannel):
             elif kind == "data":
                 data = part.get("data", {})
                 if isinstance(data, dict):
-                    pid = data.get("variables", {}).get("systemVariables", {}).get("push_id", "")
+                    pid = _as_dict(_as_dict(data.get("variables")).get("systemVariables")).get("push_id", "")
                     if pid:
                         push_id = pid
         # =================================================================
@@ -1878,7 +1898,7 @@ class XiaoyiChannel(BaseChannel):
     async def _handle_tasks_cancel(self, message: dict[str, Any]) -> None:
         """处理取消任务请求."""
         session_id = message.get("sessionId", "")
-        task_id = message.get("params", {}).get("id") or message.get("taskId", "")
+        task_id = _as_dict(message.get("params")).get("id") or message.get("taskId", "")
         logger.info(f"XiaoyiChannel 取消任务: {session_id} {task_id}")
         if session_id:
             await self._stop_session_heartbeat(session_id)
@@ -2163,14 +2183,17 @@ class XiaoyiChannel(BaseChannel):
         if msg_type == "data":
             try:
                 a2a_request = json.loads(message.get("msgDetail", "{}"))
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, TypeError):
+                # TypeError: msgDetail 非字符串（数字/对象等）时 json.loads 直接抛
                 return []
-            params = a2a_request.get("params", {})
+            params = _as_dict(a2a_request).get("params")
         else:
-            params = message.get("params", {})
-        msg = params.get("message", {})
+            params = message.get("params")
+        msg = _as_dict(_as_dict(params).get("message"))
         parts = msg.get("parts", [])
-        return parts if isinstance(parts, list) else []
+        if not isinstance(parts, list):
+            return []
+        return [p for p in parts if isinstance(p, dict)]
 
     async def _dispatch_gui_agent_events(self, message: dict[str, Any]) -> None:
         """分发 InvokeJarvisGUIAgentResponse（data.events 内）.
@@ -2185,13 +2208,16 @@ class XiaoyiChannel(BaseChannel):
         for part in self._get_a2a_parts(message):
             if part.get("kind") != "data":
                 continue
-            events = part.get("data", {}).get("events", [])
+            events = _as_dict(part.get("data")).get("events", [])
             if not isinstance(events, list):
                 continue
             for item in events:
+                if not isinstance(item, dict):
+                    continue
+                header = _as_dict(item.get("header"))
                 if (
-                        item.get("header", {}).get("namespace") == "ClawAgent"
-                        and item.get("header", {}).get("name") == "InvokeJarvisGUIAgentResponse"
+                        header.get("namespace") == "ClawAgent"
+                        and header.get("name") == "InvokeJarvisGUIAgentResponse"
                 ):
                     for h in list(self._gui_agent_handlers):
                         try:
@@ -2293,11 +2319,12 @@ class XiaoyiChannel(BaseChannel):
             try:
                 # 从 msgDetail 解析 A2A JSON-RPC 请求
                 a2a_request = json.loads(message.get("msgDetail", "{}"))
-                params = a2a_request.get("params", {})
-                msg = params.get("message", {})
+                params = _as_dict(a2a_request).get("params")
+                msg = _as_dict(_as_dict(params).get("message"))
                 parts = msg.get("parts", [])
                 session_id = message.get("sessionId", "")
-            except json.JSONDecodeError as e:
+            except (json.JSONDecodeError, TypeError) as e:
+                # TypeError: msgDetail 非字符串（数字/对象等）时 json.loads 直接抛
                 logger.info(
                     f"[XiaoyiChannel] _extract_data_event: msgDetail JSON 解析失败: {e}"
                 )
@@ -2309,27 +2336,29 @@ class XiaoyiChannel(BaseChannel):
                 return None
         else:
             # Direct A2A format
-            params = message.get("params", {})
-            msg = params.get("message", {})
+            params = message.get("params")
+            msg = _as_dict(_as_dict(params).get("message"))
             parts = msg.get("parts", [])
             session_id = message.get("sessionId", "")
 
-        if not parts:
+        if not isinstance(parts, list) or not parts:
             return None
 
         # 检查是否所有 parts 都是 data 类型
-        data_parts = [p for p in parts if p.get("kind") == "data"]
+        data_parts = [p for p in parts if isinstance(p, dict) and p.get("kind") == "data"]
         if not data_parts or len(data_parts) != len(parts):
             return None
 
         # 提取 data 内容
         for part in data_parts:
-            data = part.get("data", {})
+            data = _as_dict(part.get("data"))
             events = data.get("events", [])
             if not isinstance(events, list):
                 continue
 
             for event in events:
+                if not isinstance(event, dict):
+                    continue
                 intent_name = ""
                 outputs = {}
                 status = "success"  # 未显式给出时与直接格式默认一致
@@ -2337,20 +2366,20 @@ class XiaoyiChannel(BaseChannel):
                 # 格式 1: 直接格式 (events[].intentName)
                 if event.get("intentName"):
                     intent_name = event.get("intentName", "")
-                    outputs = event.get("outputs", {})
+                    outputs = _as_dict(event.get("outputs"))
                     status = event.get("status", "success")
 
                 # 格式 2: UploadExeResult 包装格式 (header.name + payload)
-                elif event.get("header", {}).get("name") == "UploadExeResult":
-                    payload = event.get("payload", {})
+                elif _as_dict(event.get("header")).get("name") == "UploadExeResult":
+                    payload = _as_dict(event.get("payload"))
                     intent_name = payload.get("intentName", "")
-                    outputs = payload.get("outputs", {})
+                    outputs = _as_dict(payload.get("outputs"))
                     # UploadExeResult 格式默认 status 为 success
                     status = payload.get("status", "success") or "success"
 
                 # 格式 3: InvokeJarvisGUIAgentResponse（GUI 工具响应，跳过）
-                elif event.get("header", {}).get("namespace") == "ClawAgent" and \
-                        event.get("header", {}).get("name") == "InvokeJarvisGUIAgentResponse":
+                elif _as_dict(event.get("header")).get("namespace") == "ClawAgent" and \
+                        _as_dict(event.get("header")).get("name") == "InvokeJarvisGUIAgentResponse":
                     # GUI 响应不处理，继续检查下一个 event
                     continue
 
@@ -2363,7 +2392,7 @@ class XiaoyiChannel(BaseChannel):
                         outputs=outputs,
                         status=status,
                         session_id=message.get("sessionId", ""),
-                        task_id=params.get("id", ""),
+                        task_id=_as_dict(params).get("id", ""),
                     )
 
         return None
