@@ -220,6 +220,29 @@ async def test_settings_debug_logging_omits_rpc_body(monkeypatch, caplog):
     assert "logger" not in plain_calls[0][1] and not plain._private_methods
 
 
+def test_client_assembly_passes_the_log_options_only_when_requested(monkeypatch):
+    """Without the options the single process builds its client exactly as on main."""
+    from agent_gateway.southbound.orchestration import client as southbound
+
+    calls = []
+
+    def build(uri, **options):
+        calls.append((uri, options))
+        return object()
+
+    monkeypatch.setattr(southbound, "build_static_client", build)
+    for options in ({}, {"wire_logger": settings_transport_logger(),
+                         "private_methods": PERSONAL_SETTINGS_METHODS}):
+        southbound.assemble_client(None, mode="websocket", enterprise=False, uri="ws://127.0.0.1:9000", **options)
+    assert calls[0] == ("ws://127.0.0.1:9000", {"shared_directory_layout": True}), calls[0]
+    # Requested: both travel to the builder that owns the connection.
+    assert calls[1] == ("ws://127.0.0.1:9000", {
+        "shared_directory_layout": True, "wire_logger": calls[1][1]["wire_logger"],
+        "private_methods": PERSONAL_SETTINGS_METHODS,
+    })
+    assert calls[1][1]["wire_logger"].name == "gateway.personal_settings.transport"
+
+
 def test_settings_requires_single_http_origin(monkeypatch):
     monkeypatch.setenv("JIUWENSWARM_WS_ALLOWED_ORIGIN_HOSTS", "desk.example,none")
     assert allows_settings_origin(Headers({"Origin": "https://desk.example:443"}))

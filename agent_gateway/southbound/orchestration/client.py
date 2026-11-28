@@ -155,9 +155,12 @@ def assemble_client(
 
     def websocket_factory() -> AgentServerClient:
         if not enterprise:
-            return build_static_client(
-                uri, shared_directory_layout=True, wire_logger=wire_logger, private_methods=private_methods,
-            )
+            # The options reach the builder only when asked for: otherwise this
+            # is the call the single process has always made.
+            options = {}
+            if wire_logger is not None or private_methods:
+                options = {"wire_logger": wire_logger, "private_methods": private_methods}
+            return build_static_client(uri, shared_directory_layout=True, **options)
         client = WebSocketAgentServerClient(ping_interval=20.0, ping_timeout=600.0)
         client.shared_directory_layout = False
         return client
