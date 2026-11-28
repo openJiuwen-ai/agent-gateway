@@ -5855,64 +5855,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     from e2a.message import ReqMethod as _ConfigReq
 
-    async def _models_delete_with_references(
-        ws, req_id, params, session_id, user_id=None,
-    ):
-        """Delete a model only after the AS-side reference check succeeds."""
-        from agent_gateway.routing.e2a_proxy import fetch_agent_unary
-
-        resolved_client = _resolve(agent_client)
-        use_local = _config_use_local_handler(resolved_client)
-        if use_local:
-            await _model_resource_rpc(ws, req_id, params, session_id, "models.delete")
-            return
-
-        params = _config_forward_params(ws, params)
-        model_id = str((params or {}).get("model_id") or "").strip()
-        if not model_id:
-            await channel.send_response(
-                ws, req_id, ok=False,
-                error="model_id is required", code="BAD_REQUEST",
-            )
-            return
-
-        ok, refs_payload = await fetch_agent_unary(
-            agent_client=resolved_client,
-            req_method=_ConfigReq.MODELS_REFERENCES,
-            params=_config_forward_params(
-                ws, {"type": "model", "id": model_id}
-            ),
-            session_id=session_id,
-            user_id=user_id,
-            channel_id=channel.channel_id,
-            label="models.references",
-        )
-        if not isinstance(refs_payload, dict):
-            refs_payload = {}
-            ok = False
-        if not ok:
-            await channel.send_response(
-                ws, req_id, ok=False,
-                error=str(refs_payload.get("error") or "models.references failed"),
-                code=str(refs_payload.get("code") or "SERVICE_UNAVAILABLE"),
-            )
-            return
-
-        references = refs_payload.get("references") or []
-        if references:
-            await channel.send_response(
-                ws, req_id, ok=False,
-                error="resource is still referenced",
-                code="MODEL_SELECTION_REFERENCED",
-                payload={"references": references},
-            )
-            return
-
-        await _proxy_config_request(
-            ws, req_id, params, session_id, user_id,
-            req_method=_ConfigReq.MODELS_DELETE,
-        )
-
     multimodal_methods = (
         _ConfigReq.MULTIMODAL_MODELS_LIST, _ConfigReq.MULTIMODAL_MODELS_GET,
         _ConfigReq.MULTIMODAL_MODELS_UPSERT, _ConfigReq.MULTIMODAL_MODELS_DELETE,
@@ -5949,7 +5891,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     _register_config_proxy("models.validate", _ConfigReq.MODELS_VALIDATE, _models_validate)
     _register_config_proxy("models.upsert", _ConfigReq.MODELS_UPSERT,
                            lambda *a: _model_resource_rpc(*a, "models.upsert"))
-    channel.register_method("models.delete", _models_delete_with_references)
+    _register_config_proxy("models.delete", _ConfigReq.MODELS_DELETE,
+                           lambda *a: _model_resource_rpc(*a, "models.delete"))
     _register_config_proxy("models.references", _ConfigReq.MODELS_REFERENCES,
                            lambda *a: _model_resource_rpc(*a, "models.references"))
     _register_config_proxy("model_groups.list", _ConfigReq.MODEL_GROUPS_LIST,

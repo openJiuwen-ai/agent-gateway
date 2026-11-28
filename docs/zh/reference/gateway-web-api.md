@@ -1863,15 +1863,15 @@ Gateway 注册（`lifecycle_handlers.py:164-172`）：`session.archive` / `sessi
 |------|------|------|
 | `models.get` **E2A 代理** | `model_id`（必填） | 完整条目 + `source/is_agentos/read_only/write_only_fields`；服务端分支 defaults 源非登录模型时**下发明文 api_key**；agentos 源不出 key 且 read_only；`MODEL_SELECTION_NOT_FOUND` |
 | `models.upsert` **E2A 代理** | `model`（dict 必填；扁平或嵌套 model_client_config/model_config_obj 均可） | 合并语义（未提交字段保留；api_key 空或未变保留原值、变更则加密）；`model_id` 缺省生成 `mdl_`；`is_default:true` 独占；agentos 模型 → `MODEL_SELECTION_FORBIDDEN`"AgentOS models are read-only" |
-| `models.delete` **E2A 代理** | `model_id`（必填） | 先查引用（组路由/session/agents/team/cron）→ 有引用 `MODEL_SELECTION_REFERENCED`（payload 带 references）；agentos → FORBIDDEN；删除时级联剪路由、空组移除 |
-| `models.references` **E2A 代理** | `ModelSelection` 本体（整个 params 作 schema） | `{references:[{scope, scope_id}]}`，scope ∈ model_group/session/cron/agent/team；元数据不可读 → `MODEL_RUNTIME_UNAVAILABLE` |
+| `models.delete` **E2A 代理** | `model_id`（必填） | 直接转发 AgentServer 删除，网关不按 session/agent/team 等引用拒绝（旧会话/任务由运行时回退或提示重选）；agentos → FORBIDDEN；删除时级联剪路由、空组移除 |
+| `models.references` **E2A 代理** | `ModelSelection` 本体（整个 params 作 schema） | `{references:[{scope, scope_id}]}`，scope ∈ model_group/session/cron/agent/team；仅用于展示引用信息，不构成删除门禁；元数据不可读 → `MODEL_RUNTIME_UNAVAILABLE` |
 
 #### model_groups.list / upsert / delete
 
 > **网关处理**：**E2A 代理**——_register_config_proxy / _model_resource_rpc；**A4g 个人版恒 E2A**；转发前删客户端 _auth_session 键、注入连接登录会话。
 - **list**：无参数；组公开键 `model_group_id/display_name/enabled/is_default/routes/request_config` + 可选 `routing`（仅三个超时键，其余剥离）。
 - **upsert**：`group`（dict；`model_group_id` 缺省生成 `mgp_`、route_id 缺省 `rte_`）；**enabled 组须含至少一条 enabled 路由**否则 `MODEL_GROUP_INVALID`；候选整体校验。
-- **delete**：`model_group_id` 必填；引用检查同 models.delete。
+- **delete**：`model_group_id` 必填；个人版直接转发 AgentServer 删除，企业版本地 handler 仍做引用检查。
 - 错误外壳：`ModelSelectionError` → `error+code+payload`；其余 `BAD_REQUEST`。
 
 #### multimodal.models.list / get / upsert / delete、multimodal.tools.update、multimodal.config.apply（多模态模型目录，E2A 代理）
