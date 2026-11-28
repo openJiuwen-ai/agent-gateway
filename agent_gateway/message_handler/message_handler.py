@@ -4350,6 +4350,7 @@ class MessageHandler(ABC):
         cc = self._cron_controller
         if cc is None:
             return
+        session_id = self._stream_sessions.get(request_id) or session_id
         action = str(payload.get("action") or "").strip()
         command_id = str(payload.get("command_id") or "").strip()
         params = payload.get("data") or {}
@@ -4436,6 +4437,22 @@ class MessageHandler(ABC):
             return job
 
         try:
+            # Only the originating server-side route may identify a cron session.
+            if channel_id == "__cron__" or (
+                session_id and session_id.startswith(("__cron__", "cron_"))
+            ):
+                raise PermissionError("Cron commands are unavailable in cron execution sessions")
+            if session_id:
+                from agent_gateway.common.external_providers import provider
+                from e2a.provider_domains import PROVIDER_DOMAIN_SESSION_METADATA
+
+                session_metadata = await provider(
+                    PROVIDER_DOMAIN_SESSION_METADATA
+                ).get_session_metadata_async(
+                    session_id, enable_writeback=False, user_id=owner_user_id or None,
+                )
+                if session_metadata.get("cron_id"):
+                    raise PermissionError("Cron commands are unavailable in cron execution sessions")
             if action == "list":
                 # 无 user 时传空串，只列空身份任务，不传 None（None 会跳过用户维，
                 # 把本机其他用户的任务也列出来）。有 user 时按属主筛。

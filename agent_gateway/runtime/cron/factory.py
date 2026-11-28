@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -15,6 +16,7 @@ from agent_gateway.common.cron_settings import (  # noqa: F401
     load_cron_store_settings,
 )
 from agent_gateway.runtime.cron.etcd_store import EtcdCronJobStore
+from agent_gateway.runtime.cron.file_migration import migrate_legacy_cron_files
 from agent_gateway.runtime.cron.store import FileCronJobStore
 from agent_gateway.runtime.cron.store_base import CronJobStoreBackend
 
@@ -39,10 +41,10 @@ async def create_gateway_cron_store(
         except Exception:
             config = {}
     settings = load_cron_store_settings(config)
-    # FileCronJobStore 自带 path 缺省回落（store 内 get_cron_jobs_path 兜底）
-    path = settings.file_path
     if settings.backend != "etcd":
-        return FileCronJobStore(path=path)
+        store = FileCronJobStore(path=settings.file_path)
+        await asyncio.to_thread(migrate_legacy_cron_files, store.path)
+        return store
 
     if not settings.endpoints:
         logger.error(

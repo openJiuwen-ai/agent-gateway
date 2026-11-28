@@ -4206,7 +4206,7 @@ def test_enterprise_db_label_does_not_create_a_folder(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     home_jobs = tmp_path / "agent-home" / "cron_jobs.json"
     monkeypatch.setattr(
-        "agent_gateway.common.paths.get_cron_jobs_path",
+        "agent_gateway.common.paths.get_legacy_cron_jobs_path",
         lambda: home_jobs,
     )
     source = _cron_lifecycle_source(SimpleNamespace(path=Path("db://cron_job")))
