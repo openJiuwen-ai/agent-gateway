@@ -245,6 +245,22 @@ class WorkerCronCommands:
                 return not rejected
             return True
 
+        context = self._find_context(command["request_id"])
+        conflict = _context_conflict(context, command)
+        if conflict is not None:
+            # The chat this push arrived in belongs to another user. Its owner
+            # Worker cannot see that chat, so it is refused here, unrouted.
+            logger.warning(
+                "[WorkerCronCommands] refused Cron push that conflicts with its chat: command_id=%s",
+                command["payload"]["command_id"],
+            )
+            rejected = await self._reject_command_once(
+                command,
+                code="CRON_CONTEXT_CONFLICT",
+                text=conflict,
+            )
+            return not rejected
+
         try:
             result = await self._client.call(
                 "cron.route_command",
@@ -313,23 +329,12 @@ class WorkerCronCommands:
             return
 
         context = self._find_context(command["request_id"])
-        if context is not None:
-            if context.user_id != command["owner_user_id"]:
-                await self._queue_error(
-                    command,
-                    code="CRON_CONTEXT_CONFLICT",
-                    text="Cron command owner conflicts with the original chat context",
-                )
-                return
-            if context.session_id is not None and command["session_id"] != context.session_id:
-                await self._queue_error(
-                    command,
-                    code="CRON_CONTEXT_CONFLICT",
-                    text="Cron command session conflicts with the original chat context",
-                )
-                return
-            if context.session_id is None and command["session_id"] is not None:
-                context.session_id = command["session_id"]
+        conflict = _context_conflict(context, command)
+        if conflict is not None:
+            await self._queue_error(command, code="CRON_CONTEXT_CONFLICT", text=conflict)
+            return
+        if context is not None and context.session_id is None and command["session_id"] is not None:
+            context.session_id = command["session_id"]
 
         controller = getattr(self._message_handler, "_cron_controller", None)
         login_enabled = getattr(controller, "_cron_login_credentials", None) is not None
@@ -720,6 +725,17 @@ class WorkerCronCommands:
                     session_id=command["session_id"],
                     error=text,
                 )
+
+
+def _context_conflict(context: _ChatContext | None, command: dict[str, Any]) -> str | None:
+    """Why a command disagrees with the chat it names, or ``None``."""
+    if context is None:
+        return None
+    if context.user_id != command["owner_user_id"]:
+        return "Cron command owner conflicts with the original chat context"
+    if context.session_id is not None and command["session_id"] != context.session_id:
+        return "Cron command session conflicts with the original chat context"
+    return None
 
 
 def _text(value: Any) -> str:

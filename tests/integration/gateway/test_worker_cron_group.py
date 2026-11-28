@@ -14,6 +14,7 @@ import threading
 
 import pytest
 from e2a.agent_models import AgentResponse, AgentResponseChunk
+from e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 from e2a.wire_codec import encode_agent_chunk_for_wire, encode_agent_response_for_wire
 from websockets.asyncio.client import connect
 
@@ -36,12 +37,48 @@ pytestmark = pytest.mark.skipif(
 MODEL = "st-model"
 
 
+class _RequestLog(list):
+    """The stub's request log; every request also names its connection."""
+
+    def __init__(self, stub: "CronStubAgentServer") -> None:
+        super().__init__()
+        self._stub = stub
+
+    def append(self, envelope) -> None:
+        with self._stub.lock:
+            super().append(envelope)
+            self._stub.connections[str(envelope.get("request_id") or "")] = (
+                self._stub._serving.get(threading.get_ident()))
+
+
 class CronStubAgentServer(StubAgentServer):
-    """The plain stub plus the three answers an owned Cron run needs."""
+    """The plain stub plus the three answers an owned Cron run needs.
+
+    ``cron_push_for`` maps a streaming ``request_id`` to ``(owner, push id)``:
+    that stream then carries an AgentServer Cron tool push for the owner, as
+    the real ``cron.command.ack`` contract does. Each Worker has its own
+    connection, so ``connection_of`` tells which Worker sent a request.
+    """
 
     def __init__(self) -> None:
-        super().__init__()
         self.lock = threading.Lock()
+        self.cron_push_for: dict[str, tuple[str, str]] = {}
+        self._serving: dict[int, object] = {}
+        self.connections: dict[str, object] = {}
+        super().__init__()
+        self.requests = _RequestLog(self)
+
+    def _handle(self, connection) -> None:
+        # One thread serves one connection: a request can name its connection.
+        self._serving[threading.get_ident()] = connection
+        try:
+            super()._handle(connection)
+        finally:
+            self._serving.pop(threading.get_ident(), None)
+
+    def connection_of(self, request_id):
+        with self.lock:
+            return self.connections.get(request_id)
 
     def _unary_wire(self, envelope, request_id, method):
         params = envelope.get("params") or {}
@@ -59,6 +96,35 @@ class CronStubAgentServer(StubAgentServer):
         response = AgentResponse(request_id=request_id, channel_id=str(envelope.get("channel") or "web"),
                                  payload=payload, ok=True)
         return encode_agent_response_for_wire(response, response_id=request_id)
+
+    def _send_stream(self, connection, envelope, request_id, method):
+        channel_id = str(envelope.get("channel") or "web")
+        with self.lock:
+            push = self.cron_push_for.pop(request_id, None)
+        frames = []
+        for payload in ({"event_type": "chat.delta", "content": "stub-hello"},
+                        {"event_type": "chat.final", "content": "stub-hello"}):
+            chunk = AgentResponseChunk(
+                request_id=request_id, channel_id=channel_id, payload=payload,
+                is_complete=payload["event_type"] == "chat.final")
+            frames.append(encode_agent_chunk_for_wire(
+                chunk, response_id=request_id, sequence=len(frames)))
+        if push is not None:
+            # Like the real AgentServer, the Cron tool result leaves as its
+            # own server-push frame in the middle of the chat, never as a
+            # chunk of the stream.
+            owner, push_id = push
+            tool = AgentResponseChunk(
+                request_id=push_id, channel_id=channel_id, is_complete=False,
+                payload={"event_type": "cron.response", "action": "list",
+                         "command_id": "ack-" + push_id, "data": {}})
+            wire = encode_agent_chunk_for_wire(tool, response_id=push_id, sequence=0)
+            wire["metadata"] = {E2A_WIRE_SERVER_PUSH_KEY: True,
+                                "_jiuwenswarm_cron_owner_user_id": owner}
+            wire["session_id"] = envelope.get("session_id")
+            frames.insert(1, wire)
+        for frame in frames:
+            connection.send(json.dumps(frame))
 
     def requests_for(self, method):
         with self.lock:
@@ -110,6 +176,13 @@ async def frames_until(ws, predicate, *, timeout=20):
             frame = json.loads(await ws.recv())
             if predicate(frame):
                 return frame
+
+
+async def chat(ws, request_id, content="hi"):
+    """One streamed turn; returns once its final has been delivered."""
+    await ws.send(json.dumps({"type": "req", "id": request_id, "method": "chat.send", "is_stream": True,
+                              "params": {"session_id": "chat-session", "content": content}}))
+    await frames_until(ws, lambda frame: frame.get("event") == "chat.final")
 
 
 def job_params(name, expression, *, targets="web", **extra):
@@ -370,6 +443,89 @@ async def test_control_routes_a_command_to_the_owner_slot_worker(cron_workspace)
             assert [job["id"] for job in acks[0]["params"]["data"]] == [job_id]
             assert not [request for request in stub.requests_for("cron.command.ack")
                         if request["params"].get("command_id") in {"unbound-owner", "forged-source"}]
+    finally:
+        await stop_group(group, stub)
+    assert all(process.returncode == 0 for process in group.pool.processes)
+
+
+async def test_cron_tool_push_in_a_chat_stream_is_answered_to_the_agentserver(cron_workspace):
+    stub = CronStubAgentServer().start()
+    group = new_group(stub)
+    try:
+        await group.start()
+        host, port = group.addresses[0]
+        ownership = group._cron_ownership
+        here, there = users_on_both_slots(ownership)
+        async with connect(f"ws://{host}:{port}/ws?user_id={here}", proxy=None, open_timeout=5) as ws:
+            assert json.loads(await asyncio.wait_for(ws.recv(), 5))["event"] == "connection.ack"
+            created = await rpc(ws, "create-here", "cron.job.create", job_params("chats-task", "0 9 * * *"))
+            assert created["ok"], created
+            job_id = created["payload"]["job"]["id"]
+
+            # The AgentServer tool push rides a chat of its own user.
+            stub.cron_push_for["chat-owned"] = (here, "chat-owned")
+            await chat(ws, "chat-owned", "list my tasks")
+            # A push naming another user inside this chat is refused with a
+            # fixed error: it is neither run here nor routed to that owner.
+            stub.cron_push_for["chat-forged"] = (there, "chat-forged")
+            await chat(ws, "chat-forged", "list my tasks")
+            async with asyncio.timeout(10):
+                while len(stub.requests_for("cron.command.ack")) < 2:
+                    await asyncio.sleep(0.02)
+            acks = {request["params"]["command_id"]: request
+                    for request in stub.requests_for("cron.command.ack")}
+            assert set(acks) == {"ack-chat-owned", "ack-chat-forged"}
+            assert acks["ack-chat-owned"]["user_id"] == here
+            assert [job["id"] for job in acks["ack-chat-owned"]["params"]["data"]] == [job_id]
+            assert acks["ack-chat-forged"]["params"]["data"] == {
+                "error": "Cron command owner conflicts with the original chat context",
+                "code": "CRON_CONTEXT_CONFLICT"}
+    finally:
+        await stop_group(group, stub)
+    assert all(process.returncode == 0 for process in group.pool.processes)
+
+
+async def test_cron_tool_push_for_a_remote_owner_is_answered_from_the_owner_worker(cron_workspace):
+    stub = CronStubAgentServer().start()
+    group = new_group(stub)
+    try:
+        await group.start()
+        host, port = group.addresses[0]
+        ownership = group._cron_ownership
+        here, there = users_on_both_slots(ownership)
+        async with connect(f"ws://{host}:{port}/ws?user_id={here}", proxy=None, open_timeout=5) as local, \
+                connect(f"ws://{host}:{port}/ws?user_id={there}", proxy=None, open_timeout=5) as owner:
+            for ws in (local, owner):
+                assert json.loads(await asyncio.wait_for(ws.recv(), 5))["event"] == "connection.ack"
+            created = await rpc(owner, "create-there", "cron.job.create", job_params("owners-task", "0 9 * * *"))
+            assert created["ok"], created
+            job_id = created["payload"]["job"]["id"]
+            # The owner Worker is the one whose AgentServer connection carries
+            # ``there``'s own chat; the other Worker has no chat of ``there``.
+            await chat(owner, "chat-there")
+            owner_worker = stub.connection_of("chat-there")
+            assert owner_worker is not None
+
+            # A Cron tool frame for that owner reaches the other Worker all
+            # the same, on a request id of its own, and is answered there.
+            stub.cron_push_for["chat-here"] = (there, "standalone-push")
+            await chat(local, "chat-here")
+            assert stub.connection_of("chat-here") is not owner_worker
+            async with asyncio.timeout(10):
+                while True:
+                    acks = [request for request in stub.requests_for("cron.command.ack")
+                            if request["params"].get("command_id") == "ack-standalone-push"]
+                    if acks:
+                        break
+                    await asyncio.sleep(0.02)
+            await asyncio.sleep(0.3)
+            # Run once, for that owner only, over the owner Worker's own
+            # AgentServer connection: the chatting Worker executed nothing.
+            assert [request["params"]["command_id"]
+                    for request in stub.requests_for("cron.command.ack")] == ["ack-standalone-push"]
+            assert acks[0]["user_id"] == there
+            assert [job["id"] for job in acks[0]["params"]["data"]] == [job_id]
+            assert stub.connection_of("cron-command-ack-ack-standalone-push") is owner_worker
     finally:
         await stop_group(group, stub)
     assert all(process.returncode == 0 for process in group.pool.processes)

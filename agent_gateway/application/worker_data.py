@@ -221,7 +221,7 @@ async def _no_refresh(_message) -> None:
 
 
 def _wire_cron_command_runtime(
-    *, control_client, message_handler, cron_runtime, manifest, slot_id,
+    *, control_client, agent_client, message_handler, cron_runtime, manifest, slot_id,
 ):
     from agent_gateway.application.worker_cron_commands import WorkerCronCommands
     from agent_gateway.cron.ownership import CronOwnership
@@ -236,7 +236,50 @@ def _wire_cron_command_runtime(
     )
     message_handler.set_cron_command_runtime(cron_commands)
     message_handler.set_cron_tool_push_enabled(True)
-    return cron_commands
+    release_pushes = _admit_cron_tool_pushes(agent_client, cron_commands)
+    return cron_commands, release_pushes
+
+
+def _admit_cron_tool_pushes(agent_client, cron_commands):
+    """Let the Cron tool result of a chat reach this shard; close the admission.
+
+    The southbound client drops every AgentServer ``send_push`` frame that has
+    no callback. The single host installs the general callback next to its IM
+    pipeline, which this host does not assemble. Only the Cron tool frame is
+    admitted here: the other AgentServer pushes are not adapted for a Worker
+    and keep being dropped. The returned coroutine stops the admission.
+    """
+    from e2a.wire_codec import parse_agent_server_wire_chunk
+
+    setter = getattr(agent_client, "set_server_push_handler", None)
+    if not callable(setter):
+        raise ValueError("sharded Cron requires an AgentServer client with server-push support")
+    admitted = True
+
+    async def serve(wire):
+        if not admitted:
+            return
+        try:
+            chunk = parse_agent_server_wire_chunk(wire)
+        except Exception:
+            return
+        payload = getattr(chunk, "payload", None)
+        if isinstance(payload, dict) and payload.get("event_type") == "cron.response":
+            await cron_commands.handle_push(
+                payload=payload,
+                request_id=str(chunk.request_id or ""),
+                channel_id=str(chunk.channel_id or ""),
+                session_id=wire.get("session_id"),
+                metadata=wire.get("metadata"),
+            )
+
+    async def release():
+        nonlocal admitted
+        admitted = False
+        setter(None)
+
+    setter(serve)
+    return release
 
 
 @asynccontextmanager
@@ -330,9 +373,9 @@ async def data_worker(
                 manifest=cron_manifest, slot_id=cron_slot, agent_client=client,
                 message_handler=handler,
             )
-            cron_commands = _wire_cron_command_runtime(
-                control_client=control_client, message_handler=handler, cron_runtime=cron_runtime,
-                manifest=cron_manifest, slot_id=cron_slot,
+            cron_commands, release_cron_pushes = _wire_cron_command_runtime(
+                control_client=control_client, agent_client=client, message_handler=handler,
+                cron_runtime=cron_runtime, manifest=cron_manifest, slot_id=cron_slot,
             )
             cron = (cron_runtime, cron_commands)
             # Unwound after the northbound runtimes below and before the
@@ -340,6 +383,8 @@ async def data_worker(
             # still reach the AgentServer to confirm every active run ended.
             cleanup.push_async_callback(cron_runtime.stop)
             cleanup.push_async_callback(cron_commands.stop)
+            # First of the three: a late push must not reach a stopped runtime.
+            cleanup.push_async_callback(release_cron_pushes)
 
         async with AsyncExitStack() as northbound:
             web, _ = assemble_web(

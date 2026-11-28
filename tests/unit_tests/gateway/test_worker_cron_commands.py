@@ -707,6 +707,54 @@ async def test_local_accept_admits_before_return_and_deduplicates_command() -> N
 
 
 @pytest.mark.asyncio
+async def test_remote_owner_push_in_another_users_chat_is_refused_before_routing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The owner Worker cannot see this chat, so the source Worker refuses."""
+    handler = RecordingHandler()
+    client = RecordingControlClient({"status": "accepted"})
+    # "owner" lives on the other slot; the chat on this slot is someone else's.
+    commands = make_runtime(slot_id=1 - owner_slot(), handler=handler, client=client)
+    commands.remember(chat_envelope(user_id="chat-user"), {})
+
+    async def accept(command: dict[str, Any]) -> None:
+        raise AssertionError("a foreign-owner push must not be admitted locally")
+
+    async def route(operation: str, arguments: dict[str, Any], *, timeout: float) -> Any:
+        raise AssertionError("a foreign-owner push must not be routed")
+
+    monkeypatch.setattr(commands, "accept", accept)
+    monkeypatch.setattr(client, "call", route)
+
+    accepted = await commands.handle_push(
+        payload={"event_type": "cron.response", "action": "list", "command_id": "command-1", "data": {}},
+        request_id="request-1",
+        channel_id="web",
+        session_id="session-1",
+        metadata=owner_metadata(),
+    )
+
+    # False: refused here and answered, like every other deterministic refusal.
+    assert accepted is False
+    assert handler.calls == []
+    assert handler.command_acks[0]["command_id"] == "command-1"
+    assert handler.command_acks[0]["data"] == {
+        "error": "Cron command owner conflicts with the original chat context",
+        "code": "CRON_CONTEXT_CONFLICT",
+    }
+    # The same frame again is answered from history, still without routing.
+    await commands.handle_push(
+        payload={"event_type": "cron.response", "action": "list", "command_id": "command-1", "data": {}},
+        request_id="request-1",
+        channel_id="web",
+        session_id="session-1",
+        metadata=owner_metadata(),
+    )
+    assert len(handler.command_acks) == 1
+    await commands.stop()
+
+
+@pytest.mark.asyncio
 async def test_cached_context_conflict_sends_negative_ack_without_business_execution() -> None:
     handler = RecordingHandler()
     commands = make_runtime(handler=handler)

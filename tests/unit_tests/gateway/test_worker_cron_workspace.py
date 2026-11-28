@@ -193,6 +193,77 @@ def test_data_frame_gate_admits_only_owned_cron_panel_methods():
     assert is_data_frame(json.dumps([frame("cron.job.list")]), cron=True) is False
 
 
+async def test_cron_push_admission_takes_only_the_cron_tool_frame_and_releases(monkeypatch):
+    """A Worker has no general push callback; sharded Cron admits one frame."""
+    from e2a.agent_models import AgentResponseChunk
+    from e2a.wire_codec import encode_agent_chunk_for_wire
+    from agent_gateway.application.worker_cron_commands import WorkerCronCommands
+    from agent_gateway.application.worker_data import _admit_cron_tool_pushes
+
+    class PushClient:
+        handler = None
+
+        def set_server_push_handler(self, handler):
+            self.handler = handler
+
+    class Control:
+        async def call(self, operation, arguments, *, timeout):
+            raise AssertionError("no command is routed in this check")
+
+    class Handler:
+        async def _handle_cron_push_payload(self, **kwargs):
+            raise AssertionError("no command is executed in this check")
+
+        async def _push_cron_command_ack(self, **kwargs):
+            raise AssertionError("no command is answered in this check")
+
+        async def _push_cron_run_now_ack(self, **kwargs):
+            raise AssertionError("no command is answered in this check")
+
+    commands = WorkerCronCommands(
+        client=Control(), message_handler=Handler(),
+        ownership=CronOwnership(WorkerManifest((0, 1)), LocalIdentityPolicy()), slot_id=0,
+    )
+    received = []
+
+    async def handle_push(**kwargs):
+        received.append(kwargs)
+
+    monkeypatch.setattr(commands, "handle_push", handle_push)
+    client = PushClient()
+    release = _admit_cron_tool_pushes(client, commands)
+    serve = client.handler
+
+    def frame(payload, metadata):
+        chunk = AgentResponseChunk(request_id="request-1", channel_id="web", payload=payload,
+                                   is_complete=False)
+        wire = encode_agent_chunk_for_wire(chunk, response_id="request-1", sequence=0)
+        wire["metadata"] = metadata
+        wire["session_id"] = "session-1"
+        return json.loads(json.dumps(wire))
+
+    cron_tool = {"event_type": "cron.response", "action": "list", "command_id": "command-1", "data": {}}
+    owner = {"_jiuwenswarm_cron_owner_user_id": "owner"}
+    # Other AgentServer pushes and unreadable frames keep being dropped.
+    await serve(frame({"event_type": "chat.file", "name": "report"}, {}))
+    await serve(frame({"event_type": "models.updated"}, {}))
+    await serve({"not": "a chunk"})
+    assert received == []
+
+    await serve(frame(cron_tool, owner))
+    assert received == [{"payload": cron_tool, "request_id": "request-1", "channel_id": "web",
+                         "session_id": "session-1", "metadata": owner}]
+
+    await release()
+    assert client.handler is None
+    # A delivery already scheduled when the Worker stops meets a closed door.
+    await serve(frame(cron_tool, owner))
+    assert len(received) == 1
+    # A client without push support cannot host a Cron shard.
+    with pytest.raises(ValueError, match="server-push support"):
+        _admit_cron_tool_pushes(object(), commands)
+
+
 async def test_data_worker_requires_a_control_client_and_a_manifest_slot(monkeypatch):
     from agent_gateway.application.worker_data import data_worker
     from agent_gateway.southbound.orchestration import client as client_module
