@@ -431,6 +431,205 @@ async def test_other_single_channels_keep_one_task_and_disable(monkeypatch, plat
         await _close(owner)
 
 
+async def _wait_done(task):
+    async def wait():
+        while not task.done():
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(wait(), timeout=5.0)
+
+
+@pytest.mark.parametrize('platform,class_name,config', [
+    ('telegram', 'TelegramChannel', {'enabled': True, 'bot_token': 'test-token'}),
+    ('discord', 'DiscordChannel', {'enabled': True, 'bot_token': 'test-token'}),
+    ('slack', 'SlackChannel', {'enabled': True, 'bot_token': 'test-token', 'app_token': 'test-app-token'}),
+    ('whatsapp', 'WhatsAppChannel', {'enabled': True, 'bridge_url': 'ws://127.0.0.1:1'}),
+    ('wecom', 'WecomChannel', {'enabled': True, 'bot_id': 'test-bot', 'secret': 'test-secret'}),
+    ('wechat', 'WechatChannel', {'enabled': True}),
+])
+async def test_shutdown_survives_a_channel_whose_start_failed(monkeypatch, platform, class_name, config):
+    module = importlib.import_module(f'agent_gateway.channel_manager.im_platforms.{platform}.{platform}_connect')
+    stopped = []
+
+    class Channel:
+        channel_id = platform
+
+        def __init__(self, config, bus, *, im_platform_adapter=None):
+            self.config = config
+            self.on_message = Mock()
+
+        async def start(self):
+            raise RuntimeError(f'{platform} start failed: invalid token')
+
+        async def stop(self):
+            stopped.append(platform)
+
+    monkeypatch.setattr(module, class_name, Channel)
+    owner, manager = _owner()
+    try:
+        await manager.set_conf(platform, config)
+        await _wait_done(getattr(owner, f'_{platform}_task'))
+        await owner.stop_channels()
+        assert stopped == [platform]
+    finally:
+        await _close(owner)
+
+
+@pytest.mark.parametrize('platform', ['feishu', 'xiaoyi'])
+async def test_shutdown_survives_app_channels_whose_start_failed(monkeypatch, platform):
+    class_name = 'FeishuChannel' if platform == 'feishu' else 'XiaoyiChannel'
+    module = importlib.import_module(f'agent_gateway.channel_manager.im_platforms.{platform}.{platform}_connect')
+    stopped = []
+
+    class Channel:
+        channel_id = platform
+
+        def __init__(self, config, bus, *, im_platform_adapter=None):
+            self.config = config
+            self.app_id = config.app_id if platform == 'feishu' else config.api_id
+            self.on_message = Mock()
+
+        async def start(self):
+            raise RuntimeError(f'{platform} start failed')
+
+        async def stop(self):
+            stopped.append(self.app_id)
+
+    monkeypatch.setattr(module, class_name, Channel)
+    owner, manager = _owner()
+    owner._im_inbound = SimpleNamespace(unregister_adapter=Mock())
+    owner._im_outbound = SimpleNamespace(unregister_adapter=Mock())
+    try:
+        apps = [
+            {'enabled': True, 'app_id': name, 'app_secret': 'test-secret', 'ak': 'test-ak', 'sk': 'test-sk', 'agent_id': 'agent-1', 'api_id': name}
+            for name in ('first', 'second')
+        ]
+        await manager.set_conf(platform, {'apps': apps})
+        channels = manager.get_channels_by_id(platform)
+        assert len(channels) == 2
+        for channel in channels:
+            await _wait_done(channel.start_task)
+        await owner.stop_channels()
+        assert sorted(stopped) == ['first', 'second']
+    finally:
+        await _close(owner)
+
+
+async def test_shutdown_survives_enterprise_feishu_channels_whose_start_failed(monkeypatch):
+    module = importlib.import_module('agent_gateway.channel_manager.im_platforms.feishu.feishu_connect')
+    stopped = []
+
+    class Channel:
+        def __init__(self, config, bus, *, im_platform_adapter=None):
+            self.config = config
+            self.app_id = config.app_id
+            self.channel_id = config.channel_id
+            self.on_message = Mock()
+
+        async def start(self):
+            raise RuntimeError('feishu start failed')
+
+        async def stop(self):
+            stopped.append(self.app_id)
+
+    monkeypatch.setattr(module, 'FeishuChannel', Channel)
+    owner, manager = _owner()
+    owner._im_inbound = SimpleNamespace(unregister_adapter=Mock())
+    owner._im_outbound = SimpleNamespace(unregister_adapter=Mock())
+    try:
+        await manager.set_conf('feishu_enterprise', {
+            'bot-1': {'enabled': True, 'app_id': 'app-1', 'app_secret': 'test-secret'},
+            'bot-2': {'enabled': True, 'app_id': 'app-2', 'app_secret': 'test-secret'},
+        })
+        tasks = list(owner._feishu_enterprise_tasks.values())
+        assert len(tasks) == 2
+        for task in tasks:
+            await _wait_done(task)
+        await owner.stop_channels()
+        assert sorted(stopped) == ['app-1', 'app-2']
+    finally:
+        await _close(owner)
+
+
+async def test_shutdown_stops_later_channels_after_an_earlier_start_failed(monkeypatch):
+    telegram = importlib.import_module('agent_gateway.channel_manager.im_platforms.telegram.telegram_connect')
+    discord = importlib.import_module('agent_gateway.channel_manager.im_platforms.discord.discord_connect')
+    stopped = []
+
+    class FailedTelegram:
+        channel_id = 'telegram'
+
+        def __init__(self, config, bus, *, im_platform_adapter=None):
+            self.config = config
+            self.on_message = Mock()
+
+        async def start(self):
+            raise RuntimeError('telegram start failed')
+
+        async def stop(self):
+            stopped.append('telegram')
+
+    class RunningDiscord:
+        channel_id = 'discord'
+
+        def __init__(self, config, bus, *, im_platform_adapter=None):
+            self.config = config
+            self.on_message = Mock()
+
+        async def start(self):
+            await asyncio.Event().wait()
+
+        async def stop(self):
+            stopped.append('discord')
+
+    monkeypatch.setattr(telegram, 'TelegramChannel', FailedTelegram)
+    monkeypatch.setattr(discord, 'DiscordChannel', RunningDiscord)
+    owner, manager = _owner()
+    try:
+        await manager.set_conf('telegram', {'enabled': True, 'bot_token': 'test-token'})
+        await manager.set_conf('discord', {'enabled': True, 'bot_token': 'test-token'})
+        await _wait_done(owner._telegram_task)
+        await owner.stop_channels()
+        assert stopped == ['telegram', 'discord']
+    finally:
+        await _close(owner)
+
+
+async def test_shutdown_clears_ssh_key_issuer_after_ssh_start_failed(monkeypatch):
+    module = importlib.import_module('agent_gateway.channel_manager.protocol.ssh.ssh_connect')
+    from agent_gateway.common import config as config_module
+
+    monkeypatch.setattr(config_module, 'get_config', lambda: {'gateway': {'agent_client': {'type': 'agentos_router'}}})
+    stopped = []
+
+    class Channel:
+        channel_id = 'ssh'
+
+        def __init__(self, config, bus, *, key_registry):
+            self.config = config
+            self.key_registry = key_registry
+            self.key_issuer = object()
+            self.on_message = Mock()
+
+        async def start(self):
+            raise RuntimeError('ssh start failed')
+
+        async def stop(self):
+            stopped.append('ssh')
+
+    monkeypatch.setattr(module, 'SshChannel', Channel)
+    owner, manager = _owner()
+    try:
+        await manager.set_conf('ssh', {'enabled': True, 'listen_port': 2222, 'auth': {'enabled': True}})
+        await _wait_done(owner._ssh_task)
+        owner._agent_server_ext.set_key_issuer.reset_mock()
+        await owner.stop_channels()
+        assert stopped == ['ssh']
+        owner._agent_server_ext.set_key_issuer.assert_called_once_with(None, ephemeral_key_ttl_sec=300.0)
+    finally:
+        await _close(owner)
+
+
 async def test_ssh_key_issuer_injection_and_removal_are_preserved(monkeypatch):
     module = importlib.import_module('agent_gateway.channel_manager.protocol.ssh.ssh_connect')
     from agent_gateway.common import config as config_module
@@ -691,6 +890,92 @@ async def test_single_retains_optional_startup_and_shutdown_stage_boundaries(mon
         'optional.a2a.stop', 'tui.stop', 'web.stop', 'optional.channels.stop',
         'services.stop', 'telemetry.stop',
     ]
+
+
+async def test_single_shutdown_still_stops_services_after_a_channel_start_failed(monkeypatch):
+    from agent_gateway.application import single
+    from agent_gateway.application.optional_channels import OptionalChannels
+    from agent_gateway.common import config as config_module
+    from agent_gateway.cron import proactive_cron_sync
+
+    events = []
+    shutdown = asyncio.Event()
+    manager = ChannelManager(SimpleNamespace())
+    manager.pop_channels_by_id = Mock(return_value=[])
+    services = SimpleNamespace(
+        credential_access=object(), auth_service_provider=lambda: None, credential_update_sink=object(),
+        client=object(), third_agent=object(), agent_server_ext=SimpleNamespace(set_key_issuer=Mock()),
+        extension_registry=object(), message_handler=object(), im_inbound=object(), im_outbound=object(),
+        cron_scheduler=object(), cron_controller=object(), heartbeat_controller=object(),
+        heartbeat_service=object(), config_updater=None, channel_manager=manager,
+        updater_service=object(), initial_channels_conf={}, full_cfg={},
+        stop=AsyncMock(side_effect=lambda: events.append('services.stop')),
+        start_preparation=Mock(),
+    )
+    monkeypatch.setattr(single, 'assemble_services', AsyncMock(return_value=services))
+    web = SimpleNamespace(stop=AsyncMock(side_effect=lambda: events.append('web.stop')))
+    homepage = asyncio.Event()
+    homepage.set()
+    monkeypatch.setattr(single, 'assemble_web', Mock(return_value=(web, homepage)))
+
+    async def start_web(*args):
+        events.append('web.ready')
+        return asyncio.create_task(asyncio.Event().wait())
+
+    monkeypatch.setattr(single, 'start_web_core', start_web)
+    runtime = SimpleNamespace(start=AsyncMock(side_effect=lambda: events.append('protocol.ready')), wait_until_closed=asyncio.Event().wait)
+    tui = SimpleNamespace(protocol_runtime=runtime, stop=AsyncMock())
+    monkeypatch.setattr(single, 'assemble_tui_acp', AsyncMock(return_value=tui))
+    monkeypatch.setattr(config_module, 'get_config', lambda: {})
+    monkeypatch.setattr(proactive_cron_sync, 'sync_proactive_tick_job', AsyncMock())
+    monkeypatch.setattr(single, 'shutdown_gateway_telemetry', AsyncMock(side_effect=lambda: events.append('telemetry.stop')))
+
+    owners = []
+
+    class Channels(OptionalChannels):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            owners.append(self)
+
+    monkeypatch.setattr(single, 'OptionalChannels', Channels)
+    telegram = importlib.import_module('agent_gateway.channel_manager.im_platforms.telegram.telegram_connect')
+    stopped = []
+
+    class Channel:
+        channel_id = 'telegram'
+
+        def __init__(self, config, bus, *, im_platform_adapter=None):
+            self.config = config
+            self.on_message = Mock()
+
+        async def start(self):
+            raise RuntimeError('telegram start failed: invalid token')
+
+        async def stop(self):
+            stopped.append('telegram')
+
+    monkeypatch.setattr(telegram, 'TelegramChannel', Channel)
+    restart_gateway = Mock()
+
+    async def run():
+        await single.run_single(
+            'ws://example/ws', '127.0.0.1', 0, '/ws', shutdown,
+            config_saved_factory=Mock(), restart_gateway=restart_gateway, process_start_t0=0.0,
+            startup_import_phases=[], preprocessor=SimpleNamespace(with_credential_access=lambda access: object()), connect_with_retry=AsyncMock(),
+        )
+
+    run_task = asyncio.create_task(run())
+    while 'protocol.ready' not in events:
+        await asyncio.sleep(0.01)
+    await manager.set_conf('telegram', {'enabled': True, 'bot_token': 'test-token'})
+    await _wait_done(owners[0]._telegram_task)
+    shutdown.set()
+    await asyncio.wait_for(run_task, timeout=10)
+
+    assert stopped == ['telegram']
+    assert events == ['web.ready', 'protocol.ready', 'web.stop', 'services.stop', 'telemetry.stop']
+    services.stop.assert_awaited_once()
+    restart_gateway.assert_not_called()
 
 
 async def test_web_proxy_reconfiguration_closes_old_resources_and_preserves_web_shutdown(monkeypatch):
