@@ -29,7 +29,8 @@ _DATA_METHODS = frozenset({
     "chat.send", "chat.interrupt", "chat.resume", "connection.status", "history.get",
 })
 _ACP_METHODS = frozenset({"initialize", "session/new", "session/prompt", "session/cancel"})
-
+# What the personal Worker says about itself on its AgentServer connection.
+PERSONAL_WORKER_CONNECTION_ROLE = ("X-Jiuwen-Connection-Role", "personal-gateway-worker")
 
 # Requests the account-free personal Worker answers on its Web listener with the
 # regular read and Session handlers. Settings, and every write that needs a
@@ -221,7 +222,7 @@ async def _no_refresh(_message) -> None:
 
 
 def _wire_cron_command_runtime(
-    *, control_client, agent_client, message_handler, cron_runtime, manifest, slot_id,
+    *, control_client, agent_client, message_handler, cron_runtime, manifest, slot_id, other_push=None,
 ):
     from agent_gateway.application.worker_cron_commands import WorkerCronCommands
     from agent_gateway.cron.ownership import CronOwnership
@@ -236,18 +237,19 @@ def _wire_cron_command_runtime(
     )
     message_handler.set_cron_command_runtime(cron_commands)
     message_handler.set_cron_tool_push_enabled(True)
-    release_pushes = _admit_cron_tool_pushes(agent_client, cron_commands)
+    release_pushes = _admit_cron_tool_pushes(agent_client, cron_commands, other_push=other_push)
     return cron_commands, release_pushes
 
 
-def _admit_cron_tool_pushes(agent_client, cron_commands):
+def _admit_cron_tool_pushes(agent_client, cron_commands, *, other_push=None):
     """Let the Cron tool result of a chat reach this shard; close the admission.
 
     The southbound client drops every AgentServer ``send_push`` frame that has
     no callback. The single host installs the general callback next to its IM
     pipeline, which this host does not assemble. Only the Cron tool frame is
     admitted here: the other AgentServer pushes are not adapted for a Worker
-    and keep being dropped. The returned coroutine stops the admission.
+    and keep being dropped unless the personal profile installs its handler.
+    The returned coroutine stops the admission.
     """
     from e2a.wire_codec import parse_agent_server_wire_chunk
 
@@ -272,6 +274,8 @@ def _admit_cron_tool_pushes(agent_client, cron_commands):
                 session_id=wire.get("session_id"),
                 metadata=wire.get("metadata"),
             )
+        elif other_push is not None:
+            await other_push(wire)
 
     async def release():
         nonlocal admitted
@@ -328,6 +332,10 @@ async def data_worker(
         if personal_settings:
             wire_options = {
                 "wire_logger": settings_transport_logger(), "private_methods": PERSONAL_SETTINGS_METHODS,
+                # The AgentServer delivers the Designer pushes of a canvas to its
+                # connections of this role, never to whichever gateway socket
+                # connected last.
+                "headers": (PERSONAL_WORKER_CONNECTION_ROLE,),
             }
         client = assemble_client(None, mode="websocket", enterprise=False, uri=agent_server_url, **wire_options)
         cleanup.push_async_callback(client.disconnect)
@@ -354,7 +362,7 @@ async def data_worker(
             credentials.attach_handler(handler)
         else:
             handler.set_credential_access(accounts)
-        if personal:
+        if personal and not cron_enabled:
             # MessageHandler registers its AgentServer server-push handler only
             # from set_outbound_pipeline, which the single process calls while
             # assembling and no Worker does. Without it a push is dropped as it
@@ -383,6 +391,7 @@ async def data_worker(
             cron_commands, release_cron_pushes = _wire_cron_command_runtime(
                 control_client=control_client, agent_client=client, message_handler=handler,
                 cron_runtime=cron_runtime, manifest=cron_manifest, slot_id=cron_slot,
+                other_push=handler._handle_agent_server_push if personal else None,
             )
             cron = (cron_runtime, cron_commands)
             # Unwound after the northbound runtimes below and before the

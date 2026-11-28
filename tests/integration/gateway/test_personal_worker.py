@@ -39,6 +39,8 @@ class RecordingAgentServer(StubAgentServer):
         self.capabilities = tuple(capabilities)
         self.handshakes: list[dict[str, str]] = []
         self.replies: dict[str, object] = {}
+        # What the AgentServer vouches for in its answer, per method.
+        self.metadata: dict[str, dict] = {}
 
     def push(self, wire: dict) -> None:
         """An AgentServer ``send_push``, on each live Gateway connection."""
@@ -70,7 +72,7 @@ class RecordingAgentServer(StubAgentServer):
                 connection.send(json.dumps(encode_agent_response_for_wire(
                     AgentResponse(
                         request_id=request_id, channel_id=str(envelope.get("channel") or "web"),
-                        payload=payload, ok=not failed,
+                        payload=payload, ok=not failed, metadata=self.metadata.get(method),
                     ),
                     response_id=request_id,
                 )))
@@ -717,6 +719,111 @@ async def test_web_git_panel_refuses_what_it_never_asks_for(tmp_path, monkeypatc
         ]
 
 
+DESIGNER_CAPABILITY = "personal_designer_v1"
+
+
+def designer_push(session_id, marker):
+    """The frame the AgentServer emits for the canvas event of a marked request."""
+    wire = server_push(
+        {"event_type": "designer.node.updated", "node_id": marker},
+        request_id=f"designer-{marker}", session_id=session_id,
+    )
+    wire["metadata"]["_personal_designer_push"] = True
+    return wire
+
+
+async def test_web_designer_requests_need_the_agentserver_capability(tmp_path, monkeypatch):
+    seen = {}
+    for name, capabilities in (("legacy", ()), ("capable", (DESIGNER_CAPABILITY,))):
+        async with personal_with(tmp_path, monkeypatch, *capabilities) as (group, stub):
+            stub.replies["designer.workspace.create"] = {"graph": {"graph_id": "g1"}, "session": {"session_id": "design_1"}}
+            stub.replies["designer.graph.save"] = {"graph": {"graph_id": "g1"}, "updated_at": 3}
+            async with connect(web_url(group), additional_headers=ORIGIN) as web:
+                await web.send(request("create", "designer.workspace.create", {"prompt": "A short film", "user_id": "bob"}))
+                seen[(name, "designer.workspace.create")] = await answer(web, "create")
+                await web.send(request("save", "designer.graph.save", {
+                    "graph": {"graph_id": "g1"}, "base_updated_at": 2, "user_id": "bob",
+                }))
+                seen[(name, "designer.graph.save")] = await answer(web, "save")
+            seen[(name, "sent")] = [(request["method"], request["params"], request["user_id"])
+                                    for request in requests_sent(stub)]
+            seen[(name, "role")] = connection_roles(stub)
+            seen[(name, "handshakes")] = stub.handshakes
+    for method in ("designer.workspace.create", "designer.graph.save"):
+        # An AgentServer that does not answer the personal panel's Designer requests is written nothing.
+        legacy = seen[("legacy", method)]
+        assert (legacy["ok"], legacy["code"], legacy["payload"]) == (False, "UNSUPPORTED_DATA_PLANE", {}), legacy
+    assert seen[("legacy", "sent")] == []
+    assert seen[("capable", "designer.workspace.create")] == {
+        "type": "res", "id": "create", "ok": True,
+        "payload": {"graph": {"graph_id": "g1"}, "session": {"session_id": "design_1"}},
+    }
+    assert seen[("capable", "designer.graph.save")] == {
+        "type": "res", "id": "save", "ok": True, "payload": {"graph": {"graph_id": "g1"}, "updated_at": 3},
+    }
+    # One request each, marked for the AgentServer, with the connection's identity and never the caller's.
+    assert seen[("capable", "sent")] == [
+        ("designer.workspace.create", {"prompt": "A short film", "_personal_designer_v1": True}, USER),
+        ("designer.graph.save", {
+            "graph": {"graph_id": "g1"}, "base_updated_at": 2, "_personal_designer_v1": True,
+        }, USER),
+    ]
+    # The personal Worker names itself, so canvas pushes come to it and not to a later socket.
+    assert seen[("legacy", "role")] == ["personal-gateway-worker"], seen[("legacy", "handshakes")]
+    assert seen[("capable", "role")] == ["personal-gateway-worker"], seen[("capable", "handshakes")]
+
+
+async def test_web_designer_requests_are_refused_before_the_agentserver(personal):
+    group, stub = personal
+    async with connect(web_url(group), additional_headers=ORIGIN) as web:
+        for request_id, method, params in (
+            ("escape", "designer.graph.get", {"graph_id": "../other"}),
+            ("version", "designer.graph.save", {"graph": {}, "base_updated_at": -1}),
+            ("shape", "designer.run.get", {"run_id": 5}),
+        ):
+            await web.send(request(request_id, method, params))
+            refused = await answer(web, request_id)
+            # The refusal names the field and never repeats the value.
+            assert (refused["ok"], refused["code"], refused["payload"]) == (False, "BAD_REQUEST", {}), (request_id, refused)
+        # The page never pauses a run itself.
+        await web.send(request("pause", "designer.run.pause", {"run_id": "run_1"}))
+        assert await answer(web, "pause") == {"id": "pause", "closed": 1008}
+    # Without a browser Origin nothing is read at all.
+    async with connect(web_url(group)) as web:
+        await web.send(request("origin", "designer.graph.list", {"project_id": "default"}))
+        refused = await answer(web, "origin")
+        assert (refused["ok"], refused["code"]) == (False, "FORBIDDEN"), refused
+    assert requests_sent(stub) == []
+
+
+async def test_web_designer_push_reaches_the_pages_the_agentserver_verified(tmp_path, monkeypatch):
+    async with personal_with(tmp_path, monkeypatch, DESIGNER_CAPABILITY) as (group, stub):
+        stub.replies["designer.graph.get"] = {"graph": {"graph_id": "g1"}}
+        stub.metadata["designer.graph.get"] = {"_designer_subscribed_session": "design_1"}
+        async with (connect(web_url(group), additional_headers=ORIGIN) as web,
+                    connect(web_url(group), additional_headers=ORIGIN) as sibling,
+                    connect(web_url(group, user="bob"), additional_headers=ORIGIN) as other):
+            # A page's own session_id, in its request or on its connection, tells it nothing.
+            await asyncio.to_thread(stub.push, designer_push("design_1", "unverified"))
+            await web.send(request("read", "designer.graph.get", {"graph_id": "g1", "session_id": "design_1"}))
+            assert (await answer(web, "read"))["ok"] is True
+            await asyncio.to_thread(stub.push, designer_push("design_1", "verified"))
+            # The first event this page hears is the one after the AgentServer vouched for it.
+            assert await event(web, "designer.node.updated") == {
+                "type": "event", "event": "designer.node.updated",
+                "payload": {"event_type": "designer.node.updated", "node_id": "verified", "session_id": "design_1"},
+            }
+            # Another tab and another user were not verified: nothing is queued for either.
+            for name, ws in (("sibling", sibling), ("other", other)):
+                await ws.send(request("status", "connection.status", {}))
+                frames = await frames_until(ws, "status")
+                assert frames[-1]["ok"] is True, (name, frames)
+                assert not [f for f in frames if str(f.get("event", "")).startswith("designer.")], (name, frames)
+        assert [(request["method"], request["params"], request["user_id"]) for request in requests_sent(stub)] == [
+            ("designer.graph.get", {"graph_id": "g1", "session_id": "design_1", "_personal_designer_v1": True}, USER),
+        ]
+
+
 def server_push(payload, *, request_id="push", channel_id="web", session_id=None):
     """The frame the AgentServer emits for a ``send_push`` (``build_server_push_wire``)."""
     chunk = AgentResponseChunk(
@@ -742,6 +849,14 @@ async def test_personal_worker_delivers_an_agentserver_server_push_to_its_pages(
         for ws in (web, sibling):
             assert await event(ws, "models.updated") == {"type": "event", "event": "models.updated", "payload": {}}
     assert requests_sent(stub) == []
+
+
+def connection_roles(stub):
+    """The role each Gateway connection declared on its handshake; header names are case-insensitive."""
+    return [
+        next((value for key, value in handshake.items() if key.lower() == "x-jiuwen-connection-role"), None)
+        for handshake in stub.handshakes
+    ]
 
 
 def heartbeat_answers(stub):
@@ -859,7 +974,8 @@ async def test_account_worker_keeps_the_tui_compatibility_requests_out(tmp_path,
             assert (await answer(tui, "display")) == {"id": "display", "closed": 1008}
         # The account Worker's Web listener keeps the data-plane admission it had.
         for method in ("config.get", "config.save_all", "models.list", "commands.list", "project.list",
-                       "project.create", "project.rename", "heartbeat.job.list", "heartbeat.job.delete"):
+                       "project.create", "project.rename", "heartbeat.job.list", "heartbeat.job.delete",
+                       "designer.graph.list", "designer.graph.save", "project.git.commit"):
             async with connect(web_url(group), additional_headers=ORIGIN) as web:
                 await web.send(request(method, method, {}))
                 assert await answer(web, method) == {"id": method, "closed": 1008}, method
@@ -869,4 +985,7 @@ async def test_account_worker_keeps_the_tui_compatibility_requests_out(tmp_path,
         finally:
             await asyncio.to_thread(stub.stop)
     assert not any(request["method"] in {"config.get", "project.create", "project.rename", "heartbeat.job",
-                                         "session.get_metadata"} for request in stub.requests)
+                                         "session.get_metadata", "designer.graph.list", "project.git.commit"}
+                   for request in stub.requests)
+    # It is not the personal Worker, and does not tell the AgentServer it is.
+    assert connection_roles(stub) == [None]

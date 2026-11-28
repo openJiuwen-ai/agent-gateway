@@ -56,6 +56,11 @@ def test_every_personal_web_operation_has_a_regular_handler():
     } | {
         "project.git.probe", "project.git.init", "project.git.create_branch", "project.git.switch_branch",
         "project.git.commit", "project.git.push",
+    } | {
+        "designer.workspace.create", "designer.workspace.get", "designer.workspace.session.create",
+        "designer.workspace.session.compose", "designer.graph.get", "designer.graph.list", "designer.graph.save",
+        "designer.graph.patch", "designer.media.capabilities", "designer.run.start", "designer.run.get",
+        "designer.run.cancel",
     }
     assert PERSONAL_WEB_OPERATIONS <= personal_web_methods()
     # Project-wide batch lifecycle is not here.

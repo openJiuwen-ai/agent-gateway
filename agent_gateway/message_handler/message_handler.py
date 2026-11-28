@@ -4040,6 +4040,19 @@ class MessageHandler(ABC):
         except Exception as e:
             logger.exception("[MessageHandler] server_push 解析失败: %s", e)
             return
+        if chunk.channel_id == "web" and isinstance(chunk.payload, dict):
+            event = str(chunk.payload.get("event_type") or "")
+            if event.startswith("designer."):
+                web = self._resolve_web_channel()
+                subscriptions = getattr(web, "designer_subscriptions", None)
+                if subscriptions is not None:
+                    sid = str(wire.get("session_id") or "")
+                    if sid:
+                        await subscriptions.send(sid, event, chunk.payload)
+                    return
+                metadata = wire.get("metadata")
+                if isinstance(metadata, dict) and metadata.get("_personal_designer_push"):
+                    return
         if (
             isinstance(chunk.payload, dict)
             and chunk.payload.get("event_type") == "jiuwenmate.group.inspect"

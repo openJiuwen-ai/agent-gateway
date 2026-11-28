@@ -6122,8 +6122,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     from agent_gateway.channel_manager.web.designer_handlers import (
         register_designer_handlers,
+        register_personal_designer_handlers,
     )
-    register_designer_handlers(channel, lambda: _resolve(agent_client))
+    if bind.personal_settings:
+        register_personal_designer_handlers(channel, lambda: _resolve(agent_client))
+    else:
+        register_designer_handlers(channel, lambda: _resolve(agent_client))
 
     channel.register_method("project.list", _project_list)
     channel.register_method("project.info", _project_info)

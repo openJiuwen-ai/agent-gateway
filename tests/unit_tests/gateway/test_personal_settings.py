@@ -231,16 +231,52 @@ def test_client_assembly_passes_the_log_options_only_when_requested(monkeypatch)
         return object()
 
     monkeypatch.setattr(southbound, "build_static_client", build)
+    role = (("X-Jiuwen-Connection-Role", "personal-gateway-worker"),)
     for options in ({}, {"wire_logger": settings_transport_logger(),
-                         "private_methods": PERSONAL_SETTINGS_METHODS}):
+                         "private_methods": PERSONAL_SETTINGS_METHODS, "headers": role}):
         southbound.assemble_client(None, mode="websocket", enterprise=False, uri="ws://127.0.0.1:9000", **options)
     assert calls[0] == ("ws://127.0.0.1:9000", {"shared_directory_layout": True}), calls[0]
-    # Requested: both travel to the builder that owns the connection.
+    # Requested: all travel to the builder that owns the connection.
     assert calls[1] == ("ws://127.0.0.1:9000", {
         "shared_directory_layout": True, "wire_logger": calls[1][1]["wire_logger"],
-        "private_methods": PERSONAL_SETTINGS_METHODS,
+        "private_methods": PERSONAL_SETTINGS_METHODS, "headers": role,
     })
     assert calls[1][1]["wire_logger"].name == "gateway.personal_settings.transport"
+
+
+async def test_connection_role_is_sent_on_the_handshake_and_nothing_else_changes(monkeypatch):
+    """The header names the personal Worker to the AgentServer; the target keeps it."""
+    from e2a.models import E2AEnvelope
+    from agent_gateway.southbound.orchestration.client import build_static_client
+
+    calls, _ = transport(monkeypatch)
+    role = (("X-Jiuwen-Connection-Role", "personal-gateway-worker"),)
+    client = build_static_client("ws://127.0.0.1:9000", shared_directory_layout=True, headers=role)
+    try:
+        await client.connect("ws://127.0.0.1:9000")
+        assert dict(calls[0][1]["extra_headers"])["X-Jiuwen-Connection-Role"] == "personal-gateway-worker"
+        assert "logger" not in calls[0][1]
+        await client.send_request(E2AEnvelope(request_id="list", channel="web", method="project.list", params={}))
+        assert len(calls) == 1  # one connection, reused
+    finally:
+        await client.disconnect()
+    plain_calls, _ = transport(monkeypatch)
+    plain = build_static_client("ws://127.0.0.1:9000", shared_directory_layout=True)
+    try:
+        await plain.connect("ws://127.0.0.1:9000")
+    finally:
+        await plain.disconnect()
+
+    def handshake(call):
+        options = {key: value for key, value in call[1].items() if key != "extra_headers"}
+        return options, dict(call[1].get("extra_headers", []))
+
+    # Without the option the handshake is the one it has always been: no role,
+    # and nothing else different.
+    (options, headers), (plain_options, plain_headers) = handshake(calls[0]), handshake(plain_calls[0])
+    assert options == plain_options
+    assert {key: value for key, value in headers.items() if key != "X-Jiuwen-Connection-Role"} == plain_headers
+    assert "X-Jiuwen-Connection-Role" not in plain_headers
 
 
 def test_settings_requires_single_http_origin(monkeypatch):
@@ -331,7 +367,7 @@ def test_personal_web_listener_admits_only_its_methods():
         assert is_data_frame(frame(method), web=True, personal=True, compat=True), method
         assert is_data_frame(frame(method, session_id="s"), web=True, personal=True, compat=True), method
     for method in ("cron.job.list", "project.delete", "skills.install",
-                   "path.set", "designer.graph.list", "session.create", "models.replace_all", "models.validate",
+                   "path.set", "session.create", "models.replace_all", "models.validate",
                    "permissions.tools.set", "openai_account.auth.status", "external_cli.install", "webui.dispatch"):
         assert not is_data_frame(frame(method), web=True, personal=True, compat=True), method
     # The additions belong to the personal Worker's Web listener alone.

@@ -8,6 +8,7 @@ from typing import Any
 from e2a.message import ReqMethod
 
 from agent_gateway.application.personal_settings import allows_settings_origin
+from agent_gateway.channel_manager.web.designer_handlers import PERSONAL_DESIGNER_METHODS
 from agent_gateway.common.protocol_ids import InvalidProtocolId, validate_session_id
 from agent_gateway.routing.e2a_proxy import fetch_agent_unary
 
@@ -35,7 +36,7 @@ _RESTRICTED_GIT_FLAGS = {
     'project.git.commit': ('amend', 'no_verify'),
     'project.git.push': ('force', 'delete'),
 }
-PERSONAL_WEB_OPERATIONS = _PROJECT_METHODS | _HEARTBEAT_METHODS | PROJECT_GIT_OPERATIONS
+PERSONAL_WEB_OPERATIONS = _PROJECT_METHODS | _HEARTBEAT_METHODS | PROJECT_GIT_OPERATIONS | PERSONAL_DESIGNER_METHODS
 
 
 def protect_personal_web_operation(

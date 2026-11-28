@@ -129,10 +129,14 @@ class StaticAgentClient(SouthboundAgentClient):
 
 def build_static_client(
     uri: str, *, shared_directory_layout: bool = False, wire_logger: logging.Logger | None = None,
-    private_methods: frozenset[str] = frozenset(),
+    private_methods: frozenset[str] = frozenset(), headers: tuple[tuple[str, str], ...] = (),
 ) -> SouthboundAgentClient:
-    """The fixed local client; the optional log options keep it the same connection."""
-    target = ConnectionTarget(TransportKind.WEBSOCKET, uri)
+    """The fixed local client; the optional log options keep it the same connection.
+
+    ``headers`` are sent on the AgentServer handshake and belong to the target,
+    so a reused connection is one that was opened with them.
+    """
+    target = ConnectionTarget(TransportKind.WEBSOCKET, uri, headers=headers)
     control = FixedTargetControl(target)
     return StaticAgentClient(
         control, StaticRouter(control),
@@ -144,7 +148,7 @@ def build_static_client(
 
 def assemble_client(
     extension: Any, *, mode: str, enterprise: bool, uri: str, wire_logger: logging.Logger | None = None,
-    private_methods: frozenset[str] = frozenset(),
+    private_methods: frozenset[str] = frozenset(), headers: tuple[tuple[str, str], ...] = (),
 ) -> AgentServerClient:
     """Reuse extension-owned clients and select the default fixed deployment.
 
@@ -160,6 +164,8 @@ def assemble_client(
             options = {}
             if wire_logger is not None or private_methods:
                 options = {"wire_logger": wire_logger, "private_methods": private_methods}
+            if headers:
+                options["headers"] = headers
             return build_static_client(uri, shared_directory_layout=True, **options)
         client = WebSocketAgentServerClient(ping_interval=20.0, ping_timeout=600.0)
         client.shared_directory_layout = False
