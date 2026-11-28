@@ -4,11 +4,11 @@
 
 ## 启动
 
-先启动 Gateway 及支持 App 工具装配、单轮上下文和执行状态的 AgentServer，接入方案见 [AG-UI proposal](../../docs/zh/design/ag-ui-agent-native-app-proposal.md)。在 **Gateway 进程**设置：
+先启动 Gateway 及支持 App 工具装配、单轮上下文和执行状态的 AgentServer，接入方案见 [AG-UI 接入指南](../../docs/zh/AG-UI.md)。在 **Gateway 进程**设置：
 
 ```bash
 export AG_UI_ENABLED=1
-export AG_UI_ALLOWED_ORIGINS=http://127.0.0.1:19801
+export AG_UI_ALLOWED_ORIGINS=http://127.0.0.1:19000
 # 可选：按部署选择模型和项目
 # export AG_UI_MODEL_NAME=your-model
 # export AG_UI_PROJECT_ID=your-project
@@ -19,12 +19,12 @@ export AG_UI_ALLOWED_ORIGINS=http://127.0.0.1:19801
 在仓库根目录启动静态服务：
 
 ```bash
-python3 -m http.server 19801 --bind 127.0.0.1 --directory examples/ag-ui-rps
+python3 -m http.server 19000 --bind 127.0.0.1 --directory examples/ag-ui-rps
 ```
 
-浏览器打开 **http://127.0.0.1:19801**，填写实际 Gateway 地址（默认 `http://127.0.0.1:19500/api/ag-ui/run`，对应本仓本地验证示例的 WebChannel 端口），点击手势开始。默认无需 token；若部署要求 Bearer 认证，在页面填写。凭据仅保留在当前页面内存中，不写入本地存储。
+浏览器打开 **http://127.0.0.1:19000**，填写实际 Gateway 地址（默认 `http://127.0.0.1:19500/api/ag-ui/run`，对应本仓本地验证示例的 WebChannel 端口），点击手势开始。默认无需 token；若部署要求 Bearer 认证，在页面填写。凭据仅保留在当前页面内存中，不写入本地存储。
 
-请通过 HTTP 访问，不要直接打开 `index.html`：Gateway 拒绝 `Origin: null`。如果改用 `http://localhost:19801` 或其他端口，也须把该完整 Origin 加入 `AG_UI_ALLOWED_ORIGINS`（多个 Origin 用逗号分隔）。HTTPS 页面应连接 HTTPS Gateway，避免浏览器阻止混合内容。
+请通过 HTTP 访问，不要直接打开 `index.html`：Gateway 拒绝 `Origin: null`。如果改用 `http://localhost:19000` 或其他端口，也须把该完整 Origin 加入 `AG_UI_ALLOWED_ORIGINS`（多个 Origin 用逗号分隔）。HTTPS 页面应连接 HTTPS Gateway，避免浏览器阻止混合内容。
 
 ### 出现 Failed to fetch
 
@@ -33,7 +33,7 @@ python3 -m http.server 19801 --bind 127.0.0.1 --directory examples/ag-ui-rps
 环境变量必须在启动 Gateway 的终端设置；修改后需要重启 Gateway。若 AgentServer 已监听 19501，可在停止旧 Gateway 后运行：
 
 ```bash
-AG_UI_ENABLED=1 AG_UI_ALLOWED_ORIGINS=http://127.0.0.1:19801 \
+AG_UI_ENABLED=1 AG_UI_ALLOWED_ORIGINS=http://127.0.0.1:19000 \
 uv run agent-gateway --agent-server-url ws://127.0.0.1:19501 --host 127.0.0.1 --port 19500
 ```
 
@@ -41,12 +41,12 @@ uv run agent-gateway --agent-server-url ws://127.0.0.1:19501 --host 127.0.0.1 --
 
 ```bash
 curl -i -X OPTIONS http://127.0.0.1:19500/api/ag-ui/run \
-  -H 'Origin: http://127.0.0.1:19801' \
+  -H 'Origin: http://127.0.0.1:19000' \
   -H 'Access-Control-Request-Method: POST' \
   -H 'Access-Control-Request-Headers: content-type'
 ```
 
-预期返回 `204` 和 `Access-Control-Allow-Origin: http://127.0.0.1:19801`。连接失败表示地址或监听有问题；`403 ORIGIN_NOT_ALLOWED` 表示白名单不匹配；`404` 表示该端口未提供 AG-UI 入口，需检查 `AG_UI_ENABLED=1` 和端口。修正后刷新页面或点“新开一局”。
+预期返回 `204` 和 `Access-Control-Allow-Origin: http://127.0.0.1:19000`。连接失败表示地址或监听有问题；`403 ORIGIN_NOT_ALLOWED` 表示白名单不匹配；`404` 表示该端口未提供 AG-UI 入口，需检查 `AG_UI_ENABLED=1` 和端口。修正后刷新页面或点“新开一局”。
 
 ## 对局流程
 
