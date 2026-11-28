@@ -514,6 +514,39 @@ async def test_adx_gateway_does_not_broadcast_its_tool_ingress_to_another_node(m
         await router.shutdown()
 
 
+@pytest.mark.parametrize("status", ["failed", "missing"])
+async def test_sandbox_probe_reclaims_terminal_environment(monkeypatch, status):
+    router, _ = _router(_config(monkeypatch))
+    await router.connect("")
+    try:
+        assert (await router.send_request(_request())).ok
+        instance = next(iter(router.test_api.environments))
+        router._agent_manager.increment_user_connections("alice")
+        if status == "missing":
+            router.test_api.environments.pop(instance)
+        else:
+            router.test_api.environments[instance]["status"] = status
+
+        scheduled = []
+        monkeypatch.setattr(
+            router._router, "_schedule_connect_warmup",
+            lambda user_id, *, require_online=False: scheduled.append(
+                (user_id, require_online)
+            ),
+        )
+
+        # The probe uses the same 1s idle grace as disconnect cleanup.
+        await asyncio.sleep(1.1)
+        assert await router._router._probe_ready_sandboxes_once() == 1
+        assert await router._agent_manager.get_agent("alice", "jiuwenswarm") is None
+        assert scheduled == [("alice", True)]
+
+        assert (await router.send_request(_request(rid="after-probe"))).ok
+        assert len(router.test_api.creates) == 2
+    finally:
+        await router.shutdown()
+
+
 async def test_loader_registers_one_canonical_router_for_adx_backend(monkeypatch):
     from agent_gateway.extensions.agentos.agentos_router import extension
     from agent_gateway.extensions.loader import ExtensionLoader

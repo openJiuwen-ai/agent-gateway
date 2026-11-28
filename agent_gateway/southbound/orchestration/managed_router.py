@@ -322,6 +322,13 @@ _DISCONNECT_CLEANUP_IDLE_GRACE_SECONDS = 1.0
 # （_sandbox_idle_check_interval_seconds，默认 30 秒）。
 _FAILED_RUNTIME_RECLAIM_SECONDS = 300.0
 
+# 在线用户 READY 沙箱的低频探针：只查询平台状态，确认 failed/deleted/missing
+# 后才清理；网络错误、5xx、超时一律跳过，避免瞬时抖动误删。
+_SANDBOX_PROBE_INTERVAL_SECONDS = 300.0
+_SANDBOX_PROBE_QUERY_TIMEOUT_SECONDS = 10.0
+_SANDBOX_PROBE_CONCURRENCY = 8
+_SANDBOX_UNAVAILABLE_STATUSES = frozenset({"failed", "deleted", "deleting"})
+
 # 同一个 attempt 的创建结果不确定时，首次 + 最多 3 次同名重放；超限后
 # 退役当前实例并转 FAILED，避免确定性 5xx 让用户永远停在 pending。
 _MAX_UNCERTAIN_CREATE_ATTEMPTS = 4
@@ -690,6 +697,7 @@ class ManagedRouter(SouthboundAgentClient):
         self._probe_settings = probe_settings or DEFAULT_RUNTIME_PROBE_SETTINGS
         self._idle_reaper_task: asyncio.Task[None] | None = None
         self._stale_cleanup_task: asyncio.Task[None] | None = None
+        self._sandbox_probe_task: asyncio.Task[None] | None = None
         self._server_ready = False
         self._background_tasks: set[asyncio.Task[Any]] = set()
         self._closed = False
@@ -1508,6 +1516,7 @@ class ManagedRouter(SouthboundAgentClient):
         self._server_ready = True
         self._ensure_idle_reaper_task()
         self._ensure_stale_cleanup_task()
+        self._ensure_sandbox_probe_task()
         for name, lifecycle in self._sandbox_lifecycles.items():
             self._schedule_retired_sandbox_cleanup(name, lifecycle)
 
@@ -1518,6 +1527,7 @@ class ManagedRouter(SouthboundAgentClient):
         self._server_ready = False
         await self._stop_idle_reaper_task()
         await self._stop_stale_cleanup_task()
+        await self._stop_sandbox_probe_task()
         # 取消所有挂起的延迟清理任务
         for task in self._pending_cleanups.values():
             if not task.done():
@@ -2935,6 +2945,146 @@ class ManagedRouter(SouthboundAgentClient):
             await task
         except asyncio.CancelledError:
             pass
+
+    def _ensure_sandbox_probe_task(self) -> None:
+        if self._closed:
+            return
+        if self._sandbox_probe_task is not None and not self._sandbox_probe_task.done():
+            return
+        with bind_request_trace(None):
+            self._sandbox_probe_task = asyncio.create_task(
+                self._sandbox_probe_loop(),
+                name="agentos-sandbox-probe",
+            )
+
+    async def _stop_sandbox_probe_task(self) -> None:
+        task = self._sandbox_probe_task
+        self._sandbox_probe_task = None
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    async def _sandbox_probe_loop(self) -> None:
+        while not self._closed:
+            await asyncio.sleep(_SANDBOX_PROBE_INTERVAL_SECONDS)
+            if self._closed:
+                return
+            try:
+                cleaned = await self._probe_ready_sandboxes_once()
+            except Exception:  # noqa: BLE001 - one bad pass must not kill the loop
+                logger.exception("[AgentOS] sandbox probe pass failed")
+                continue
+            if cleaned:
+                log_agentos(
+                    logger,
+                    logging.INFO,
+                    "sandbox.probe.cleanup",
+                    cleaned=cleaned,
+                )
+
+    async def _probe_ready_sandboxes_once(self) -> int:
+        """Probe online users' idle READY sandboxes; reclaim only explicit terminal states."""
+        if self._closed:
+            return 0
+        runtimes = await self._agent_manager.list_all_agents()
+        candidates = [
+            runtime for runtime in runtimes
+            if runtime.is_ready()
+            and runtime.task_count == 0
+            and str(runtime.info.sandbox_id or "").strip()
+            and self._agent_manager.get_user_connection_count(runtime.info.user_id) > 0
+        ]
+        if not candidates:
+            return 0
+        sem = asyncio.Semaphore(_SANDBOX_PROBE_CONCURRENCY)
+        results = await asyncio.gather(
+            *(self._probe_one(runtime, sem) for runtime in candidates),
+            return_exceptions=True,
+        )
+        return sum(1 for result in results if result is True)
+
+    async def _probe_one(self, runtime: AgentRuntime, sem: asyncio.Semaphore) -> bool:
+        async with sem:
+            info = runtime.info
+            sandbox_id = str(info.sandbox_id or "").strip()
+            if (
+                self._closed
+                or not sandbox_id
+                or self._agent_manager.get_user_connection_count(info.user_id) <= 0
+            ):
+                return False
+            try:
+                async with asyncio.timeout(_SANDBOX_PROBE_QUERY_TIMEOUT_SECONDS):
+                    view = await self._managed_control.query(sandbox_id)
+            except AgentNotFoundError:
+                reason = "not_found"
+            except (AgentApiError, TimeoutError):
+                return False
+            except Exception:  # noqa: BLE001 - probe is best-effort
+                logger.debug(
+                    "[AgentOS] sandbox probe query failed: user_id=%s sandbox_id=%s",
+                    info.user_id,
+                    sandbox_id,
+                    exc_info=True,
+                )
+                return False
+            else:
+                if not isinstance(view, dict):
+                    return False
+                status = str(view.get("status") or "").strip().lower()
+                if status not in _SANDBOX_UNAVAILABLE_STATUSES:
+                    return False
+                reason = f"status={status}"
+
+            log_agentos(
+                logger,
+                logging.WARNING,
+                "sandbox.probe.unavailable",
+                user_id=info.user_id,
+                session_id=str(info.metadata.get("session_id") or ""),
+                agent_type=info.agent_type,
+                sandbox_id=sandbox_id,
+                reason=reason,
+            )
+            key_values: dict[str, Any] | None = None
+            session_id = str(info.metadata.get("session_id") or "")
+            if "session_id" in self._agent_manager.key_fields and session_id:
+                key_values = {"session_id": session_id}
+            token = _cleanup_trigger.set(("sandbox_probe", True))
+            try:
+                deleted = await self.delete_agent(
+                    info.user_id,
+                    info.agent_type,
+                    key_values=key_values,
+                    idle_timeout_seconds=_DISCONNECT_CLEANUP_IDLE_GRACE_SECONDS,
+                    expected_agent_id=info.agent_id,
+                    reason=DELETE_REASON_INSTANCE_UNAVAILABLE,
+                )
+            except Exception:  # noqa: BLE001 - probe is best-effort
+                logger.exception(
+                    "[AgentOS] sandbox probe cleanup failed: user_id=%s sandbox_id=%s",
+                    info.user_id,
+                    sandbox_id,
+                )
+                return False
+            finally:
+                _cleanup_trigger.reset(token)
+
+            if deleted and info.agent_type == BUILTIN_AGENT_TYPE:
+                try:
+                    self._schedule_connect_warmup(
+                        info.user_id, require_online=True,
+                    )
+                except Exception:  # noqa: BLE001 - probe is best-effort
+                    logger.exception(
+                        "[AgentOS] sandbox probe warmup failed: user_id=%s",
+                        info.user_id,
+                    )
+            return deleted
 
     def _ensure_stale_cleanup_task(self) -> None:
         if self._closed or not getattr(self._registry, "enabled", False):

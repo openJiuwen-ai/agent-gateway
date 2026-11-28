@@ -24,6 +24,7 @@ from agent_gateway.extensions.agentos.agentos_router.agent_manager import (
     AgentRebuildPending,
     AgentRuntime,
     DELETE_REASON_IDLE,
+    DELETE_REASON_INSTANCE_UNAVAILABLE,
 )
 from agent_gateway.extensions.agentos.agentos_router.config import (
     DEFAULT_AGENT_WORKSPACE_ROOT,
@@ -1996,6 +1997,145 @@ async def test_idle_reaper_task_lifecycle_on_connect_disconnect() -> None:
     await client.disconnect()
     assert client._idle_reaper_task is None
     assert task.cancelled() or task.done()
+
+
+@pytest.mark.asyncio
+async def test_sandbox_probe_task_lifecycle_on_connect_disconnect() -> None:
+    client = _router_client(FakeYuanRongClient(), FakeRegistryClient(), AgentManager())
+
+    await client.connect("http://yuanrong.test")
+    task = client._sandbox_probe_task
+    assert task is not None and not task.done()
+
+    await client.disconnect()
+    assert client._sandbox_probe_task is None
+    assert task.cancelled() or task.done()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("status", "expected"), [
+    ("failed", True),
+    ("deleted", True),
+    ("deleting", True),
+    ("running", False),
+    ("creating", False),
+    ("paused", False),
+    (None, False),
+])
+async def test_sandbox_probe_reclaims_only_terminal_status(
+    monkeypatch, status, expected,
+) -> None:
+    manager = AgentManager()
+    client = _router_client(FakeYuanRongClient(), agent_manager=manager)
+    runtime = await manager.get_or_create_agent(
+        "u1", "jiuwenswarm", creator=_ready_creator,
+    )
+    manager.increment_user_connections("u1")
+    query = AsyncMock(return_value={"status": status})
+    delete = AsyncMock(return_value=True)
+    scheduled: list[tuple[str, bool]] = []
+
+    def _schedule(user_id: str, *, require_online: bool = False) -> None:
+        scheduled.append((user_id, require_online))
+
+    monkeypatch.setattr(client._managed_control, "query", query)
+    monkeypatch.setattr(client, "delete_agent", delete)
+    monkeypatch.setattr(client, "_schedule_connect_warmup", _schedule)
+    try:
+        cleaned = await client._probe_ready_sandboxes_once()
+        assert cleaned == (1 if expected else 0)
+        query.assert_awaited_once()
+        if expected:
+            delete.assert_awaited_once()
+            assert delete.await_args.kwargs["idle_timeout_seconds"] == 1.0
+            assert delete.await_args.kwargs["expected_agent_id"] == runtime.info.agent_id
+            assert delete.await_args.kwargs["reason"] == DELETE_REASON_INSTANCE_UNAVAILABLE
+            assert scheduled == [("u1", True)]
+        else:
+            delete.assert_not_awaited()
+            assert scheduled == []
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_sandbox_probe_reclaims_missing_instance(monkeypatch) -> None:
+    manager = AgentManager()
+    client = _router_client(FakeYuanRongClient(), agent_manager=manager)
+    await manager.get_or_create_agent(
+        "u1", "jiuwenswarm", creator=_ready_creator,
+    )
+    manager.increment_user_connections("u1")
+    monkeypatch.setattr(
+        client._managed_control, "query",
+        AsyncMock(side_effect=AgentNotFoundError("gone")),
+    )
+    delete = AsyncMock(return_value=True)
+    scheduled: list[tuple[str, bool]] = []
+
+    def _schedule(user_id: str, *, require_online: bool = False) -> None:
+        scheduled.append((user_id, require_online))
+
+    monkeypatch.setattr(client, "delete_agent", delete)
+    monkeypatch.setattr(client, "_schedule_connect_warmup", _schedule)
+    try:
+        assert await client._probe_ready_sandboxes_once() == 1
+        delete.assert_awaited_once()
+        assert scheduled == [("u1", True)]
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [
+    AgentApiError("platform unavailable"),
+    TimeoutError("query timeout"),
+])
+async def test_sandbox_probe_skips_transient_query_errors(monkeypatch, error) -> None:
+    manager = AgentManager()
+    client = _router_client(FakeYuanRongClient(), agent_manager=manager)
+    await manager.get_or_create_agent(
+        "u1", "jiuwenswarm", creator=_ready_creator,
+    )
+    manager.increment_user_connections("u1")
+    monkeypatch.setattr(
+        client._managed_control, "query",
+        AsyncMock(side_effect=error),
+    )
+    delete = AsyncMock(return_value=True)
+    monkeypatch.setattr(client, "delete_agent", delete)
+    try:
+        assert await client._probe_ready_sandboxes_once() == 0
+        delete.assert_not_awaited()
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_sandbox_probe_skips_offline_and_busy(monkeypatch) -> None:
+    manager = AgentManager()
+    client = _router_client(FakeYuanRongClient(), agent_manager=manager)
+    await manager.get_or_create_agent(
+        "u1", "jiuwenswarm", creator=_ready_creator,
+    )
+    query = AsyncMock(return_value={"status": "failed"})
+    delete = AsyncMock(return_value=True)
+    monkeypatch.setattr(client._managed_control, "query", query)
+    monkeypatch.setattr(client, "delete_agent", delete)
+    try:
+        assert await client._probe_ready_sandboxes_once() == 0
+        query.assert_not_awaited()
+
+        manager.increment_user_connections("u1")
+        held = await manager.get_or_create_agent(
+            "u1", "jiuwenswarm", creator=_ready_creator, acquire=True,
+        )
+        assert held.task_count == 1
+        assert await client._probe_ready_sandboxes_once() == 0
+        query.assert_not_awaited()
+        await manager.release(held.key, expected_agent_id=held.info.agent_id)
+    finally:
+        await client.shutdown()
 
 
 @pytest.mark.asyncio
