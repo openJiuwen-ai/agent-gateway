@@ -10,6 +10,8 @@ import json
 import logging
 import math
 import uuid
+from collections import OrderedDict
+from functools import lru_cache
 from typing import Any
 from urllib.parse import quote, urljoin
 from weakref import WeakValueDictionary
@@ -27,6 +29,8 @@ from agent_gateway.trace_context import outbound_trace_headers, resolve_trace_id
 
 
 logger = logging.getLogger(__name__)
+# Eviction only causes a later policy refresh. Uncertain operations keep their IDs.
+_MAX_APPLIED_NETWORK_POLICIES = 1024
 
 
 def trace_headers(headers: dict[str, str], trace_id: str | None = None) -> dict[str, str]:
@@ -80,6 +84,9 @@ class AdxControlClient:
         self._deletes: dict[str, str] = {}
         # Active and waiting operations keep the shared lock alive.
         self._environment_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+        self._network_applied: OrderedDict[str, str] = OrderedDict()
+        self._network_pending: dict[str, tuple[str, str, dict]] = {}
+        self._compile_network_policy = lru_cache(maxsize=128)(self._compile_network_policy)
 
     async def connect(self, uri: str) -> None:
         del uri
@@ -90,6 +97,7 @@ class AdxControlClient:
         await self.close()
 
     async def close(self) -> None:
+        self._compile_network_policy.cache_clear()
         await self.http.aclose()
 
     @staticmethod
@@ -152,6 +160,7 @@ class AdxControlClient:
         value = await self._request('GET', '/api/instances', params={'instance_id': instance},
                                     missing_ok=True, trace_id=trace_id)
         if value is None or value == []:
+            self._network_applied.pop(instance, None)
             if observed_delete is not None:
                 # Release only the deletion observed before the authoritative GET.
                 async with self._environment_locks.setdefault(instance, asyncio.Lock()):
@@ -340,6 +349,9 @@ class AdxControlClient:
                 if len(set(options)) != len(options) or 'rw' not in options or 'ro' in options:
                     raise ValueError(error)
                 body['mounts'][0]['options'] = ['rbind', *options]
+            if 'network' in launch:
+                _, policy = self._builtin_network_policy(workspace)
+                body['network'] = copy.deepcopy(policy)
             body['process'] = copy.deepcopy(launch['process'])
             body['mounts'].extend(copy.deepcopy(launch.get('mounts', [])))
             body['env'] = {**copy.deepcopy(launch.get('image_env', {})), **body['env'],
@@ -358,6 +370,60 @@ class AdxControlClient:
         if local_rootfs is not None and not body.get('process', {}).get('commands'):
             raise ValueError('Local Agent rootfs requires process commands in its launch specification')
         return body
+
+    def _compile_network_policy(self, model_origins: tuple[str, ...]) -> tuple[str, dict]:
+        from agent_gateway.extensions.adx.network import agent_policy, http_policy
+
+        network = self.config.builtin_launch['network']
+        policy = http_policy(agent_policy(
+            {'ingress_url': network['ingress_url'], 'ingress_policy_peer': network.get('ingress_policy_peer')},
+            model_origins, network.get('allowed_internal_origins', []),
+            profile=network.get('profile', 'N2'), blocked_cidrs=network.get('blocked_cidrs', []),
+        ))
+        return self._policy_digest(policy), policy
+
+    @staticmethod
+    def _policy_digest(policy: dict) -> str:
+        return hashlib.sha256(json.dumps(policy, sort_keys=True).encode()).hexdigest()
+
+    def _remember_applied_policy(self, instance: str, digest: str) -> None:
+        self._network_applied[instance] = digest
+        self._network_applied.move_to_end(instance)
+        if len(self._network_applied) > _MAX_APPLIED_NETWORK_POLICIES:
+            self._network_applied.popitem(last=False)
+
+    def _builtin_network_policy(self, workspace: str) -> tuple[str, dict]:
+        from agent_gateway.extensions.adx.network import workspace_model_origins
+
+        return self._compile_network_policy(tuple(workspace_model_origins(workspace)))
+
+    async def ensure_builtin_network(self, instance: str, workspace: str) -> None:
+        launch = self.config.builtin_launch or {}
+        if 'network' not in launch:
+            return
+        async with self._environment_locks.setdefault(instance, asyncio.Lock()):
+            digest, desired = self._builtin_network_policy(workspace)
+            # Reconcile an ambiguous previous replacement before submitting a
+            # different policy. A model switch must not reorder old mutations.
+            if instance in self._network_pending:
+                await self._apply_pending_network(instance)
+            if self._network_applied.get(instance) == digest:
+                self._network_applied.move_to_end(instance)
+                return
+            self._network_pending[instance] = (digest, 'network-' + uuid.uuid4().hex, desired)
+            await self._apply_pending_network(instance)
+
+    async def _apply_pending_network(self, instance: str) -> None:
+        digest, operation, policy = self._network_pending[instance]
+        try:
+            await self._request('PUT', f'/api/environment/v1/environments/{quote(instance, safe="")}/network',
+                                body=policy, request_id=operation, operation_id=operation)
+        except AdxControlError as error:
+            if error.outcome in ('terminal', 'not_started') or error.code in ('INVALID_ARGUMENT', 'PERMISSION_DENIED', 'NOT_FOUND'):
+                self._network_pending.pop(instance, None)
+            raise
+        self._remember_applied_policy(instance, digest)
+        self._network_pending.pop(instance, None)
 
     async def create_sandbox(self, *, namespace: str, name: str, workspace: str, runtime_spec: dict,
                              env_vars: dict | None = None, mounts: list | None = None,
@@ -406,6 +472,8 @@ class AdxControlClient:
                                      status_code=error.status_code) from error
         if not isinstance(result, dict) or result.get('environmentId') != instance:
             raise AdxCreateUncertain('ADX create returned an unexpected Environment ID', outcome='unknown')
+        if 'network' in body:
+            self._remember_applied_policy(instance, self._policy_digest(body['network']))
         return await self._ready_sandbox_info(instance, trace_id=trace_id)
 
     async def _ready_sandbox_info(self, instance: str, *, trace_id: str | None = None) -> SandboxInfo:
@@ -424,6 +492,8 @@ class AdxControlClient:
     def _forget_environment(self, instance: str) -> None:
         self._creates.pop(instance, None)
         self._deletes.pop(instance, None)
+        self._network_applied.pop(instance, None)
+        self._network_pending.pop(instance, None)
 
     async def delete_sandbox(self, sandbox_id: str, *, trace_id: str | None = None) -> None:
         trace_id = _resolve_trace_id(trace_id)

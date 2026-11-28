@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import aclosing
 from pathlib import Path
@@ -16,7 +17,7 @@ from agent_gateway.southbound.orchestration.client import SouthboundAgentClient
 from agent_gateway.extensions.adx.ssh_relay import AdxSshRelay
 from agent_gateway.channel_manager.base import ChannelType
 from agent_gateway.extensions.adx.config import AdxRouterConfig
-from agent_gateway.extensions.adx.control_client import AdxControlClient
+from agent_gateway.extensions.adx.control_client import AdxControlClient, AdxControlError
 from agent_gateway.extensions.adx.control_adapter import AdxControl
 from agent_gateway.extensions.adx.errors import AdxRoutingError
 from agent_gateway.extensions.adx.file_client import AdxFileMixin
@@ -24,8 +25,13 @@ from agent_gateway.extensions.agentos.agentos_router.agentos_authenticator impor
 from agent_gateway.extensions.agentos.agentos_router.registry_client import RegistryClient
 from agent_gateway.extensions.auth.credential_authenticator import AuthResult
 from agent_gateway.health_check import HEALTH_CHECK_CHANNEL_ID, HEALTH_CHECK_OK
-from agent_gateway.southbound.orchestration.agent_manager import AgentManager, AgentPreCreateError, BUILTIN_AGENT_TYPE
+from agent_gateway.southbound.orchestration.agent_manager import (
+    AgentCreateFailed, AgentManager, AgentPreCreateError, AgentRuntime, BUILTIN_AGENT_TYPE,
+)
 from agent_gateway.southbound.orchestration.managed_router import ManagedRouter, resolve_agent_workspace, sandbox_name
+
+
+logger = logging.getLogger(__name__)
 
 
 class _AdxManagedRouter(ManagedRouter):
@@ -45,6 +51,32 @@ class _AdxManagedRouter(ManagedRouter):
                 # can admit this user without restarting Gateway or clearing caches.
                 raise AgentPreCreateError(str(exc)) from exc
         return await super()._create_agent_impl(agent_info, operation, trace_id)
+
+    async def _resolve_agent(
+        self, envelope: E2AEnvelope, *, acquire: bool = False, ws_ready: bool = False,
+    ) -> AgentRuntime:
+        try:
+            runtime = await super()._resolve_agent(envelope, acquire=acquire, ws_ready=ws_ready)
+        except AdxControlError as exc:
+            raise AgentCreateFailed(f"AGENT_CREATE_FAILED: {exc}") from exc
+        try:
+            launch = self._managed_control.backend.config.builtin_launch or {}
+            if 'network' in launch and runtime.info.agent_type == BUILTIN_AGENT_TYPE:
+                workspace = resolve_agent_workspace(runtime.info.user_id, workspace_root=self._workspace_root)
+                await self._managed_control.backend.ensure_builtin_network(runtime.info.sandbox_id, workspace)
+        except (Exception, asyncio.CancelledError) as exc:
+            if acquire:
+                await asyncio.shield(self._release_after_network_failure(runtime))
+            if isinstance(exc, AdxControlError):
+                raise AgentCreateFailed(f"AGENT_NETWORK_UPDATE_FAILED: {exc}") from exc
+            raise
+        return runtime
+
+    async def _release_after_network_failure(self, runtime: AgentRuntime) -> None:
+        try:
+            await self._agent_manager.release(runtime.key, expected_agent_id=runtime.info.agent_id)
+        except Exception:
+            logger.exception("Failed to release AgentServer activity after network update failure")
 
 
 class AdxRouterClient(AdxFileMixin, SouthboundAgentClient):
