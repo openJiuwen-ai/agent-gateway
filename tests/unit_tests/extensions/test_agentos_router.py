@@ -2059,6 +2059,36 @@ async def test_sandbox_probe_reclaims_only_terminal_status(
 
 
 @pytest.mark.asyncio
+async def test_sandbox_probe_does_not_warm_when_delete_rejected(monkeypatch) -> None:
+    manager = AgentManager()
+    client = _router_client(FakeYuanRongClient(), agent_manager=manager)
+    runtime = await manager.get_or_create_agent(
+        "u1", "jiuwenswarm", creator=_ready_creator,
+    )
+    manager.increment_user_connections("u1")
+    query = AsyncMock(return_value={"status": "failed"})
+    delete = AsyncMock(return_value=False)
+    scheduled: list[tuple[str, bool]] = []
+
+    def _schedule(user_id: str, *, require_online: bool = False) -> None:
+        scheduled.append((user_id, require_online))
+
+    monkeypatch.setattr(client._managed_control, "query", query)
+    monkeypatch.setattr(client, "delete_agent", delete)
+    monkeypatch.setattr(client, "_schedule_connect_warmup", _schedule)
+    try:
+        assert await client._probe_ready_sandboxes_once() == 0
+        query.assert_awaited_once()
+        delete.assert_awaited_once()
+        assert scheduled == []
+        current = await manager.get_agent("u1", "jiuwenswarm")
+        assert current is not None
+        assert current.info.agent_id == runtime.info.agent_id
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_sandbox_probe_reclaims_missing_instance(monkeypatch) -> None:
     manager = AgentManager()
     client = _router_client(FakeYuanRongClient(), agent_manager=manager)
