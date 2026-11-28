@@ -68,6 +68,7 @@ The binary-text check rejects Unicode control characters (`Cc`, including C0, DE
 - [Documentation](docs/README_EN.md) — tutorial, how-to, reference, and explanation
 - [Examples](examples/README.md) — runnable mock AgentServer example
 - [Local Validation](docs/en/how-to/local-validation.md) — end-to-end validation walkthrough
+- [AG-UI integration guide (Chinese)](docs/zh/AG-UI.md) — Gateway setup, sessions, and application tools
 - [Release Notes](https://gitcode.com/openJiuwen/agent-gateway/releases)
 
 ## Requirements

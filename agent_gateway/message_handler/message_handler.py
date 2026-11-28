@@ -6336,6 +6336,19 @@ class MessageHandler(ABC):
                         release_request_continuation(msg, reason="task_cancelled" if outcome == "cancelled" else "")
                     trace_scope.__exit__(None, None, None)
 
+    async def stream_application_request(self, env: "E2AEnvelope"):
+        """Stream an isolated application run using shared credential preparation.
+
+        HTTP adapters own their event delivery and execution cleanup; they do
+        not subscribe to WebSocket broadcasts or rewrite interaction IDs.
+        """
+        from contextlib import aclosing
+
+        await self._apply_session_login_owner(env)
+        async with aclosing(self.agent_client.send_request_stream(env)) as stream:
+            async for chunk in stream:
+                yield chunk
+
     async def process_stream(
         self, env: "E2AEnvelope", session_id: str | None,
         request_metadata: dict[str, Any] | None, *, emit_processing_status: bool = True,

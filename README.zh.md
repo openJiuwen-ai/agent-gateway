@@ -56,6 +56,8 @@ UTF-8 文本和代码可直接展开：每个文件默认最多 128 KiB 正文�
 
 ## 相关文档
 
+- [AG-UI 接入指南](docs/zh/AG-UI.md) —— Gateway 侧配置、会话与应用工具闭环
+
 - [文档导航](docs/README.md) —— 教程、操作指南、参考与架构说明
 - [示例](examples/README.md) —— 可运行的 Mock AgentServer 示例
 - [本地功能验证](docs/zh/how-to/local-validation.md) —— 端到端验证流程

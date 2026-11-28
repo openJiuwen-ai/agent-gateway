@@ -7154,6 +7154,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("harness.export", _harness_export_handler)
 
     real_agent_client = _resolve(agent_client)
+    channel.ag_ui_agent_client = real_agent_client
+    channel.ag_ui_message_handler = message_handler
     # Container file transfer is HTTP on the WebChannel port, not WS JSON-RPC.
     # not WS JSON-RPC. Bind any client that already exposes the container-file
     # methods so build_web_channel_app can mount /file-api/* at channel.start().
