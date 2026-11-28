@@ -4186,6 +4186,8 @@ class MessageHandler(ABC):
         # 若只进 WebChannel 会被丢掉。旁路抄进 CronLiveBus。
         self._mirror_cron_live_file_push(out)
         await self.publish_robot_messages(out)
+        if isinstance(chunk.payload, dict):
+            self._maybe_release_team_busy_affinity(session_id, chunk.payload)
         logger.debug(
             "[MessageHandler] server_push 已写入 robot_messages: request_id=%s channel_id=%s app_id=%s",
             rid,
@@ -4920,7 +4922,52 @@ class MessageHandler(ABC):
             and payload.get("is_processing") is False
         ):
             self._stream_processing_finished.add(chunk.request_id)
+        self._maybe_release_team_busy_affinity(session_id, payload)
         return True
+
+    def _maybe_release_team_busy_affinity(
+        self,
+        session_id: str | None,
+        payload: Any,
+    ) -> None:
+        """Stop enterprise-team Runtime busy hold when a round truly ends.
+
+        Only Runtime-routed clients implement the hold (personal WS → no-op).
+        Release mirrors ``owner_round_terminal`` in ``_process_stream_impl``:
+        ``team.completed``, ``chat.error``, or ``is_processing=False`` with
+        ``is_complete=True``. Bare false / ``awaiting_user_input`` keep the hold.
+        """
+        if not session_id or not isinstance(payload, dict):
+            return
+        event_type = str(payload.get("event_type") or "")
+        should_release = False
+        if event_type == "team.completed":
+            should_release = True
+        elif event_type == "chat.error":
+            should_release = True
+        elif event_type == "chat.processing_status" and payload.get("is_processing") is False:
+            # Pause for user input: AS still owns the team stream.
+            if payload.get("awaiting_user_input") is True:
+                return
+            # Bare false can be a mid-round member/short-stream finish — same
+            # contract as owner_round_terminal (needs is_complete=True).
+            if payload.get("is_complete") is not True:
+                return
+            should_release = True
+        if not should_release:
+            return
+        release = getattr(self.agent_client, "release_busy_session_affinity", None)
+        if not callable(release):
+            return
+        tasks = getattr(self, "_team_busy_affinity_tasks", None)
+        if tasks is None:
+            tasks = self._team_busy_affinity_tasks = set()
+        task = asyncio.create_task(
+            release(str(session_id)),
+            name="team-busy-affinity-release",
+        )
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
 
     async def _publish_stream_error(
         self,
