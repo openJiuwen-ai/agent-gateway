@@ -11,8 +11,11 @@ from agent_gateway.application.personal_settings import allows_settings_origin
 from agent_gateway.common.protocol_ids import InvalidProtocolId, validate_session_id
 from agent_gateway.routing.e2a_proxy import fetch_agent_unary
 
-# Removal and batch lifecycle need separate coordination with Cron.
-_PROJECT_METHODS = frozenset({'project.create', 'project.rename', 'project.pin'})
+# Removing and restoring a project is one request to the AgentServer, which
+# owns the project, its Sessions and their jobs. It must say it can do that.
+PROJECT_LIFECYCLE_CAPABILITY = 'personal_project_lifecycle_v1'
+PROJECT_MUTATIONS = frozenset({'project.remove', 'project.restore'})
+_PROJECT_METHODS = frozenset({'project.create', 'project.rename', 'project.pin'}) | PROJECT_MUTATIONS
 _HEARTBEAT_METHODS = frozenset({
     'heartbeat.job.get', 'heartbeat.job.preview', 'heartbeat.job.create', 'heartbeat.job.update',
     'heartbeat.job.toggle', 'heartbeat.job.run_now', 'heartbeat.job.cancel', 'heartbeat.job.delete',
@@ -34,6 +37,15 @@ def protect_personal_web_operation(
         if not isinstance(params, dict):
             await channel.send_response(ws, req_id, ok=False, error='params must be an object', code='BAD_REQUEST')
             return
+        if method in PROJECT_MUTATIONS:
+            project_id = params.get('project_id')
+            if (not isinstance(project_id, str) or not project_id.strip()
+                    or len(project_id) > 256 or not project_id.isprintable()):
+                await channel.send_response(
+                    ws, req_id, ok=False, error='project_id must be a bounded string', code='BAD_REQUEST',
+                )
+                return
+            params = {'project_id': project_id.strip()}
         if method in _HEARTBEAT_METHODS:
             # The regular Web dispatcher supplies a synthetic session ID if
             # there isn't one in the request. Never use it as an access scope.

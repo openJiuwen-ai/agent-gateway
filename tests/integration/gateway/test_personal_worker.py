@@ -130,6 +130,15 @@ async def personal(tmp_path, monkeypatch):
         yield group, stub
 
 
+@asynccontextmanager
+async def personal_with(tmp_path, monkeypatch, *capabilities):
+    """The personal Worker in front of an AgentServer that advertises ``capabilities``."""
+    prepare_environment(tmp_path, monkeypatch)
+    stub = RecordingAgentServer(capabilities=capabilities).start()
+    async with running(stub) as group:
+        yield group, stub
+
+
 def tui_url(group, *, user=USER):
     host, port = group.addresses[1]
     return f"ws://{host}:{port}/tui?user_id={user}"
@@ -431,7 +440,7 @@ async def test_personal_web_reads_use_the_regular_handlers(personal):
 
 @pytest.mark.parametrize("method", ["cron.job.list", "skills.install", "path.set", "models.replace_all",
                                     "permissions.tools.set", "openai_account.auth.status", "project.delete",
-                                    "project.remove", "project.restore", "project.sessions.archive"])
+                                    "project.sessions.archive"])
 async def test_personal_web_listener_keeps_ungated_writes_out(personal, method):
     group, stub = personal
     async with connect(web_url(group), additional_headers=ORIGIN) as web:
@@ -482,6 +491,8 @@ async def test_web_project_writes_need_a_browser_origin(personal):
     for method, params in (("project.create", {"name": "p", "project_dir": "", "work_mode": "work"}),
                            ("project.rename", {"project_id": "p", "name": "n"}),
                            ("project.pin", {"project_id": "p", "pinned": True}),
+                           ("project.remove", {"project_id": "p"}),
+                           ("project.restore", {"project_id": "p"}),
                            ("heartbeat.job.delete", {"session_id": "s-mine", "id": "job"})):
         async with connect(web_url(group)) as web:
             await web.send(request(method, method, params))
@@ -490,8 +501,8 @@ async def test_web_project_writes_need_a_browser_origin(personal):
                 "error": "This operation requires an allowed Web Origin",
             }, method
     # Refused before any handler: neither the write nor its Session ownership check is sent.
-    assert not sent(stub, "project.create", "project.rename", "project.pin", "session.get_metadata",
-                    "heartbeat.job")
+    assert not sent(stub, "project.create", "project.rename", "project.pin", "project.remove",
+                    "project.restore", "session.get_metadata", "heartbeat.job")
 
 
 async def test_web_project_writes_are_forwarded_once_with_the_connection_identity(personal):
@@ -542,6 +553,95 @@ async def test_web_project_writes_are_forwarded_once_with_the_connection_identit
         ("project.rename", {"project_id": "p-new", "name": "default"}, "web", USER),
         ("project.create", {"name": "Existing", "project_dir": "", "work_mode": "work"}, "web", USER),
     ]
+
+
+async def test_web_project_lifecycle_is_refused_before_the_agentserver(personal):
+    group, stub = personal
+    async with connect(web_url(group), additional_headers=ORIGIN) as web:
+        for request_id, method, params, code in (
+            ("default", "project.remove", {"project_id": "default"}, "FORBIDDEN"),
+            ("default-code", "project.remove", {"project_id": "default_code"}, "FORBIDDEN"),
+            ("missing", "project.remove", {}, "BAD_REQUEST"),
+            ("blank", "project.restore", {"project_id": "   "}, "BAD_REQUEST"),
+            ("control", "project.restore", {"project_id": "p\n1"}, "BAD_REQUEST"),
+        ):
+            await web.send(request(request_id, method, params))
+            refused = await answer(web, request_id)
+            assert (refused["ok"], refused["code"], refused["payload"]) == (False, code, {}), (request_id, refused)
+    # Project-wide batch lifecycle is not a personal Web operation.
+    for method in ("project.delete", "project.sessions.archive"):
+        async with connect(web_url(group), additional_headers=ORIGIN) as web:
+            await web.send(request(method, method, {"project_id": "p-1"}))
+            assert await answer(web, method) == {"id": method, "closed": 1008}, method
+    assert requests_sent(stub) == []
+
+
+async def test_web_project_removal_and_restore_need_the_agentserver_capability(tmp_path, monkeypatch):
+    seen = {}
+    for name, capabilities in (("legacy", ()), ("capable", ("personal_project_lifecycle_v1",))):
+        async with personal_with(tmp_path, monkeypatch, *capabilities) as (group, stub):
+            stub.replies["project.remove"] = {"hidden": True, "stopped_sessions": ["s-1"]}
+            stub.replies["project.restore"] = {"restored": True}
+            async with connect(web_url(group), additional_headers=ORIGIN) as web:
+                for request_id, method, params in (
+                    ("remove", "project.remove", {"project_id": " p-1 ", "name": "dropped", "user_id": "bob"}),
+                    ("restore", "project.restore", {"project_id": "p-1", "user_id": "bob"}),
+                ):
+                    await web.send(request(request_id, method, params))
+                    seen[(name, method)] = await answer(web, request_id)
+            seen[(name, "sent")] = [(request["method"], request["params"], request["user_id"])
+                                    for request in requests_sent(stub)]
+    # An AgentServer that does not say it stops the project's Sessions and jobs
+    # is answered without a write: there is no Gateway Cron to stop them here.
+    for method in ("project.remove", "project.restore"):
+        legacy = seen[("legacy", method)]
+        assert (legacy["ok"], legacy["code"], legacy["payload"]) == (False, "UNSUPPORTED_DATA_PLANE", {}), legacy
+    assert seen[("legacy", "sent")] == []
+    assert seen[("capable", "project.remove")] == {
+        "type": "res", "id": "remove", "ok": True, "payload": {"hidden": True, "stopped_sessions": ["s-1"]},
+    }
+    assert seen[("capable", "project.restore")] == {"type": "res", "id": "restore", "ok": True, "payload": {"restored": True}}
+    # One request each, reduced to the project ID and carrying the connection's identity.
+    assert seen[("capable", "sent")] == [
+        ("project.remove", {"project_id": "p-1"}, USER),
+        ("project.restore", {"project_id": "p-1"}, USER),
+    ]
+
+
+async def test_web_project_removal_and_restore_events_reach_the_owner_only(tmp_path, monkeypatch):
+    async with personal_with(tmp_path, monkeypatch, "personal_project_lifecycle_v1") as (group, stub):
+        stub.replies["project.remove"] = {"hidden": True, "stopped_sessions": ["s-1"]}
+        stub.replies["project.restore"] = {"restored": True}
+        async with (connect(web_url(group), additional_headers=ORIGIN) as web,
+                    connect(web_url(group), additional_headers=ORIGIN) as sibling,
+                    connect(web_url(group, user="bob"), additional_headers=ORIGIN) as other):
+            await web.send(request("remove", "project.remove", {"project_id": "p-1"}))
+            assert (await answer(web, "remove"))["ok"] is True
+            assert await event(sibling, "project.removed") == {
+                "type": "event", "event": "project.removed", "payload": {"project_id": "p-1"},
+            }
+            await web.send(request("restore", "project.restore", {"project_id": "p-1"}))
+            assert (await answer(web, "restore"))["ok"] is True
+            assert await event(sibling, "project.restored") == {
+                "type": "event", "event": "project.restored", "payload": {"project_id": "p-1"},
+            }
+            # The AgentServer's structured refusal reaches the page as it is, and notifies nobody.
+            stub.replies["project.restore"] = {"error": "no such project", "code": "PROJECT_NOT_FOUND"}
+            await web.send(request("missing", "project.restore", {"project_id": "missing"}))
+            refused = await answer(web, "missing")
+            assert (refused["ok"], refused["code"], refused["error"]) == (False, "PROJECT_NOT_FOUND", "no such project")
+            # The broadcasts finished before each write was answered, so the other
+            # sockets have nothing queued before their next response.
+            for name, ws in (("sibling", sibling), ("other", other)):
+                await ws.send(request("status", "connection.status", {}))
+                frames = await frames_until(ws, "status")
+                assert frames[-1]["ok"] is True, (name, frames)
+                assert not [f for f in frames if f.get("event") in {"project.removed", "project.restored"}], (name, frames)
+        assert [(request["method"], request["params"], request["user_id"]) for request in requests_sent(stub)] == [
+            ("project.remove", {"project_id": "p-1"}, USER),
+            ("project.restore", {"project_id": "p-1"}, USER),
+            ("project.restore", {"project_id": "missing"}, USER),
+        ]
 
 
 def heartbeat_answers(stub):

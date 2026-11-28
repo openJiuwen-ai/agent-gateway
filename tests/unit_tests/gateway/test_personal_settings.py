@@ -330,7 +330,7 @@ def test_personal_web_listener_admits_only_its_methods():
     for method in sorted(admitted):
         assert is_data_frame(frame(method), web=True, personal=True, compat=True), method
         assert is_data_frame(frame(method, session_id="s"), web=True, personal=True, compat=True), method
-    for method in ("cron.job.list", "project.delete", "project.remove", "project.restore", "skills.install",
+    for method in ("cron.job.list", "project.delete", "skills.install",
                    "path.set", "designer.graph.list", "session.create", "models.replace_all", "models.validate",
                    "permissions.tools.set", "openai_account.auth.status", "external_cli.install", "webui.dispatch"):
         assert not is_data_frame(frame(method), web=True, personal=True, compat=True), method
