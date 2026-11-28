@@ -21,6 +21,16 @@ from agent_gateway.cron.controller import CronController
 from agent_gateway.message_handler import message_handler as mh
 from agent_gateway.message_handler.message_handler import MessageHandler
 
+@pytest.fixture(autouse=True)
+def session_metadata_provider(monkeypatch):
+    lookup = AsyncMock(return_value={})
+    monkeypatch.setattr(
+        "agent_gateway.common.external_providers.provider",
+        lambda _: SimpleNamespace(get_session_metadata_async=lookup),
+    )
+    return lookup
+
+
 
 def _make_controller() -> CronController:
     store = SimpleNamespace(
@@ -179,6 +189,7 @@ async def test_delete_job_force_path_still_serves_auto_sync() -> None:
 
 def _bare_handler() -> MessageHandler:
     handler = object.__new__(MessageHandler)
+    handler._stream_sessions = {}
     handler.agent_client = SimpleNamespace()
     handler._stream_metadata = {}
     handler._stream_modes = {}

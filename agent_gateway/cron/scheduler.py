@@ -74,9 +74,9 @@ def _cron_lifecycle_source(store: object) -> Path:
     source = getattr(store, "path", None)
     if isinstance(source, Path) and _is_local_cron_path(source):
         return source
-    from agent_gateway.common.paths import get_cron_jobs_path
+    from agent_gateway.common.paths import get_legacy_cron_jobs_path
 
-    return get_cron_jobs_path()
+    return get_legacy_cron_jobs_path()
 
 
 def _is_web_cron_job(job: CronJob) -> bool:

@@ -11,6 +11,16 @@ from e2a.models import E2AResponse
 
 from agent_gateway.message_handler.message_handler import MessageHandler
 
+@pytest.fixture(autouse=True)
+def session_metadata_provider(monkeypatch):
+    lookup = AsyncMock(return_value={})
+    monkeypatch.setattr(
+        "agent_gateway.common.external_providers.provider",
+        lambda _: SimpleNamespace(get_session_metadata_async=lookup),
+    )
+    return lookup
+
+
 
 class _CapturingCronController:
     def __init__(self) -> None:
@@ -541,3 +551,29 @@ def test_message_handler_registers_push_callback_for_agentos_router() -> None:
     handler._register_agent_server_push_handler()
 
     assert client.push_handler == handler._handle_agent_server_push
+
+
+@pytest.mark.asyncio
+async def test_cron_push_rejects_followup_in_persisted_execution_session(
+    session_metadata_provider,
+) -> None:
+    controller = _CapturingCronController()
+    handler = _bare_handler(object(), controller)
+    handler._push_cron_command_ack = AsyncMock()
+    handler._stream_sessions["followup"] = "web_cron_execution"
+    session_metadata_provider.return_value = {"cron_id": "parent-job"}
+
+    await handler._handle_cron_push_payload(
+        payload={"action": "create", "command_id": "command", "data": {"name": "nested"}},
+        request_id="followup",
+        channel_id="web",
+        session_id="different-session",
+        metadata=None,
+        user_id="user",
+    )
+
+    session_metadata_provider.assert_awaited_once_with(
+        "web_cron_execution", enable_writeback=False, user_id="user",
+    )
+    assert controller.create_params is None
+    assert "unavailable" in handler._push_cron_command_ack.call_args.kwargs["data"]["error"]
