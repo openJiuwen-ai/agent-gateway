@@ -49,7 +49,7 @@ class _DisabledAccounts:
         return None
 
 
-def is_data_frame(raw: str | bytes, *, acp: bool = False) -> bool:
+def is_data_frame(raw: str | bytes, *, acp: bool = False, accounts: bool = False) -> bool:
     """Keep unadapted login, configuration and Cron out of this Worker host."""
     try:
         frame = json.loads(raw)
@@ -66,11 +66,11 @@ def is_data_frame(raw: str | bytes, *, acp: bool = False) -> bool:
         return True
     return not (
         any(key in params for key in (MODEL_AUTH_PARAM_KEY, "credential_ref", "_jiuwen_auth_session"))
-        or any(params.get(key) == "huawei-maas-login" for key in ("source", "model_source"))
+        or (not accounts and any(params.get(key) == "huawei-maas-login" for key in ("source", "model_source")))
     )
 
 
-def _build_web_app(channel):
+def _build_web_app(channel, *, frame_allowed=is_data_frame):
     from agent_gateway.channel_manager.web import web_channel_app
     from agent_gateway.common.ingress_identity import IngressIdentityError
 
@@ -101,7 +101,7 @@ def _build_web_app(channel):
             return
         await web_channel_app._serve_channel_websocket(
             channel, websocket, local_user_id=identity.business_user_id or "",
-            frame_allowed=is_data_frame,
+            frame_allowed=frame_allowed,
         )
 
     return app
@@ -116,7 +116,7 @@ async def _no_refresh(_message) -> None:
 
 
 @asynccontextmanager
-async def data_worker(agent_server_url: str):
+async def data_worker(agent_server_url: str, *, control_client=None, on_credentials=None):
     from agent_gateway.application.preparation import callback_framework
     from agent_gateway.application.tui_acp import assemble_tui_acp
     from agent_gateway.application.web import assemble_web
@@ -134,9 +134,22 @@ async def data_worker(agent_server_url: str):
         client = assemble_client(None, mode="websocket", enterprise=False, uri=agent_server_url)
         cleanup.push_async_callback(client.disconnect)
         await client.connect(agent_server_url)
-        accounts = _DisabledAccounts()
+        credentials = None
+        if control_client is not None:
+            from agent_gateway.auth.worker_credential_services import WorkerCredentialServices
+
+            credentials = WorkerCredentialServices.from_client(
+                control_client, server_id=agent_server_url, agent_client=client,
+            )
+            cleanup.push_async_callback(credentials.stop)
+            if on_credentials is not None:
+                on_credentials(credentials)
+        accounts = credentials.bindings if credentials is not None else _DisabledAccounts()
         handler = MessageHandler(client, session_login_bindings=accounts)
-        handler.set_credential_access(accounts)
+        if credentials is not None:
+            credentials.attach_handler(handler)
+        else:
+            handler.set_credential_access(accounts)
         manager = ChannelManager(handler, config={})
         handler.set_channel_manager(manager)
         cleanup.push_async_callback(handler.stop_forwarding)
@@ -146,6 +159,8 @@ async def data_worker(agent_server_url: str):
         preprocessor = MessagePreprocessor(
             _no_refresh, partial(_normalize_gateway_message, apply_model_auth=False), _inject_session_work_mode,
         )
+        if credentials is not None:
+            preprocessor = preprocessor.with_credential_access(credentials.credentials)
         web, _ = assemble_web(
             agent_client=client, message_handler=handler, channel_manager=manager,
             extension_registry=registry, on_config_saved=_reject_config, heartbeat_service=None,
@@ -162,11 +177,12 @@ async def data_worker(agent_server_url: str):
         )
         cleanup.push_async_callback(tui.stop)
         await tui.tui_channel.start()
-        web_app = _build_web_app(web)
+        frame_allowed = partial(is_data_frame, accounts=credentials is not None)
+        web_app = _build_web_app(web, frame_allowed=frame_allowed)
         web_runtime = WebProtocolRuntime(web_app, ws_per_message_deflate=False, single_request_http=True)
         cleanup.push_async_callback(web_runtime.stop)
         await web_runtime.start()
-        protocol = ProtocolConnectionRuntime(tui.protocol_runtime, frame_allowed=is_data_frame)
+        protocol = ProtocolConnectionRuntime(tui.protocol_runtime, frame_allowed=frame_allowed)
         cleanup.push_async_callback(protocol.stop)
         await protocol.start()
         yield {"web-http": web_runtime, "web-ws": _WebSocketAdopter(web_runtime), "protocol": protocol}, web_runtime

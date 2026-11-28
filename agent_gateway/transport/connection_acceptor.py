@@ -11,7 +11,7 @@ import socket
 
 from agent_gateway.common.ingress_identity import IngressIdentityError, resolve_local_identity
 from agent_gateway.common.worker_affinity import FixedUserHash
-from agent_gateway.transport.acceptor_http import HeadRejected, read_request_head
+from agent_gateway.transport.acceptor_http import HeadRejected, RequestHead, read_request_head
 from agent_gateway.transport.handoff import HandoffRejected
 
 logger = logging.getLogger("gateway")
@@ -21,6 +21,7 @@ class ConnectionAcceptor:
     def __init__(
         self, listener: socket.socket, *, protocol_port: bool, affinity: FixedUserHash,
         handoff: Callable[..., Awaitable[None]], handoff_timeout: float, head_timeout: float = 5,
+        control_http: Callable[[socket.socket, bytes], Awaitable[None]] | None = None,
     ) -> None:
         self._listener = listener
         self._protocol_port = protocol_port
@@ -28,6 +29,7 @@ class ConnectionAcceptor:
         self._handoff = handoff
         self._handoff_timeout = handoff_timeout
         self._head_timeout = head_timeout
+        self._control_http = control_http
         self._inflight = asyncio.Semaphore(128)
         self._clients: dict[asyncio.Task, socket.socket] = {}
         self._task: asyncio.Task | None = None
@@ -80,6 +82,14 @@ class ConnectionAcceptor:
                 entry, runtime = "web", "web-ws"
             elif request.protocol == "http":
                 entry, runtime = "http", "web-http"
+                if self._is_control_http(request):
+                    duplicate = client.dup()
+                    try:
+                        await self._control_http(duplicate, request.prefix)
+                    except BaseException:
+                        duplicate.close()
+                        raise
+                    return
             else:
                 raise HeadRejected(404)
             try:
@@ -108,3 +118,6 @@ class ConnectionAcceptor:
         except (HandoffRejected, ConnectionError, OSError, TimeoutError):
             # No response or retry after offering the fd: the Worker may own it.
             return
+
+    def _is_control_http(self, request: RequestHead) -> bool:
+        return self._control_http is not None and request.path.startswith("/api/v1/auth/")

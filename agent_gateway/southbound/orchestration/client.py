@@ -93,10 +93,15 @@ class StaticAgentClient(SouthboundAgentClient):
 
         self._transport.set_push_handler(receive)
 
-    async def send_request(self, envelope: E2AEnvelope, *, timeout: float | None = None) -> AgentResponse:
+    def set_credential_runtime(self, runtime: Any) -> None:
+        self._transport.set_credential_runtime(runtime)
+
+    async def send_request(self, envelope: E2AEnvelope, *, timeout: float | None = None,
+                           on_written: Callable[[], None] | None = None) -> AgentResponse:
         async with self._router.resolve(RouteRequest(envelope, allow_create=False)) as route:
             try:
-                result = await self._transport.send_request(route.targets[0], envelope, timeout=timeout)
+                kwargs = {} if on_written is None else {"on_written": on_written}
+                result = await self._transport.send_request(route.targets[0], envelope, timeout=timeout, **kwargs)
             except TransportError as exc:
                 if exc.__cause__ is not None:
                     raise exc.__cause__

@@ -10,6 +10,8 @@ import socket
 import sys
 
 from agent_gateway.processes.channel import ManagementChannel
+from agent_gateway.processes.control_channel import ControlServiceChannel
+from agent_gateway.processes.control_service import ControlServiceClient, ControlServiceIdentity
 from agent_gateway.processes.management_protocol import validate_message
 from agent_gateway.processes.pool import management_frame
 from agent_gateway.transport.handoff import HandoffReceiver
@@ -19,11 +21,13 @@ from agent_gateway.transport.handoff_protocol import HandoffIdentity
 logger = logging.getLogger("gateway")
 
 
-async def _run(management_fd: int, transfer_fd: int, agent_server_url: str) -> None:
+async def _run(management_fd: int, transfer_fd: int, agent_server_url: str, control_fd: int | None = None) -> None:
     from agent_gateway.application.worker_data import data_worker
 
     management = ManagementChannel(socket.socket(fileno=management_fd))
     transfer = HandoffChannel(socket.socket(fileno=transfer_fd))
+    control_channel = ControlServiceChannel(socket.socket(fileno=control_fd)) if control_fd is not None else None
+    control = credentials = None
     identity = None
     try:
         init = await management.receive(timeout=10)
@@ -33,7 +37,27 @@ async def _run(management_fd: int, transfer_fd: int, agent_server_url: str) -> N
         await management.send(management_frame("READY", identity, pid=os.getpid(), stage="management_ready"))
         stop = asyncio.create_task(management.receive(), name="gateway-worker-stop-frame")
         try:
-            async with data_worker(agent_server_url) as (runtimes, web_runtime):
+            if control_channel is not None:
+                async def invalidate(arguments):
+                    if credentials is None:
+                        raise RuntimeError("Worker credential services not ready")
+                    await credentials.handle_invalidation(arguments)
+
+                def attach_credentials(value):
+                    nonlocal credentials
+                    credentials = value
+
+                control = ControlServiceClient(
+                    control_channel,
+                    ControlServiceIdentity(identity.group_id, identity.slot_id, identity.generation,
+                                           os.getpid(), os.getppid()),
+                    event_handlers={"credentials.invalidate": invalidate},
+                )
+                await control.start()
+            async with data_worker(agent_server_url, control_client=control,
+                                   on_credentials=attach_credentials if control is not None else None) as (
+                runtimes, web_runtime,
+            ):
                 await management.send(management_frame("RUNTIME_READY", identity, pid=os.getpid(),
                                                        runtime_ids=list(runtimes)))
                 receiver = HandoffReceiver(transfer, identity, runtimes)
@@ -44,8 +68,11 @@ async def _run(management_fd: int, transfer_fd: int, agent_server_url: str) -> N
 
                 handoff = asyncio.create_task(receive_connections(), name="gateway-worker-handoff")
                 web_closed = asyncio.create_task(web_runtime.wait_closed(), name="gateway-worker-web-runtime")
+                tasks = [stop, handoff, web_closed]
+                if control is not None:
+                    tasks.append(asyncio.create_task(control.wait()))
                 try:
-                    done, _ = await asyncio.wait((stop, handoff, web_closed), return_when=asyncio.FIRST_COMPLETED)
+                    done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
                     if stop not in done:
                         for task in done:
                             task.result()
@@ -54,9 +81,9 @@ async def _run(management_fd: int, transfer_fd: int, agent_server_url: str) -> N
                     if frame["type"] != "STOP":
                         raise RuntimeError("expected Worker STOP")
                 finally:
-                    handoff.cancel()
-                    web_closed.cancel()
-                    await asyncio.gather(handoff, web_closed, return_exceptions=True)
+                    for task in tasks[1:]:
+                        task.cancel()
+                    await asyncio.gather(*tasks[1:], return_exceptions=True)
         finally:
             stop.cancel()
             await asyncio.gather(stop, return_exceptions=True)
@@ -71,9 +98,16 @@ async def _run(management_fd: int, transfer_fd: int, agent_server_url: str) -> N
                 pass
         raise
     finally:
-        management.close()
-        transfer.close()
+        try:
+            if control is not None:
+                await control.stop()
+        finally:
+            management.close()
+            transfer.close()
+            if control_channel is not None:
+                control_channel.close()
 
 
 if __name__ == "__main__":
-    asyncio.run(_run(int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]))
+    asyncio.run(_run(int(sys.argv[1]), int(sys.argv[2]), sys.argv[3],
+                     int(sys.argv[4]) if len(sys.argv) == 5 else None))

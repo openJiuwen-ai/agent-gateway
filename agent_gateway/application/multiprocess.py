@@ -25,11 +25,13 @@ class MultiprocessOptions:
     workers: int
     web_port: int
     protocol_port: int
+    accounts: bool = False
 
     @classmethod
     def from_cli(cls, *, workers: int | None, web_host: str, web_port: int,
                  web_path: str, web_ws_deflate: bool,
-                 required_client_type: str | tuple[str, ...] | None) -> MultiprocessOptions:
+                 required_client_type: str | tuple[str, ...] | None,
+                 accounts: bool = False) -> MultiprocessOptions:
         count = DEFAULT_WORKERS if workers is None else workers
         if not 1 <= count <= 32:
             raise ValueError("--workers must be between 1 and 32")
@@ -53,7 +55,7 @@ class MultiprocessOptions:
             raise ValueError("listen ports must be between 0 and 65535")
         if web_port == protocol_port != 0:
             raise ValueError("Web and TUI/ACP must use distinct ports")
-        return cls(count, web_port, protocol_port)
+        return cls(count, web_port, protocol_port, accounts)
 
 
 def _channel_enabled(config: object) -> bool:
@@ -109,8 +111,13 @@ async def run_multiprocess(options: MultiprocessOptions, agent_server_url: str,
     await validate_workspace()
     if shutdown_event.is_set():
         return
+    auth_service_provider = None
+    if options.accounts:
+        from agent_gateway.auth.service import get_auth_service
+
+        auth_service_provider = get_auth_service
     group = WorkerGroup(agent_server_url, workers=options.workers, web_port=options.web_port,
-                        protocol_port=options.protocol_port)
+                        protocol_port=options.protocol_port, auth_service_provider=auth_service_provider)
     shutdown = asyncio.create_task(shutdown_event.wait())
     startup = asyncio.create_task(group.start())
     tasks = [shutdown, startup]

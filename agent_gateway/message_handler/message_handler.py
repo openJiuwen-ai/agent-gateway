@@ -419,6 +419,7 @@ class MessageHandler(ABC):
         )
         self._running = False
         self._credential_access: CredentialAccess | None = None
+        self._credential_runtime: Any | None = None
         self._session_login_bindings = session_login_bindings
         self._forward_task: asyncio.Task | None = None
         self._deferred_put_tasks: set[asyncio.Task] = set()
@@ -3919,6 +3920,17 @@ class MessageHandler(ABC):
             enable_memory=enable_memory,
         )
 
+    def set_session_login_bindings(self, bindings: "SessionLoginBindings") -> None:
+        self._session_login_bindings = bindings
+
+    def set_credential_runtime(self, runtime: Any) -> None:
+        self._credential_runtime = runtime
+
+    def _release_request_credential(self, message: Any) -> None:
+        runtime = getattr(self, "_credential_runtime", None)
+        if runtime is not None:
+            runtime.release(message)
+
     def set_credential_access(self, credential_access: CredentialAccess) -> None:
         """Bind the local credential port before forwarding starts."""
         self._credential_access = credential_access
@@ -3939,6 +3951,16 @@ class MessageHandler(ABC):
         credential_ref = str(payload.get("credential_ref") or "")
         try:
             access = getattr(self, '_credential_access', None)
+            runtime = getattr(self, "_credential_runtime", None)
+            if runtime is not None:
+                result = await access.credential_refresh_for_ref(credential_ref, runtime.server_id)
+                if result is not None:
+                    runtime.refresh({
+                        "operation_id": result.operation_id, "server_id": result.server_id,
+                        "credential_ref": credential_ref, "ref_revision": result.ref_revision,
+                        "update": result.update.to_params(),
+                    })
+                return True
             if access is None:
                 update = await asyncio.to_thread(refreshed_credential_for_ref, credential_ref)
             else:
@@ -5509,6 +5531,7 @@ class MessageHandler(ABC):
         return stored.strip() if isinstance(stored, str) else ""
 
     async def _apply_session_login_owner(self, env: "E2AEnvelope") -> None:
+        from agent_gateway.auth.credential_access import CredentialAccessError, OwnsResolveDeadline
         from e2a.constants import (
             E2A_LOGIN_REQUIRED_HINT_PARAM_KEY,
             E2A_MODEL_AUTH_PARAM_KEY,
@@ -5530,6 +5553,8 @@ class MessageHandler(ABC):
                     str(auth.get("credential_ref") or ""),
                     str(params.get("model_name") or ""),
                 )
+            except CredentialAccessError:
+                raise
             except Exception:  # noqa: BLE001
                 logger.warning("[MessageHandler] 记录会话主人失败 session=%s", session_id, exc_info=True)
             return
@@ -5551,12 +5576,19 @@ class MessageHandler(ABC):
             ):
                 params[E2A_LOGIN_REQUIRED_HINT_PARAM_KEY] = _LOGIN_HINT_NO_OWNER
                 return
-            value = await asyncio.wait_for(
-                self._session_login_bindings.model_auth_for_binding(owner),
-                timeout=_SESSION_OWNER_AUTH_WAIT_S,
-            )
+            access = self._session_login_bindings
+            if isinstance(access, OwnsResolveDeadline):
+                async with asyncio.timeout(access.resolve_deadline_s):
+                    value = await access.model_auth_for_binding(owner)
+            else:
+                value = await asyncio.wait_for(access.model_auth_for_binding(owner),
+                                               timeout=_SESSION_OWNER_AUTH_WAIT_S)
             auth = value.to_params() if value is not None else None
+        except CredentialAccessError:
+            raise
         except asyncio.TimeoutError:
+            if isinstance(self._session_login_bindings, OwnsResolveDeadline):
+                raise CredentialAccessError("unavailable") from None
             logger.warning("[MessageHandler] 取会话主人的登录凭据超时 session=%s", session_id)
             params[E2A_LOGIN_REQUIRED_HINT_PARAM_KEY] = _LOGIN_HINT_RETRY
             return
@@ -5729,6 +5761,7 @@ class MessageHandler(ABC):
         if operation is not None:
             operation.accepted = True
         task = asyncio.create_task(run(), name=f"gw-chat-{rid[:24]}")
+        task.add_done_callback(lambda _done: self._release_request_credential(env))
         if operation is not None:
             task.add_done_callback(lambda done: complete_request_trace(msg, "cancelled") if done.cancelled() else None)
         task.add_done_callback(lambda done: release_request_continuation(
@@ -6308,6 +6341,7 @@ class MessageHandler(ABC):
                             self._process_non_stream_request(msg, env, complete_trace=True),
                             name=f"gw-nonstr-{method_label}-{stream_rid[:24]}",
                         )
+                        task.add_done_callback(lambda _done, pending=env: self._release_request_credential(pending))
                         if operation is not None:
                             task.add_done_callback(
                                 lambda done, source=msg: (
@@ -6371,6 +6405,10 @@ class MessageHandler(ABC):
                             getattr(msg, "id", None),
                         )
             finally:
+                if msg is not None and not handed_off:
+                    pending_chat = self._non_stream_chat_tasks.get(getattr(msg, "id", ""))
+                    if pending_chat is None or self._non_stream_chat_messages.get(msg.id) is not msg:
+                        self._release_request_credential(msg)
                 if trace_scope is not None:
                     operation = get_message_trace(msg)
                     task = self._non_stream_chat_tasks.get(getattr(msg, "id", ""))
@@ -6790,6 +6828,7 @@ class MessageHandler(ABC):
             )
 
         task = asyncio.create_task(consume())
+        task.add_done_callback(lambda _done: self._release_request_credential(env))
         self._register_stream_consumer(
             env, msg.session_id, task, metadata=msg.metadata,
             app_id=msg.app_id or "", emit_processing_status=emit_processing_status,

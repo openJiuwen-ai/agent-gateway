@@ -332,6 +332,8 @@ def main() -> None:
     parser.add_argument("--mode", choices=("single", "multiprocess"), default="single",
                         help="Run the single Gateway or opt in to the personal loopback Worker trial.")
     parser.add_argument("--workers", type=int, help="Fixed Worker count in multiprocess mode (default: 2).")
+    parser.add_argument("--enable-accounts", action="store_true",
+                        help="Enable Control-owned account services in the multiprocess trial.")
     parser.add_argument(
         "--require-adx-router",
         # Accept previously generated service units; validation itself is generic.
@@ -341,6 +343,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.workers is not None and args.mode != "multiprocess":
         parser.error("--workers requires --mode multiprocess")
+    if args.enable_accounts and args.mode != "multiprocess":
+        parser.error("--enable-accounts requires --mode multiprocess")
 
     # Handle --name: check if bootstrap .env was loaded successfully
     # (parse_dotenv_early() already processed it, this is just a fallback check)
@@ -392,7 +396,7 @@ def main() -> None:
             options = MultiprocessOptions.from_cli(
                 workers=args.workers, web_host=web_host, web_port=web_port,
                 web_path=web_path, web_ws_deflate=web_ws_deflate,
-                required_client_type=args.required_client_type,
+                required_client_type=args.required_client_type, accounts=args.enable_accounts,
             )
 
             async def run_multiprocess_until_shutdown(shutdown_event: asyncio.Event) -> None:
