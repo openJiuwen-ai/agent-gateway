@@ -15,8 +15,10 @@ The rules:
   decode other bytes differently: websockets reads them as ASCII with surrogate
   escapes and aiohttp as UTF-8 with surrogate escapes. A non-ASCII user can only
   be declared in the query, where Web and HTTP accept it.
-* A user is stripped, normalized to NFC, has no control characters and takes at
-  most 256 UTF-8 bytes. TUI and ACP accept ``[A-Za-z0-9_-]+`` only.
+* A user is stripped, normalized to NFC, has no control or format characters
+  (Unicode ``Cc``, ``Cf``, ``Zl`` and ``Zp``: no zero-width or bidirectional
+  mark, no line separator) and takes at most 256 UTF-8 bytes. TUI and ACP accept
+  ``[A-Za-z0-9_-]+`` only.
 * A malformed, repeated or conflicting declaration is refused with HTTP 400. It
   is never ignored or repaired: a dropped declaration would move the connection
   to another user or to the anonymous bucket without anyone noticing.
@@ -37,7 +39,8 @@ No entry uses this contract yet. Once a runtime adopts it, it replaces the
 per-entry readers, which changes behavior on purpose:
 
 * Web ``/ws`` reads the query before the header and accepts any text
-  (``WebChannel._resolve_connection_user_id``).
+  (``WebChannel._resolve_connection_user_id``), including the characters refused
+  above.
 * TUI and ACP read the header before the query and skip a value outside
   ``[A-Za-z0-9_-]+`` (``ProtocolRuntime._extract_ws_user_id``).
 * ``e2a.identity.normalize_routing_identity`` keeps the first non-empty value of
@@ -65,6 +68,9 @@ _MAX_USER_BYTES = 256
 _DOMAIN_PATTERN = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}')
 _PROTOCOL_USER_PATTERN = re.compile(r'[A-Za-z0-9_-]+')
 _BAD_PERCENT = re.compile(rb'%(?![0-9A-Fa-f]{2})')
+# Control and format characters, line and paragraph separators: nothing that is
+# invisible or misleading belongs in a user ID or in a log line.
+_FORBIDDEN_USER_CATEGORIES = frozenset({'Cc', 'Cf', 'Zl', 'Zp'})
 _ENTRIES = frozenset({'web', 'http', 'tui', 'acp'})
 
 IngressEntry = Literal['web', 'http', 'tui', 'acp']
@@ -95,7 +101,10 @@ class LocalIdentityPolicy:
 
 def _normalize_user(value: str) -> str | None:
     normalized = unicodedata.normalize('NFC', value)
-    if any(unicodedata.category(character) == 'Cc' for character in normalized):
+    if any(
+        unicodedata.category(character) in _FORBIDDEN_USER_CATEGORIES
+        for character in normalized
+    ):
         raise IngressIdentityError()
     normalized = normalized.strip()
     if not normalized:

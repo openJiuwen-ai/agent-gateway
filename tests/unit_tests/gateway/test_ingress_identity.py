@@ -237,6 +237,41 @@ def test_web_and_http_accept_unicode_users(user, entry):
     assert declared(user, entry=entry).business_user_id == user
 
 
+# Invisible or misleading in a user ID and in a log line; written with escapes on purpose.
+FORMAT_USER = [
+    ('alice\u200b', 'zero width space'),
+    ('\u202eadmin', 'right-to-left override'),
+    ('a\u2028b', 'line separator'),
+    ('a\u2029b', 'paragraph separator'),
+    ('alice\u2028', 'trailing line separator'),
+    ('alice\x1b[31m', 'terminal escape'),
+    ('alice\xad', 'soft hyphen'),
+    ('\ufeffalice', 'byte order mark'),
+    ('\u200falice', 'right-to-left mark'),
+    ('a\u200db', 'zero width joiner'),
+    ('\U0001f469\u200d\u2640\ufe0f', 'emoji joined with a zero width joiner'),
+]
+
+
+@pytest.mark.parametrize(('user', 'name'), FORMAT_USER)
+@pytest.mark.parametrize('entry', ('web', 'http'))
+def test_control_and_format_characters_in_a_user_are_refused(user, name, entry):
+    assert refused(f'user_id={quote(user)}'.encode('ascii'), entry=entry).status == 400, name
+    # A header is ASCII, so the same user can only arrive there as raw non-ASCII
+    # bytes or as a control character, and the header rule refuses both.
+    assert refused(headers=[(b'X-User-Id', user.encode())], entry=entry).status == 400, name
+    with pytest.raises(IngressIdentityError):
+        IngressIdentity('local-v1', 'local_compat', 'local', 'named', user)
+
+
+@pytest.mark.parametrize('user', [
+    f'caf{COMPOSED}', CJK, '\u5f20\u0301', 'a b', '\U0001f600', '\u2764\ufe0f',
+])
+@pytest.mark.parametrize('entry', ('web', 'http'))
+def test_letters_marks_and_single_code_point_emoji_remain_accepted(user, entry):
+    assert declared(user, entry=entry).business_user_id == user
+
+
 def test_anonymous_connections_share_one_bucket():
     # Deliberate: nothing stable tells two anonymous clients apart, so they must
     # meet on one slot to reach the same sessions.
