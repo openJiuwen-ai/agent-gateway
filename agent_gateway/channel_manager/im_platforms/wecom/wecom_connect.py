@@ -45,6 +45,9 @@ logger = logging.getLogger(__name__)
 
 _SYSTEM_SESSION_PREFIXES = ("__", "health_check_", "healthcheck_", "cron")
 
+# How long a finished stream keeps rejecting late duplicates for the same request id.
+_STREAM_COMPLETED_WINDOW_SECONDS = 180.0
+
 try:
     from wecom_aibot_sdk import WSClient
     from wecom_aibot_sdk.utils import generate_req_id
@@ -109,7 +112,7 @@ class WecomChannel(BaseChannel):
         self._sent_group_progress_requests: set[str] = set()
         self._stopping = False
         self._stream_text_buffers: dict[str, str] = {}
-        self._stream_completed_requests: set[str] = set()
+        self._stream_completed_requests: dict[str, float] = {}
         self._message_storage = MessageStore(api_client=None)
         self._im_platform_adapter: Any = im_platform_adapter
         # 文件服务
@@ -1008,6 +1011,27 @@ class WecomChannel(BaseChannel):
         """判断内容是否为空或仅为占位符。"""
         return is_thinking_only_content(text)
 
+    def _mark_stream_completed(self, req_id: str) -> None:
+        """Remember when a stream finished so late duplicates can be dropped."""
+        now = time.monotonic()
+        self._prune_completed_streams(now)
+        self._stream_completed_requests[req_id] = now
+
+    def _prune_completed_streams(self, now: float) -> None:
+        expired = [
+            key
+            for key, completed_at in self._stream_completed_requests.items()
+            if now - completed_at >= _STREAM_COMPLETED_WINDOW_SECONDS
+        ]
+        for key in expired:
+            self._stream_completed_requests.pop(key, None)
+
+    def _is_stream_completed(self, req_id: str) -> bool:
+        """True while the request is still inside its post-completion window."""
+        now = time.monotonic()
+        self._prune_completed_streams(now)
+        return req_id in self._stream_completed_requests
+
     def _extract_content_from_payload(self, msg: Message) -> str | None:
         """从 chat.delta / chat.final 的 payload 提取 content，无则返回 None。"""
         payload = getattr(msg, "payload", None) or {}
@@ -1136,7 +1160,7 @@ class WecomChannel(BaseChannel):
                     if not to_send or self._is_thinking_only_content(to_send):
                         if msg.event_type == EventType.CHAT_FINAL:
                             self._pending_streams.pop(req_id, None)
-                            self._stream_completed_requests.add(req_id)
+                            self._mark_stream_completed(req_id)
                         return
                     if not is_final and to_send == entry.get("last_sent"):
                         return
@@ -1155,7 +1179,7 @@ class WecomChannel(BaseChannel):
                         # 群聊场景，私发详细回复给目标用户
                         logger.info("[WecomChannel] 群聊消息私发给目标用户: req_id=%s user_id=%s", req_id, target_user_id)
                         self._pending_streams.pop(req_id, None)
-                        self._stream_completed_requests.add(req_id)
+                        self._mark_stream_completed(req_id)
 
                         # 私发详细回复给目标用户
                         try:
@@ -1183,17 +1207,16 @@ class WecomChannel(BaseChannel):
                         )
                         if is_final:
                             self._pending_streams.pop(req_id, None)
-                            self._stream_completed_requests.add(req_id)
+                            self._mark_stream_completed(req_id)
                     except Exception as e:
                         logger.error("WecomChannel 流式发送失败: %s", e)
                         if msg.event_type == EventType.CHAT_FINAL:
                             self._pending_streams.pop(req_id, None)
-                            self._stream_completed_requests.add(req_id)
+                            self._mark_stream_completed(req_id)
                     return
 
-        if req_id and req_id in self._stream_completed_requests:
+        if req_id and self._is_stream_completed(req_id):
             logger.debug("WecomChannel 跳过已完成的流式请求: req_id=%s", req_id)
-            self._stream_completed_requests.discard(req_id)
             return
 
         if msg.event_type == EventType.CHAT_ERROR:
