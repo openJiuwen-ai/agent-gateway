@@ -1,18 +1,21 @@
 """Authenticated native HTTP streaming and browser upload admission."""
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import anyio
 import httpx
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
+from starlette.requests import ClientDisconnect
 
 from agent_gateway.channel_manager.web import container_file_http
 from tests.unit_tests.extensions.test_adx_control_files import _business_authenticator, _file_channel, _files
 
 
 pytestmark = pytest.mark.asyncio
+FILE = {'user_id': 'alice', 'path': '/home/agentos/a.txt'}
 
 
 @pytest_asyncio.fixture
@@ -30,44 +33,33 @@ async def browser(monkeypatch):
 
 
 @pytest.mark.parametrize("status,payload,code", [
+    (404, {"error": {"code": "INSTANCE_NOT_FOUND"}}, "instance_not_found"),
+    (404, {"error": "missing", "error_code": "INSTANCE_NOT_FOUND"}, "instance_not_found"),
     (409, {}, "CONFLICT"),
     (409, {"error": {"code": "FILE_BUSY"}}, "FILE_BUSY"),
     (413, {"error_code": "FILE_TOO_LARGE"}, "FILE_TOO_LARGE"),
 ])
 async def test_native_file_errors_reach_browser(browser, status, payload, code):
-    client, _, control = browser
-    original = control.http._transport
-    async def handle(request):
-        if request.url.path.endswith(("/download", "/upload")):
-            return httpx.Response(status, json=payload)
-        return await original.handle_async_request(request)
-    control.http._transport = httpx.MockTransport(handle)
+    client, router, control = browser
+    router.test_api.transfer_error = status, payload
     control.invoke.return_value = {"type": "file", "size": 3}
-    response = await client.get("/file-api/raw-file", params={"path": "/home/agentos/a", "user_id": "alice"})
+    response = await client.get("/file-api/raw-file", params=FILE)
     assert (response.status_code, response.json()["code"]) == (status, code)
     response = await client.post("/file-api/upload", data={"user_id": "alice"}, files={"file": ("a.txt", b"abc")})
     assert response.status_code == 200
     assert response.json()["errors"][0]["code"] == code
 
 
-async def test_native_http_disconnect_closes_upstream_and_releases_activity(monkeypatch):
-    from agent_gateway.channel_manager.web.container_file_http import _native_file_response
-    router, control = _files(monkeypatch)
-    await router.connect('')
+async def test_native_http_disconnect_releases_activity(browser):
+    _, router, control = browser
     control.invoke.return_value = {'type': 'file', 'size': 6}
-    response = await _native_file_response(
-        router, request=SimpleNamespace(headers={}, method='GET'), user_id='alice',
-        path='/home/agentos/a', session_id='',
+    response = await container_file_http._native_file_response(
+        router, request=SimpleNamespace(headers={}, method='GET'), session_id='', **FILE,
     )
-    async def send(_message):
-        raise OSError('browser disconnected')
-    async def receive():
-        return {'type': 'http.disconnect'}
-    with pytest.raises(Exception):
-        await response({'type': 'http', 'asgi': {'spec_version': '2.4'}}, receive, send)
-    runtime = await router._agent_manager.get_agent('alice', 'jiuwenswarm')
-    assert runtime.task_count == 0
-    await router.shutdown()
+    with pytest.raises(ClientDisconnect):
+        await response({'type': 'http', 'asgi': {'spec_version': '2.4'}}, AsyncMock(),
+                       AsyncMock(side_effect=OSError('browser disconnected')))
+    assert (await router._agent_manager.get_agent('alice', 'jiuwenswarm')).task_count == 0
 
 
 @pytest.mark.parametrize('upstream_type, expected_type', [
@@ -75,16 +67,14 @@ async def test_native_http_disconnect_closes_upstream_and_releases_activity(monk
 ])
 async def test_native_head_uses_business_auth_and_releases_stream(browser, upstream_type, expected_type):
     client, router, control = browser
-    router.test_api.omit_download_length = True
     router.test_api.file_content_type = upstream_type
     control.invoke.return_value = {'type': 'file', 'size': 6}
-    params = {'path': '/home/agentos/a.txt', 'user_id': 'alice'}
-    response = await client.head('/file-api/raw-file', params=params)
+    response = await client.head('/file-api/raw-file', params=FILE)
     assert response.status_code == 200 and response.content == b''
     assert response.headers['Content-Length'] == '6'
     assert response.headers['Content-Type'].split(';', 1)[0] == expected_type
     del client.headers['Authorization']
-    assert (await client.head('/file-api/raw-file', params=params)).status_code == 401
+    assert (await client.head('/file-api/raw-file', params=FILE)).status_code == 401
     assert len(router.test_api.transfers) == 1
     assert (await router._agent_manager.get_agent('alice', 'jiuwenswarm')).task_count == 0
 
@@ -95,63 +85,53 @@ async def test_native_unsatisfiable_range_keeps_status_and_content_range(browser
     client, router, control = browser
     control.invoke.return_value = {'type': 'file', 'size': 12 if on_wire else 6}
     response = await client.request(method, '/file-api/raw-file', headers={'Range': 'bytes=9-10'},
-                                   params={'path': '/home/agentos/a', 'user_id': 'alice'})
+                                   params=FILE)
     assert response.status_code == 416 and response.content == b''
     assert response.headers['Content-Range'] == 'bytes */6'
     assert len(router.test_api.transfers) == int(on_wire)
     assert (await router._agent_manager.get_agent('alice', 'jiuwenswarm')).task_count == 0
 
 
-@pytest.mark.parametrize('fail', [False, True])
-async def test_native_head_and_error_close_upstream_when_cancelled(fail):
-    from agent_gateway.channel_manager.web.container_file_http import _native_file_response
-
-    closes = []
+@pytest.mark.parametrize('failure', ['cancel_head', 'cancel_error', 'upstream_close'])
+async def test_native_response_finalizes_transfer(failure):
+    closed = []
 
     @asynccontextmanager
     async def open_file(**_kwargs):
         try:
-            yield httpx.Response(200, content=b'data')
+            if failure == 'upstream_close':
+                yield httpx.Response(416, headers={'Content-Range': 'bytes */6'})
+            else:
+                yield httpx.Response(200, content=b'data')
         finally:
             await anyio.sleep(0)
-            closes.append(True)
+            closed.append(True)
+            if failure == 'upstream_close':
+                raise RuntimeError('upstream close failed')
 
-    class CancelledRequest:
+    class Request:
         headers = {}
 
         @property
         def method(self):
             scope.cancel()
-            if fail:
+            if failure == 'cancel_error':
                 raise RuntimeError('response cancelled')
             return 'HEAD'
 
     with anyio.CancelScope() as scope:
-        args = dict(request=CancelledRequest(), user_id='alice', path='/home/agentos/a', session_id='')
-        client = SimpleNamespace(open_container_file=open_file)
-        if fail:
+        response = container_file_http._native_file_response(
+            SimpleNamespace(open_container_file=open_file), request=Request(), session_id='', **FILE,
+        )
+        if failure == 'cancel_error':
             with pytest.raises(RuntimeError, match='response cancelled'):
-                await _native_file_response(client, **args)
+                await response
+        elif failure == 'upstream_close':
+            result = await response
+            assert result.status_code == 416 and result.headers['Content-Range'] == 'bytes */6'
         else:
-            assert (await _native_file_response(client, **args)).status_code == 200
-    assert closes == [True]
-
-
-async def test_native_head_preserves_response_when_upstream_close_fails():
-    from agent_gateway.channel_manager.web.container_file_http import _native_file_response
-
-    @asynccontextmanager
-    async def open_file(**_kwargs):
-        yield httpx.Response(416, headers={'Content-Range': 'bytes */6'})
-        raise RuntimeError('upstream close failed')
-
-    response = await _native_file_response(
-        SimpleNamespace(open_container_file=open_file),
-        request=SimpleNamespace(headers={}, method='HEAD'),
-        user_id='alice', path='/home/agentos/a', session_id='',
-    )
-    assert response.status_code == 416
-    assert response.headers['Content-Range'] == 'bytes */6'
+            assert (await response).status_code == 200
+    assert closed == [True]
 
 
 @pytest.mark.parametrize('streaming', [True, False])
@@ -178,11 +158,7 @@ async def test_chunked_multipart_rejects_oversize_before_activation(browser, mon
     monkeypatch.setattr(container_file_http, 'MAX_UPLOAD_FILE_SIZE', 5)
     multipart = client.build_request('POST', '/file-api/upload', data={'user_id': 'alice'},
                                      files={'file': ('large.txt', b'123456')})
-    async def chunks():
-        async for chunk in multipart.stream:
-            yield chunk
-
-    response = await client.post('/file-api/upload', content=chunks(),
+    response = await client.post('/file-api/upload', content=aiter(multipart.stream),
                                  headers={'Content-Type': multipart.headers['Content-Type']})
     assert 'Content-Length' not in response.request.headers
     assert response.json()['errors'] == [{'filename': 'large.txt', 'error': 'upload exceeds 512 MiB'}]
