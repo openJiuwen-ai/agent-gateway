@@ -13,7 +13,7 @@ from typing import AbstractSet, Any, TYPE_CHECKING
 if TYPE_CHECKING:
     from agent_gateway.auth.credential_access import CredentialAccess
 
-from agent_gateway.auth.credential_access import LOGIN_REFRESH_WAIT_S
+from agent_gateway.auth.credential_access import CredentialAccessError, LOGIN_REFRESH_WAIT_S
 from e2a.message import Message
 from agent_gateway.channel_manager.web.req_method_routing import (
     ROUTE_DENIED,
@@ -181,8 +181,9 @@ def _inject_session_work_mode(msg: Message) -> None:
 class InboundQueue:
     """Gateway internal inbound service for forwarding channel messages to MessageHandler."""
 
-    def __init__(self, inbound_handler):
+    def __init__(self, inbound_handler, *, error_callback=None):
         self._inbound_handler = inbound_handler
+        self._error_callback = error_callback
         self._queue: asyncio.Queue = asyncio.Queue()
         self._task: asyncio.Task | None = None
         self._running = False
@@ -218,6 +219,14 @@ class InboundQueue:
                 handled = self._inbound_handler(msg)
                 if asyncio.iscoroutine(handled):
                     await handled
+            except CredentialAccessError as error:
+                if self._error_callback is None:
+                    logger.warning("[App] Gateway credential access failed: id=%s", getattr(msg, "id", None))
+                else:
+                    try:
+                        await self._error_callback(msg, error)
+                    except Exception:
+                        logger.exception("[App] Gateway credential failure response could not be delivered")
             except Exception:  # noqa: BLE001
                 logger.exception("[App] Gateway inbound handling failed: id=%s", getattr(msg, "id", None))
 
@@ -257,9 +266,21 @@ class MessagePreprocessor:
                 )
         normalized = _normalize_gateway_message(msg, apply_model_auth=False)
         model_name = str(normalized.params.get('model_name') or '').strip()
+        credential_access = self.credential_access
+        credential_selector = getattr(credential_access, 'for_user', None)
+        if credential_selector is not None:
+            user_id = getattr(normalized, 'user_id', None)
+            if type(user_id) is not str or not user_id:
+                return normalized
+            credential_access = credential_selector(user_id)
+
         with trace_stage("preprocess.credentials"):
             try:
-                auth = await self.credential_access.request_model_auth(_auth_session_id(msg), model_name)
+                auth = await credential_access.request_model_auth(
+                    _auth_session_id(msg), model_name,
+                )
+            except CredentialAccessError:
+                raise
             except Exception:  # Login availability must not break request forwarding.
                 logger.debug('[App] Credential lookup failed; forwarding without login credentials', exc_info=True)
                 auth = None
@@ -269,12 +290,21 @@ class MessagePreprocessor:
 
     async def forward(self, msg: Any, channel_manager: Any) -> bool:
         normalized = await self._prepare(msg)
-        method = request_method_name(getattr(msg, "req_method", None))
-        if method == "session.create":
-            self.inject_work_mode(normalized)
-        await channel_manager.deliver_to_message_handler(normalized)
+        await self._deliver(normalized, msg, channel_manager)
         logger.info("[App] Gateway inbound -> MessageHandler: id=%s channel_id=%s", msg.id, msg.channel_id)
         return False
+
+    async def _deliver(self, normalized: Any, msg: Any, channel_manager: Any) -> None:
+        accepted = False
+        try:
+            if request_method_name(getattr(msg, "req_method", None)) == "session.create":
+                self.inject_work_mode(normalized)
+            accepted = await channel_manager.deliver_to_message_handler(normalized) is not False
+        finally:
+            if not accepted:
+                release = getattr(self.credential_access, "release_request", None)
+                if release is not None:
+                    release(normalized)
 
     def for_channel(
         self,
@@ -297,9 +327,7 @@ class MessagePreprocessor:
             if route in (ROUTE_LOCAL, ROUTE_DENIED):
                 return False
             normalized = await self._prepare(msg)
-            if method == "session.create":
-                self.inject_work_mode(normalized)
-            await channel_manager.deliver_to_message_handler(normalized)
+            await self._deliver(normalized, msg, channel_manager)
             logger.debug("[App] %s 入站 -> MessageHandler: id=%s channel_id=%s", source_label, msg.id, msg.channel_id)
             return route == ROUTE_FORWARD_UNKNOWN or method in no_local_methods
 

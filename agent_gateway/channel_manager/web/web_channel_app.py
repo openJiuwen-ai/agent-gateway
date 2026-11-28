@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, WebSocket
@@ -185,15 +186,24 @@ def register_http_routes(app: FastAPI, channel: WebChannel) -> None:
     attach_ag_ui_routes(app, channel)
 
 
-async def _serve_channel_websocket(channel: WebChannel, websocket: WebSocket) -> None:
+async def _serve_channel_websocket(
+    channel: WebChannel, websocket: WebSocket, *, local_user_id: str | None = None,
+    frame_allowed: Callable[[str | bytes], bool] | None = None,
+) -> None:
     if await _reject_disallowed_origin(websocket):
         return
     denied, authenticated_user_id, verified_user_id = await _reject_unauthorized_handshake(channel, websocket)
     if denied:
         return
 
+    if local_user_id is not None:
+        if verified_user_id is not None and verified_user_id != local_user_id:
+            await websocket.close(code=1008)
+            return
+        verified_user_id = local_user_id
     adapter = StarletteWsAdapter(
         websocket, authenticated_user_id=authenticated_user_id, verified_user_id=verified_user_id,
+        frame_allowed=frame_allowed,
     )
     await adapter.accept()
     try:

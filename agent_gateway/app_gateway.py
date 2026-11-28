@@ -47,12 +47,17 @@ from agent_gateway.startup.bootstrap import (
     prepare_group_workspace,
 )
 
+# ``--check-cron`` only reports the read-only Cron file preflight. It must not
+# configure logging, prepare the workspace or apply group environment: none of
+# those may create or change files before the report is printed.
+_CHECK_CRON_BOOTSTRAP = "--check-cron" in sys.argv[1:]
 initialize_early_environment(_mark_startup_import_phase)
-configure_process_logging(_mark_startup_import_phase)
+if not _CHECK_CRON_BOOTSTRAP:
+    configure_process_logging(_mark_startup_import_phase)
 
-# Standalone entrypoints retain workspace preparation; Desktop/app already do
-# it before spawning us and pass the marker to avoid duplicate disk work.
-prepare_group_workspace(_mark_startup_import_phase)
+    # Standalone entrypoints retain workspace preparation; Desktop/app already do
+    # it before spawning us and pass the marker to avoid duplicate disk work.
+    prepare_group_workspace(_mark_startup_import_phase)
 
 _mark_startup_import_phase("openjiuwen_and_channel_base_imported")
 
@@ -85,7 +90,8 @@ _mark_startup_import_phase("gateway_core_imports_loaded")
 
 _mark_startup_import_phase("logging_configured")
 
-apply_group_environment(_mark_startup_import_phase)
+if not _CHECK_CRON_BOOTSTRAP:
+    apply_group_environment(_mark_startup_import_phase)
 
 register_edition_req_methods()
 
@@ -119,6 +125,29 @@ _DINGTALK_DEFAULT_API_BASE = "https://api.dingtalk.com"    # 新版 v1.0 接口�
 _DINGTALK_DEFAULT_OAPI_BASE = "https://oapi.dingtalk.com"  # 旧版 media 接口域名
 _XIAOYI_DEFAULT_PUSH_URL = "https://hag.cloud.huawei.com/open-ability-agent/v1/agent-webhook"
 
+
+
+def _check_cron(args, parser) -> None:
+    """Report Cron file compatibility without starting the Gateway, then exit."""
+    from agent_gateway.application.cron_preflight import check_cron_cli
+    from agent_gateway.application.multiprocess import DEFAULT_WORKERS, MAX_WORKERS, load_static_routes
+    from agent_gateway.common.agentos_runtime import is_agentos_runtime
+    from agent_gateway.dotenv_early import load_dotenv_runtime
+    from agent_gateway.enterprise import is_enterprise
+
+    load_dotenv_runtime(get_env_file(), override=True)
+    workers = args.workers if args.workers is not None else DEFAULT_WORKERS
+    if not 1 <= workers <= MAX_WORKERS:
+        parser.error(f"--workers must be between 1 and {MAX_WORKERS}")
+    if is_enterprise() or is_agentos_runtime():
+        parser.error("--check-cron requires a local personal workspace")
+    if args.southbound_routes_file is not None:
+        try:
+            routes = load_static_routes(args.southbound_routes_file, workers=workers)
+        except ValueError as exc:
+            parser.error(str(exc))
+        raise SystemExit(check_cron_cli(workers, static_routes=routes))
+    raise SystemExit(check_cron_cli(workers))
 
 
 async def _normalize_and_forward_message(msg, channel_manager) -> bool:
@@ -329,6 +358,18 @@ def main() -> None:
         metavar="<path>",
         help="Load environment from .env file (processed at startup, not used here).",
     )
+    parser.add_argument("--mode", choices=("single", "multiprocess"), default="single",
+                        help="Run the single Gateway or opt in to the personal loopback Worker trial.")
+    parser.add_argument("--workers", type=int, help="Fixed Worker count in multiprocess mode (default: 2).")
+    parser.add_argument("--enable-accounts", action="store_true",
+                        help="Enable Control-owned account services in the multiprocess trial.")
+    parser.add_argument("--enable-cron", action="store_true",
+                        help="Enable sharded personal Cron in multiprocess mode.")
+    parser.add_argument("--check-cron", action="store_true",
+                        help="Print the read-only Cron file preflight and exit.")
+    parser.add_argument("--southbound-routes-file", metavar="<path>",
+                        help="Multiprocess static multi-AgentServer trial: a local JSON route directory "
+                             "that fixes each named user's loopback AgentServer per Worker slot.")
     parser.add_argument(
         "--require-adx-router",
         # Accept previously generated service units; validation itself is generic.
@@ -336,6 +377,20 @@ def main() -> None:
         help=argparse.SUPPRESS,
     )
     args = parser.parse_args()
+    if args.workers is not None and args.mode != "multiprocess":
+        parser.error("--workers requires --mode multiprocess")
+    if args.enable_accounts and args.mode != "multiprocess":
+        parser.error("--enable-accounts requires --mode multiprocess")
+    if args.enable_cron and args.mode != "multiprocess":
+        parser.error("--enable-cron requires --mode multiprocess")
+    if args.check_cron and (args.mode != "multiprocess" or not args.enable_cron):
+        parser.error("--check-cron requires --mode multiprocess --enable-cron")
+    if args.southbound_routes_file is not None and args.mode != "multiprocess":
+        parser.error("--southbound-routes-file requires --mode multiprocess")
+
+    if args.check_cron:
+        _check_cron(args, parser)
+        return
 
     # Handle --name: check if bootstrap .env was loaded successfully
     # (parse_dotenv_early() already processed it, this is just a fallback check)
@@ -365,7 +420,9 @@ def main() -> None:
             or f"ws://{default_host}:{default_port}"
     )
     web_host = args.host or os.getenv("WEB_HOST", "127.0.0.1")
-    web_port = args.port or int(os.getenv("WEB_PORT", "19000"))
+    web_port = args.port if args.mode == "multiprocess" and args.port is not None else (
+        args.port or int(os.getenv("WEB_PORT", "19000"))
+    )
     web_path = args.web_path or os.getenv("WEB_PATH", "/ws")
     # ws permessage-deflate compresses every frame with zlib; on loopback/LAN
     # the CPU cost outweighs the bandwidth saving, so it stays off by default.
@@ -376,6 +433,29 @@ def main() -> None:
         "yes",
         "on",
     )
+
+    if args.mode == "multiprocess":
+        from agent_gateway.application.multiprocess import MultiprocessOptions, run_multiprocess
+        from agent_gateway.startup.lifecycle import gateway_workspace_lock, run_with_shutdown_signals
+
+        try:
+            options = MultiprocessOptions.from_cli(
+                workers=args.workers, web_host=web_host, web_port=web_port,
+                web_path=web_path, web_ws_deflate=web_ws_deflate,
+                required_client_type=args.required_client_type, accounts=args.enable_accounts,
+                cron=args.enable_cron, southbound_routes_file=args.southbound_routes_file,
+            )
+
+            async def run_multiprocess_until_shutdown(shutdown_event: asyncio.Event) -> None:
+                await run_multiprocess(options, agent_server_url, shutdown_event)
+
+            install_crash_exit_handler("gateway")
+            install_async_dump_handler("gateway")
+            with gateway_workspace_lock(get_user_workspace_dir()):
+                asyncio.run(run_with_shutdown_signals(run_multiprocess_until_shutdown, shutdown_gateway_telemetry))
+        except ValueError as error:
+            parser.error(str(error))
+        return
 
     install_crash_exit_handler("gateway")
     install_async_dump_handler("gateway")

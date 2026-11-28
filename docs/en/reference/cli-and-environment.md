@@ -14,7 +14,89 @@ Entry points: `agent-gateway` (gateway + channels) and `agent-gateway-acp` (ACP 
 | `--web-path <PATH>` | `WEB_PATH` or `/ws` | WebChannel WebSocket path |
 | `--name <name>` | none | Start a named instance from `instances.yaml` |
 | `--dotenv <path>` | none | Load environment variables from the given `.env` at startup (startup phase only) |
+| `--enable-cron` | off | Enable the supported file-backed personal Cron jobs in `--mode multiprocess`. Jobs that use account login or a non-default project are refused |
+| `--check-cron` | off | With `--mode multiprocess --enable-cron`: print the read-only Cron preflight report as JSON and exit |
+| `--southbound-routes-file <path>` | none | With `--mode multiprocess`: the static multi-AgentServer trial. The JSON file fixes each named user's loopback AgentServer per Worker slot. |
 | `-h, --help` | none | Show help and exit |
+
+### Local multiprocess trial
+
+Use `--mode multiprocess --workers 2` to start two Workers on loopback in the personal edition. The default remains single-process. The trial serves Web `/ws`, health probes and data operations over TUI/ACP, and connects to a single `ws://127.0.0.1:<port>` AgentServer. Keep using single mode for account management and optional channels. Cron stays off in the trial unless `--enable-cron` is passed. To serve several local AgentServers instead of one, use the static trial below.
+
+### Static multi-AgentServer trial (routing only)
+
+```bash
+agent-gateway --mode multiprocess --workers 2 --southbound-routes-file routes.json
+```
+
+`routes.json` is a local, non-secret snapshot that fixes which loopback AgentServer serves each named user. Each Worker keeps its fixed slot and talks only to the targets of that slot. The named user of a connection (the `user_id` query parameter, or `X-User-Id` on TUI/ACP) selects the target. There is no default AgentServer: a connection whose user has no target, and a frame that does not agree with the user of its connection, are closed with `1008` before any handler keeps state for them.
+
+Rules of the file:
+
+- UTF-8 JSON of at most 16 KiB, with every field shown below. Unknown, missing and duplicate fields are refused.
+- `manifest.slots` is exactly the slots of `--workers`: `[0]` for one Worker, `[0, 1]` for two, and so on.
+- `owner_slot` is the slot the user's fixed affinity selects for that manifest. It is the same rule that picks the Worker of a connection, so compute it instead of choosing it:
+
+```python
+from agent_gateway.common.ingress_identity import LocalIdentityPolicy, resolve_local_identity
+from agent_gateway.common.worker_affinity import FixedUserHash, WorkerManifest
+
+
+def owner_slot(user_id: str, workers: int) -> int:
+    policy = LocalIdentityPolicy()
+    affinity = FixedUserHash(WorkerManifest(tuple(range(workers))), policy)
+    identity = resolve_local_identity(f"user_id={user_id}".encode(), (), entry="web", policy=policy)
+    return affinity.select(identity)
+```
+
+- `target_id`, `physical_id`, `user_id` and `ws_url` are unique per file. `ws_url` is `ws://127.0.0.1:<port>` or `ws://[::1]:<port>`, with an optional path and without credentials, query or fragment. `agent_type` is `jiuwenswarm`. A file holds at most 32 targets.
+
+Example for two Workers:
+
+```json
+{
+  "schema_version": 1,
+  "revision": 1,
+  "identity_policy": {"contract_id": "local-v1", "domain": "local"},
+  "manifest": {"slots": [0, 1], "config_version": 1, "algorithm": "hrw-sha256-v1"},
+  "targets": [
+    {
+      "target_id": "as-a", "physical_id": "as-a", "generation": 1, "user_id": "alice",
+      "agent_type": "jiuwenswarm", "owner_slot": 0, "ws_url": "ws://127.0.0.1:8081/agent"
+    },
+    {
+      "target_id": "as-b", "physical_id": "as-b", "generation": 1, "user_id": "bob",
+      "agent_type": "jiuwenswarm", "owner_slot": 1, "ws_url": "ws://127.0.0.1:8082/agent"
+    }
+  ]
+}
+```
+
+What a static Worker guarantees:
+
+- **Routing.** A request reaches the target of the user of its connection, and nothing else. There is no discovery, no forwarding between Workers and no failover: the directory changes only by a restart with a new `revision`.
+- **Sessions.** Inside a Worker, a session id belongs to one target, whether it is the AgentServer's own id or the client-visible id of an ACP session. A frame that names the session of another target is refused at the socket.
+- **Delivery.** An outbound frame reaches the sockets of its owner only: the user of its request, else the user it declares, else the user of its session. A frame with no owner is not delivered.
+- **Startup.** A Worker that cannot connect one of its targets stops the whole group with `SOUTHBOUND_UNREACHABLE`, and no listener opens. A directory or role a Worker cannot serve fails with `SOUTHBOUND_CONFIGURATION`.
+- **Pushes.** An AgentServer `send_push` frame is delivered only when the target that sent it owns the request id or the session the frame names. A frame sent by another target, or one that names no owned request or session, is dropped.
+
+An AgentServer owns one unsolicited push slot, which belongs to its newest non-RPC WebSocket connection. Whether an AgentServer sends a given push to the connection of this Gateway is a property of that AgentServer. This trial does not claim that a push naming no request or session reaches any user, on the same Worker or on another.
+
+- `--enable-accounts` scopes credentials to the target and Worker slot. `--enable-cron` enables per-owner file-backed jobs and returns Cron tool acknowledgements to the originating target; local preflight refuses enabled jobs without a configured route.
+
+What a static Worker does not serve in this release:
+
+- **The personal compatibility of the account-free Worker.** Its native TUI requests, personal Web settings and operations, and its heartbeat proxy are answered from the user directory of one AgentServer. A static Worker has one per named user, so it installs none of them and refuses those requests.
+- **Attachments.** `chat.send` with `files`, `media_items`, `attachments` or `documents` is refused: each user has a private AgentServer directory, so the Gateway cannot import files for the user.
+- **Other agents and configuration writes.** `agent_type` other than `jiuwenswarm`, and every Gateway configuration change.
+
+### Preview Cron migration
+
+```bash
+agent-gateway --mode multiprocess --enable-cron --check-cron --workers 4
+```
+
+Use the Worker count you plan to start: each user's jobs belong to one fixed Worker, chosen from that count. The command reads `<root>/profile/agent/home/cron_jobs.json` and the Gateway configuration, prints one JSON report, and exits. It changes no job and starts no listener, Worker or scheduler. `issues` lists each blocking reason and warning by job ID and owner slot, without task text or credential data. Exit status `0` means every enabled job is supported; `1` means an enabled job is unsupported, or the configuration or job file could not be read. `agentserver_checked: false` means model availability and project execution were not checked against AgentServer. A start with `--enable-cron` runs the same check and opens no listener while an enabled job is unsupported.
 
 ## Environment variables
 
