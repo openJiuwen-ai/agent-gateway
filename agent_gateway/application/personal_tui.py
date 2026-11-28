@@ -7,6 +7,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from collections.abc import Callable
 from ipaddress import ip_address
+import re
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -22,6 +23,9 @@ from agent_gateway.routing.agent_request_timeout import coerce_client_timeout_ms
 
 MODEL_SWITCH_CAPABILITY = "personal_tui_model_switch_v1"
 _MODEL_SWITCH_MARKER = "_personal_tui_model_switch_v1"
+SUMMARY_REWIND_CAPABILITY = "personal_tui_summary_rewind_v1"
+_SUMMARY_REWIND_MARKER = "_personal_tui_summary_rewind_v1"
+_HISTORY_VERSION = re.compile(r"[0-9a-f]{64}")
 
 _READ_METHODS = frozenset({
     ReqMethod.CONFIG_GET, ReqMethod.MODELS_LIST, ReqMethod.MEMORY_STATUS,
@@ -295,15 +299,18 @@ class PersonalTuiRequests:
 
     async def _rewind_with_summary(self, ws, req_id, params, session_id, user_id, timeout_ms):
         ok, summary_result = await self._fetch(
-            ReqMethod.COMMAND_COMPACT_PARTIAL, params, session_id, user_id, timeout_ms,
+            ReqMethod.COMMAND_COMPACT_PARTIAL, {**params, _SUMMARY_REWIND_MARKER: True},
+            session_id, user_id, timeout_ms, required_capability=SUMMARY_REWIND_CAPABILITY,
         )
         if not ok:
             return await self._error(ws, req_id, summary_result["code"], summary_result["error"])
         summary = summary_result.get("summary")
         count = summary_result.get("summarized_count")
+        version = summary_result.get("history_version")
         if (
             summary_result.get("status") != "ok" or not isinstance(summary, str)
             or not summary.strip() or type(count) is not int or count < 1
+            or not isinstance(version, str) or not _HISTORY_VERSION.fullmatch(version)
         ):
             return await self._error(ws, req_id, "SUMMARY_FAILED", "Could not summarize the selected turns")
         problem = await self._check_session(ReqMethod.SESSION_REWIND_COMPACT, session_id, user_id, timeout_ms)
@@ -311,8 +318,8 @@ class PersonalTuiRequests:
             return await self._error(ws, req_id, problem["code"], problem["error"])
         ok, payload = await self._fetch(
             ReqMethod.SESSION_REWIND_COMPACT,
-            {**params, "compact_summary": summary, "summarized_count": count},
-            session_id, user_id, timeout_ms,
+            {**params, "compact_summary": summary, "summarized_count": count, "history_version": version},
+            session_id, user_id, timeout_ms, required_capability=SUMMARY_REWIND_CAPABILITY,
         )
         if not ok:
             return await self._error(ws, req_id, payload["code"], payload["error"])

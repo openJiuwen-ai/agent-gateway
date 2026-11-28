@@ -235,8 +235,17 @@ async def test_web_activity_in_the_same_worker_blocks_rewind(monkeypatch):
 @pytest.mark.parametrize(('summary', 'activity', 'expected'), [
     ((True, {'status': 'failed', 'summary': 'stale'}), None, 'SUMMARY_FAILED'),
     ((True, {'status': 'ok', 'summary': '', 'summarized_count': 1}), None, 'SUMMARY_FAILED'),
-    ((True, {'status': 'ok', 'summary': 'only summary', 'summarized_count': 2}), True, 'SESSION_BUSY'),
-    ((True, {'status': 'ok', 'summary': 'only summary', 'summarized_count': 2}), False, 'AGENT_SERVER_TIMEOUT'),
+    ((True, {'status': 'ok', 'summary': 'missing digest', 'summarized_count': 1}), None, 'SUMMARY_FAILED'),
+    ((True, {'status': 'ok', 'summary': 'two turns', 'summarized_count': 0, 'history_version': 'a' * 64}), None,
+     'SUMMARY_FAILED'),
+    ((True, {'status': 'ok', 'summary': 'two turns', 'summarized_count': 2, 'history_version': 'A' * 64}), None,
+     'SUMMARY_FAILED'),
+    ((True, {'status': 'ok', 'summary': 'two turns', 'summarized_count': 2, 'history_version': 'a' * 63}), None,
+     'SUMMARY_FAILED'),
+    ((False, {'code': 'UNSUPPORTED_REQUEST', 'error': 'AS upgrade required'}), None, 'UNSUPPORTED_REQUEST'),
+    ((False, {'code': 'UNSUPPORTED_DATA_PLANE', 'error': 'no capability'}), None, 'UNSUPPORTED_DATA_PLANE'),
+    ((True, {'status': 'ok', 'summary': 'only summary', 'summarized_count': 2, 'history_version': 'a' * 64}), True, 'SESSION_BUSY'),
+    ((True, {'status': 'ok', 'summary': 'only summary', 'summarized_count': 2, 'history_version': 'a' * 64}), False, 'AGENT_SERVER_TIMEOUT'),
 ])
 async def test_rewind_with_summary_rechecks_activity_and_never_replays_write(monkeypatch, summary, activity, expected):
     from agent_gateway.routing import e2a_proxy
@@ -258,8 +267,17 @@ async def test_rewind_with_summary_rechecks_activity_and_never_replays_write(mon
         })
         assert result['code'] == expected
         assert [call.kwargs['req_method'].value for call in fetch.await_args_list] == methods
+        summary_call = fetch.await_args_list[1].kwargs
+        assert summary_call['required_capability'] == 'personal_tui_summary_rewind_v1'
+        assert summary_call['params']['_personal_tui_summary_rewind_v1'] is True
+        assert 'history_version' not in summary_call['params']
+        assert summary_call['params']['direction'] == 'up_to' and summary_call['params']['turn_index'] == 2
         if activity is False:
-            assert fetch.await_args.kwargs['params']['compact_summary'] == 'only summary'
+            commit_call = fetch.await_args.kwargs
+            assert commit_call['required_capability'] == 'personal_tui_summary_rewind_v1'
+            assert commit_call['params']['compact_summary'] == 'only summary'
+            assert commit_call['params']['history_version'] == 'a' * 64
+            assert '_personal_tui_summary_rewind_v1' not in commit_call['params']
     finally:
         await assembly.stop()
 
@@ -270,7 +288,8 @@ async def test_rewind_with_summary_returns_the_server_summary(monkeypatch):
 
     idle = (True, {'user_id': '', 'runtime': {'is_processing': False}})
     fetch = AsyncMock(side_effect=[
-        idle, (True, {'status': 'ok', 'summary': 'server summary', 'summarized_count': 2}), idle,
+        idle, (True, {'status': 'ok', 'summary': 'server summary', 'summarized_count': 2,
+                      'history_version': 'b' * 64}), idle,
         (True, {'turns_removed': 2}),
     ])
     monkeypatch.setattr(e2a_proxy, 'fetch_agent_unary', fetch)
@@ -281,9 +300,15 @@ async def test_rewind_with_summary_returns_the_server_summary(monkeypatch):
         })
         assert result == {'type': 'res', 'id': 'legacy-request', 'ok': True,
                           'payload': {'turns_removed': 2, 'summary': 'server summary', 'summarized_messages': 2}}
-        writes = [call.kwargs['params'] for call in fetch.await_args_list[3:]]
-        assert writes == [{'session_id': 's1', 'turn_index': 2, 'direction': 'from',
-                           'compact_summary': 'server summary', 'summarized_count': 2}]
+        writes = [fetch.await_args_list[1].kwargs['params'], fetch.await_args_list[3].kwargs['params']]
+        assert writes == [
+            {'session_id': 's1', 'turn_index': 2, 'direction': 'from', '_personal_tui_summary_rewind_v1': True},
+            {'session_id': 's1', 'turn_index': 2, 'direction': 'from', 'compact_summary': 'server summary',
+             'summarized_count': 2, 'history_version': 'b' * 64},
+        ]
+        assert [call.kwargs['required_capability'] for call in fetch.await_args_list] == [
+            None, 'personal_tui_summary_rewind_v1', None, 'personal_tui_summary_rewind_v1',
+        ]
     finally:
         await assembly.stop()
 
