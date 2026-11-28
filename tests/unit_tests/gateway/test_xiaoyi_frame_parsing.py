@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-import time
 from unittest.mock import AsyncMock
 
 import pytest
@@ -160,4 +159,63 @@ async def test_dispatch_gui_agent_events_with_non_dict_event_items():
 @pytest.mark.asyncio
 async def test_tasks_cancel_with_non_dict_params():
     channel = _channel()
+    channel._ws_connections = {"primary": object()}
+    channel._send_agent_response = AsyncMock()
     await channel._handle_tasks_cancel({"sessionId": "sess-1", "params": "oops", "taskId": "task-9"})
+    # params 非 dict 不崩：taskId 回退到顶层 taskId，取消响应照常回发
+    channel._send_agent_response.assert_awaited_once()
+    response = channel._send_agent_response.await_args.args[2]
+    assert response["result"]["status"]["state"] == "canceled"
+
+
+@pytest.mark.asyncio
+async def test_message_stream_file_part_with_non_dict_file_field():
+    """P1 回归：file 为非对象真值（如字符串）时不得在 .get() 处崩溃。
+
+    修复前 isinstance 检查位于 uri = file_info.get(...) 之后，是防御不可达的
+    死代码——{"kind": "file", "file": "abc"} 会在 str.get 抛 AttributeError，
+    异常打穿 _connect 的 async for，整条 WS 连接被放弃重连。
+    """
+    channel = _channel()
+    channel.bus.route_user_message = AsyncMock()
+    await channel._handle_message_stream({
+        "method": "message/stream",
+        "sessionId": "phys-1",
+        "params": {
+            "sessionId": "logical-1",
+            "id": "task-1",
+            "message": {"parts": [
+                {"kind": "file", "file": "abc"},   # file 非对象
+                {"kind": "text", "text": "后续文本仍应被处理"},
+            ]},
+        },
+    })
+    _cancel_timeout_tasks(channel)
+    routed: Message = channel.bus.route_user_message.await_args.args[0]
+    assert routed.params["query"] == "后续文本仍应被处理"
+
+
+@pytest.mark.asyncio
+async def test_message_stream_with_non_list_parts_does_not_crash():
+    """P2 回归：parts 为不可迭代标量时不得抛 TypeError（`or []` 对真值标量不生效）。"""
+    channel = _channel()
+    channel.bus.route_user_message = AsyncMock()
+    await channel._handle_message_stream({
+        "method": "message/stream",
+        "sessionId": "phys-1",
+        "params": {"sessionId": "logical-1", "id": "task-1", "message": {"parts": 5}},
+    })
+    _cancel_timeout_tasks(channel)
+    assert channel.bus.route_user_message.await_count == 1
+
+
+def test_get_a2a_parts_with_non_string_msg_detail():
+    """P3 回归：msgDetail 非字符串时 json.loads 抛 TypeError 而非 JSONDecodeError。"""
+    channel = _channel()
+    assert channel._get_a2a_parts({"msgType": "data", "msgDetail": 123}) == []
+
+
+def test_extract_data_event_with_non_string_msg_detail():
+    """P3 回归：wrapped 分支对 msgDetail 非字符串同样容错。"""
+    channel = _channel()
+    assert channel._extract_data_event({"msgType": "data", "msgDetail": {"already": "dict"}}) is None

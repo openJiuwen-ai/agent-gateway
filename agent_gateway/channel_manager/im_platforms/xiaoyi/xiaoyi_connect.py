@@ -1482,7 +1482,10 @@ class XiaoyiChannel(BaseChannel):
         agent_id = message.get("agentId", "") or self.config.agent_id
         device_id = message.get("deviceId", "") or ""
         user_message = _as_dict(params.get("message"))
-        parts = [p for p in user_message.get("parts") or [] if isinstance(p, dict)]
+        raw_parts = user_message.get("parts")
+        # 先校验容器类型再过滤：parts 为数字等不可迭代标量时，`or []` 不生效，
+        # 迭代会抛 TypeError（与 _get_a2a_parts / _extract_data_event 约定一致）
+        parts = [p for p in raw_parts if isinstance(p, dict)] if isinstance(raw_parts, list) else []
 
         # Mark session as active
         self._mark_session_active(session_id)
@@ -1500,16 +1503,17 @@ class XiaoyiChannel(BaseChannel):
                 text += part.get("text", "")
             elif kind == "file" and part.get("file"):
                 file_info = part["file"]
+                if not isinstance(file_info, dict):
+                    # 必须在 .get() 之前：file 为字符串/数字时 str.get 即抛
+                    # AttributeError，坏帧会打穿整条 WS 连接（崩溃-重连死循环）
+                    logger.warning(f"XiaoYi: File part with non-object file field, skipping: {file_info!r}")
+                    continue
                 uri = file_info.get("uri")
                 mime_type = file_info.get("mimeType", "")
                 name = file_info.get("name", "")
 
                 if not uri:
                     logger.warning(f"XiaoYi: File part without URI, skipping: {name}")
-                    continue
-
-                if not isinstance(file_info, dict):
-                    logger.warning(f"XiaoYi: File part with non-object file field, skipping: {name}")
                     continue
 
                 try:
@@ -2163,7 +2167,8 @@ class XiaoyiChannel(BaseChannel):
         if msg_type == "data":
             try:
                 a2a_request = json.loads(message.get("msgDetail", "{}"))
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, TypeError):
+                # TypeError: msgDetail 非字符串（数字/对象等）时 json.loads 直接抛
                 return []
             params = _as_dict(a2a_request).get("params")
         else:
@@ -2302,7 +2307,8 @@ class XiaoyiChannel(BaseChannel):
                 msg = _as_dict(_as_dict(params).get("message"))
                 parts = msg.get("parts", [])
                 session_id = message.get("sessionId", "")
-            except json.JSONDecodeError as e:
+            except (json.JSONDecodeError, TypeError) as e:
+                # TypeError: msgDetail 非字符串（数字/对象等）时 json.loads 直接抛
                 logger.info(
                     f"[XiaoyiChannel] _extract_data_event: msgDetail JSON 解析失败: {e}"
                 )
