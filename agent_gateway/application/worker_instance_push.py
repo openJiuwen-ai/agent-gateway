@@ -126,6 +126,10 @@ class InstancePushGuard:
             raise RuntimeError('instance session association capacity exceeded')
         self._sessions[sid] = (target_id, generation)
 
+    def session_target_id(self, session_id: str | None) -> str | None:
+        owner = self._sessions.get(_key(session_id))
+        return owner[0] if owner is not None else None
+
     def pin(self, target: InstanceTarget, session_id: Any) -> None:
         """A session belongs to the physical generation that first served it.
 

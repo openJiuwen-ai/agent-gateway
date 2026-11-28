@@ -10,6 +10,7 @@ handlers over the fixed local AgentServer targets its slot owns.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from functools import lru_cache, partial
@@ -24,6 +25,7 @@ from agent_gateway.application.inbound import (
 )
 from agent_gateway.auth.passthrough import MODEL_AUTH_PARAM_KEY
 from agent_gateway.common.ingress_identity import LocalIdentityPolicy, resolve_local_identity
+from agent_gateway.common.instance_routes import InstanceProviderSpec
 from agent_gateway.common.southbound_routes import StaticRouteDirectory
 from agent_gateway.transport.protocol_connection_runtime import ProtocolConnectionRuntime
 from agent_gateway.transport.web_protocol_runtime import WebProtocolRuntime
@@ -354,6 +356,7 @@ async def data_worker(
     agent_server_url: str | None = None, *, control_client=None, on_credentials=None, accounts: bool = True,
     cron_slot: int | None = None, cron_manifest=None, southbound_routes: StaticRouteDirectory | None = None,
     slot_id: int | None = None,
+    instance_provider: InstanceProviderSpec | None = None,
 ):
     """Yield ``(runtimes, web_runtime, cron)``.
 
@@ -375,6 +378,11 @@ async def data_worker(
     if southbound_routes is not None and (type(southbound_routes) is not StaticRouteDirectory
                                           or type(slot_id) is not int):
         raise ValueError("static routes require an explicit directory and a Worker slot")
+    if instance_provider is not None and (
+        type(instance_provider) is not InstanceProviderSpec or slot_id not in instance_provider.manifest.slots
+        or southbound_routes is not None or agent_server_url is not None or cron_enabled or control_client is not None
+    ):
+        raise ValueError("ADX instance routing requires a dedicated data Worker")
     from agent_gateway.application.preparation import callback_framework
     from agent_gateway.application.tui_acp import assemble_tui_acp
     from agent_gateway.application.web import assemble_web
@@ -395,11 +403,22 @@ async def data_worker(
         # personal_compatibility decides that once, for assembling the handlers
         # and for admitting the requests. A static Worker has one target per
         # named user and no single user directory, so it offers none of them.
-        personal = southbound_routes is None and not (control_client is not None and accounts)
+        personal = southbound_routes is None and instance_provider is None and not (control_client is not None and accounts)
         personal_tui, personal_settings = personal_compatibility(agent_server_url, personal=personal)
-        client, routed = await _build_southbound(
-            cleanup, agent_server_url, southbound_routes, slot_id, personal_settings=personal_settings,
-        )
+        instance = None
+        if instance_provider is not None:
+            from agent_gateway.application.worker_instance_southbound import build_instance_southbound
+            from agent_gateway.common.config import get_config
+            from agent_gateway.extensions.adx.config import load_router_config
+
+            config = load_router_config(await asyncio.to_thread(get_config))
+            instance = await build_instance_southbound(instance_provider, config, slot_id=slot_id)
+            cleanup.push_async_callback(instance.close)
+            client = routed = instance.client
+        else:
+            client, routed = await _build_southbound(
+                cleanup, agent_server_url, southbound_routes, slot_id, personal_settings=personal_settings,
+            )
         credentials = None
         if control_client is not None and accounts:
             from agent_gateway.auth.worker_credential_services import (
@@ -448,6 +467,8 @@ async def data_worker(
             preprocessor = preprocessor.with_credential_access(credentials.credentials)
         if routed is not None:
             await routed.activate()
+        if instance is not None:
+            instance.start_idle_reaper()
         cron = None
         if cron_enabled:
             from agent_gateway.application.worker_cron import build_worker_cron

@@ -163,6 +163,9 @@ class AgentOSInstanceProvider:
     def pending_acquisition_count(self) -> int:
         return len(self._acquiring)
 
+    def user_for_target_id(self, target_id: str) -> str | None:
+        return next((route.user_id for route in self._routes.values() if route.target_id == target_id), None)
+
     def validate_owner(
         self, user_id: str | None, *, agent_type: str | None = None,
     ) -> OwnedRoute:

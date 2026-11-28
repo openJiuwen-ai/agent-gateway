@@ -15,7 +15,7 @@ from agent_gateway.common.ingress_identity import IngressIdentity, LocalIdentity
 from agent_gateway.common.worker_affinity import FixedUserHash, WorkerManifest
 
 
-_MAX_JSON_BYTES = 16 * 1024
+MAX_INSTANCE_SPEC_BYTES = 16 * 1024
 _MAX_ADMITTED_USERS = 32
 _MAX_INTEGER = 2**63 - 1
 _MAX_CPU = 65535
@@ -183,7 +183,7 @@ class InstanceProviderSpec:
         }
         try:
             encoded = json.dumps(value, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
-            if len(encoded.encode('utf-8')) > _MAX_JSON_BYTES:
+            if len(encoded.encode('utf-8')) > MAX_INSTANCE_SPEC_BYTES:
                 raise ValueError
             return encoded
         except (ValueError, UnicodeError):
@@ -193,7 +193,7 @@ class InstanceProviderSpec:
     def from_json(cls, encoded: str) -> InstanceProviderSpec:
         """Reject unknown, missing, duplicate or coerced fields before construction."""
         try:
-            if type(encoded) is not str or len(encoded.encode('utf-8')) > _MAX_JSON_BYTES:
+            if type(encoded) is not str or len(encoded.encode('utf-8')) > MAX_INSTANCE_SPEC_BYTES:
                 raise ValueError
             value = _exact_object(
                 json.loads(

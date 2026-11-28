@@ -10,23 +10,22 @@ records every dial. The provider and manager under test are the real ones.
 from __future__ import annotations
 
 import asyncio
-from contextlib import AsyncExitStack, aclosing
-import json
+import sys
+from contextlib import AsyncExitStack, aclosing, suppress
+from functools import partial
 from typing import Any
-from urllib.parse import unquote, urlsplit
 
 import pytest
-from e2a.agent_models import AgentResponse, AgentResponseChunk
 from e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 from e2a.models import E2AEnvelope
-from e2a.wire_codec import encode_agent_chunk_for_wire, encode_agent_response_for_wire
-from websockets.asyncio.server import serve
+from websockets.protocol import State
 
 from agent_gateway.application.worker_instance_routed_client import WorkerInstanceRoutedClient, _InstanceSocket
 from agent_gateway.common.ingress_identity import LocalIdentityPolicy
 from agent_gateway.common.worker_affinity import WorkerManifest
-from agent_gateway.southbound.orchestration.agent_manager import AgentCreateFailed, AgentManager, AgentStatus
+from agent_gateway.southbound.orchestration.agent_manager import AgentCreateFailed, AgentManager
 from agent_gateway.southbound.orchestration.instance_provider import AgentOSInstanceProvider
+from tests.unit_tests.gateway.instance_fakes import InstanceFrontend
 
 
 class Frontend:
@@ -40,129 +39,6 @@ class Frontend:
         return f'ws://{self._netloc}/{instance_id}/{port}'
 
 
-class InstanceFrontend:
-    """One loopback listener playing the ingress and every generation behind it."""
-
-    def __init__(self) -> None:
-        self.created: list[Any] = []
-        self.requests: list[tuple[str, dict[str, Any]]] = []
-        self.dials: list[tuple[str, str, dict[str, str]]] = []
-        self.events: list[str] = []
-        self.closed: list[tuple[str, int | None]] = []
-        self.users: dict[str, str] = {}
-        self.received = asyncio.Event()
-        self.reply_gate = asyncio.Event()
-        self.reply_gate.set()
-        # A stream's last chunk waits here, so a test can cut the stream.
-        self.final_gate = asyncio.Event()
-        self.final_gate.set()
-        self._sockets: dict[str, Any] = {}
-        self._server: Any = None
-
-    async def start(self) -> InstanceFrontend:
-        self._server = await serve(self._handle, '127.0.0.1', 0)
-        return self
-
-    @property
-    def netloc(self) -> str:
-        return f"127.0.0.1:{self._server.sockets[0].getsockname()[1]}"
-
-    async def stop(self) -> None:
-        for socket in list(self._sockets.values()):
-            try:
-                await socket.close(code=1001)
-            except Exception:  # noqa: BLE001 - the peer may already be gone
-                pass
-        self._sockets.clear()
-        self._server.close()
-        await self._server.wait_closed()
-
-    async def create(self, info):
-        """The trusted creator: management readiness is attested for this generation."""
-        self.created.append(info.copy())
-        info.sandbox_id = 'instance-' + info.agent_id
-        info.status = AgentStatus.READY
-        info.metadata.update(physical_generation=info.agent_id, agent_port=18092)
-        self.users[info.sandbox_id] = info.user_id
-        return info
-
-    def drop(self, user: str) -> None:
-        socket = self._sockets.pop(user, None)
-        if socket is not None:
-            socket.transport.abort()
-
-    def dial_count(self) -> int:
-        return len(self.dials)
-
-    async def wait_dials(self, count: int) -> None:
-        async with asyncio.timeout(5):
-            while len(self.dials) < count:
-                await asyncio.sleep(0.01)
-
-    async def push(self, user: str, wire: dict[str, Any]) -> None:
-        await self._sockets[user].send(json.dumps(wire))
-
-    def request_ids(self) -> list[str]:
-        return [str(row.get('request_id') or '') for _, row in self.requests]
-
-    async def _handle(self, websocket) -> None:
-        # ADX loopback ingress shape: /{instance_id}/{port}.
-        instance = unquote(urlsplit(websocket.request.path).path.split('/')[1])
-        user = self.users[instance]
-        headers = dict(websocket.request.headers)
-        self.dials.append((user, instance, headers))
-        self.events.append('dial')
-        self._sockets[user] = websocket
-        pending: set[asyncio.Task[None]] = set()
-        try:
-            await websocket.send(json.dumps({
-                'type': 'event', 'event': 'connection.ack',
-                'payload': {'status': 'ready', 'readiness': 'AGENT_READY'},
-            }))
-            async for raw in websocket:
-                request = json.loads(raw)
-                self.requests.append((user, request))
-                self.received.set()
-                # A real AgentServer answers concurrently; a held stream must not
-                # stop this socket from reading the next request.
-                task = asyncio.create_task(self._answer(websocket, user, request))
-                pending.add(task)
-                task.add_done_callback(pending.discard)
-        except Exception:  # noqa: BLE001 - the Gateway side owns the close
-            pass
-        finally:
-            self.closed.append((user, websocket.close_code))
-            self.events.append('closed')
-            if self._sockets.get(user) is websocket:
-                self._sockets.pop(user, None)
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
-
-    async def _answer(self, websocket, user: str, request: dict[str, Any]) -> None:
-        rid = str(request.get('request_id') or '')
-        channel = str(request.get('channel_id') or request.get('channel') or 'web')
-        await self.received.wait()
-        await self.reply_gate.wait()
-        if request.get('is_stream'):
-            for sequence, (event, complete) in enumerate((('chat.delta', False), ('chat.final', True))):
-                if complete:
-                    await self.final_gate.wait()
-                chunk = AgentResponseChunk(
-                    request_id=rid, channel_id=channel, payload={'event_type': event, 'marker': user},
-                    is_complete=complete,
-                )
-                await websocket.send(json.dumps(encode_agent_chunk_for_wire(
-                    chunk, response_id=rid, sequence=sequence,
-                )))
-            return
-        payload: dict[str, Any] = {'marker': user}
-        if request.get('method') == 'session.create':
-            payload['result'] = {'session_id': 'session-' + user}
-        response = AgentResponse(request_id=rid, channel_id=channel, payload=payload, ok=True)
-        await websocket.send(json.dumps(encode_agent_response_for_wire(response, response_id=rid)))
-
-
 def push_wire(request_id: str, session_id: str, *, user: str | None = None, **payload: Any) -> dict[str, Any]:
     wire: dict[str, Any] = {
         'request_id': request_id, 'channel_id': 'web', 'session_id': session_id,
@@ -174,7 +50,7 @@ def push_wire(request_id: str, session_id: str, *, user: str | None = None, **pa
     return wire
 
 
-async def pool(stack: AsyncExitStack, **hooks: Any):
+async def pool(stack: AsyncExitStack, *, expect_close_failure: bool = False, **hooks: Any):
     frontend = await InstanceFrontend().start()
     stack.push_async_callback(frontend.stop)
     owner = AgentOSInstanceProvider(
@@ -185,7 +61,14 @@ async def pool(stack: AsyncExitStack, **hooks: Any):
     client = WorkerInstanceRoutedClient(owner, **hooks)
     pushes: list[dict[str, Any]] = []
     client.set_server_push_handler(pushes.append)
-    stack.push_async_callback(client.disconnect)
+    async def close() -> None:
+        if expect_close_failure:
+            with suppress(RuntimeError):
+                await client.disconnect()
+        else:
+            await client.disconnect()
+
+    stack.push_async_callback(close)
     return client, frontend, owner, pushes
 
 
@@ -692,3 +575,169 @@ async def test_disconnect_closes_sockets_then_stops_local_acquisition_without_de
         assert owner._closed and frontend.dial_count() == 2
         # The instances stay registered with their platform: a Worker restart does not delete them.
         assert len(frontend.users) == 2 and frontend.created
+
+
+@pytest.fixture(params=['legacy', 'asyncio'])
+def implementation(request, monkeypatch):
+    """The engine uses websockets' legacy client unless its deprecation is an error."""
+    if request.param == 'asyncio':
+        monkeypatch.setitem(sys.modules, 'websockets.legacy.client', None)
+    return request.param
+
+
+def kind(socket: _InstanceSocket) -> str:
+    return 'legacy' if 'legacy' in type(socket._ws).__module__ else 'asyncio'
+
+
+def closing(raw: Any) -> bool:
+    """The connection sent its close frame and is waiting for its peer's."""
+    protocol = getattr(raw, 'protocol', None)
+    return (protocol.state if protocol is not None else raw.state) is State.CLOSING
+
+
+async def test_an_expired_stop_deadline_drops_sockets_instead_of_waiting_for_their_peers(
+    implementation,
+) -> None:
+    async with AsyncExitStack() as stack:
+        client, frontend, owner, _ = await pool(stack)
+        await client.activate()
+        await client.send_request(request('alice'))
+        await client.send_request(request('bob', 'bob'))
+        assert len(client._sockets) == 2
+        assert {kind(socket) for socket in client._sockets} == {implementation}
+        frontend.mute('alice', 'bob')
+        # Neither peer can answer a closing handshake. An elapsed budget is not a
+        # failure to report: both sockets are dropped at once, without a raise.
+        async with asyncio.timeout(3):
+            await client.disconnect(deadline=asyncio.get_running_loop().time() - 1)
+        await frontend.wait_closed(2)
+        assert sorted(user for user, _ in frontend.closed) == ['alice', 'bob']
+        assert not client.server_ready and client._sockets == set() and client._entries == {}
+        assert owner._closed and frontend.dial_count() == 2
+        # Stopping again observes the same finished stop.
+        await client.disconnect()
+
+
+async def test_a_tightened_stop_deadline_drops_sockets_waiting_for_their_peers(implementation) -> None:
+    async with AsyncExitStack() as stack:
+        client, frontend, owner, _ = await pool(stack)
+        await client.activate()
+        await client.send_request(request('alice'))
+        await client.send_request(request('bob', 'bob'))
+        frontend.mute('alice', 'bob')
+        loop = asyncio.get_running_loop()
+
+        def waiting_for_their_peers() -> bool:
+            # Every close has sent its close frame and is waiting for an answer.
+            return bool(client._sockets) and all(
+                socket.retired_raw is not None and closing(socket.retired_raw)
+                for socket in client._sockets
+            )
+
+        stopping = asyncio.create_task(client.disconnect(deadline=loop.time() + 60))
+        try:
+            async with asyncio.timeout(5):
+                while not waiting_for_their_peers():
+                    await asyncio.sleep(0.01)
+            assert not stopping.done()
+            # A second stop with a nearer deadline moves the budget. Both sockets
+            # are dropped then: nothing waits for 60 s or for the library's own timeouts.
+            async with asyncio.timeout(3):
+                await client.disconnect(deadline=loop.time() + 0.05)
+        finally:
+            await asyncio.gather(stopping, return_exceptions=True)
+        await frontend.wait_closed(2)
+        assert sorted(user for user, _ in frontend.closed) == ['alice', 'bob']
+        assert not client.server_ready and client._sockets == set() and owner._closed
+
+
+async def test_a_close_that_never_runs_still_drops_its_socket(monkeypatch) -> None:
+    async with AsyncExitStack() as stack:
+        client, frontend, owner, _ = await pool(stack)
+        await client.activate()
+        await client.send_request(request('alice'))
+        socket = next(iter(client._sockets))
+        frontend.mute('alice')
+        never = asyncio.Event()
+
+        def close_that_never_runs(socket):
+            # The bookkeeping of a real close, with none of its body: the
+            # budget cut this one before it dropped anything of its own.
+            task = asyncio.create_task(never.wait())
+            task.add_done_callback(partial(client._socket_closed, socket))
+            return task
+
+        monkeypatch.setattr(client, '_close', close_that_never_runs)
+        async with asyncio.timeout(3):
+            await client.disconnect(deadline=asyncio.get_running_loop().time() - 1)
+        await frontend.wait_closed(1)
+        assert [user for user, _ in frontend.closed] == ['alice']
+        assert not client.server_ready and client._sockets == set() and owner._closed
+        # The engine retires the socket when it reads that its connection is gone.
+        async with asyncio.timeout(5):
+            while socket.live:
+                await asyncio.sleep(0.01)
+
+
+async def test_a_close_that_fails_is_reported_after_everything_is_still_dropped(monkeypatch) -> None:
+    async with AsyncExitStack() as stack:
+        client, frontend, owner, _ = await pool(stack, expect_close_failure=True)
+        await client.activate()
+        await client.send_request(request('alice'))
+        assert (await client.send_request(request('bob', 'bob'))).ok
+
+        async def failing(socket):
+            raise RuntimeError('closing handshake failed')
+
+        monkeypatch.setattr(client, '_close_gracefully', failing)
+        with pytest.raises(RuntimeError, match='instance transport cleanup failed'):
+            await client.disconnect()
+        # The failure is reported, and is no reason to keep anything: both peers
+        # saw their connections go and local acquisition stopped.
+        await frontend.wait_closed(2)
+        assert sorted(user for user, _ in frontend.closed) == ['alice', 'bob']
+        assert client._sockets == set() and owner._closed
+
+
+async def test_every_caller_awaits_one_stop_and_the_provider_closes_once(monkeypatch) -> None:
+    async with AsyncExitStack() as stack:
+        client, frontend, owner, _ = await pool(stack)
+        await client.activate()
+        await client.send_request(request('alice'))
+        await client.send_request(request('bob', 'bob'))
+        closed = []
+        original = owner.close
+
+        async def counted(*, deadline=None):
+            closed.append(deadline)
+            await original(deadline=deadline)
+
+        monkeypatch.setattr(owner, 'close', counted)
+        loop = asyncio.get_running_loop()
+        # A stop in progress, asked for again with other deadlines, is one stop.
+        first = asyncio.create_task(client.disconnect())
+        await asyncio.sleep(0)
+        second = asyncio.create_task(client.disconnect(deadline=loop.time() + 30))
+        await asyncio.gather(first, second)
+        await client.disconnect()
+        await client.disconnect(deadline=loop.time() - 1)
+        assert len(closed) == 1 and client._sockets == set()
+
+
+async def test_an_in_flight_close_drops_a_socket_its_peer_never_releases(implementation) -> None:
+    async with AsyncExitStack() as stack:
+        client, frontend, owner, _ = await pool(stack, stop_timeout=0.2)
+        await client.activate()
+        await client.send_request(request('alice', 'first'))
+        old_socket = next(iter(client._sockets))
+        assert old_socket.live and kind(old_socket) == implementation
+        frontend.mute('alice')
+        await pop_generation(owner)
+        # Retiring the idle generation waits out its close budget, then drops the
+        # connection. Only then is the replacement dialled.
+        async with asyncio.timeout(3):
+            assert (await client.send_request(request('alice', 'second'))).payload == {'marker': 'alice'}
+        assert not old_socket.live and old_socket not in client._sockets
+        assert len(client._sockets) == 1 and frontend.dial_count() == 2
+        await frontend.wait_closed(1)
+        assert [user for user, _ in frontend.closed] == ['alice']

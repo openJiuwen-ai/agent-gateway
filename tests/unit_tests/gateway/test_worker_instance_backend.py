@@ -10,7 +10,6 @@ format. Only the registry is replaced, to gate and fail registration.
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,11 +31,13 @@ from agent_gateway.extensions.agentos.agentos_router.agent_manager import (
     AgentCreateFailed, AgentPreCreateError, AgentRebuildPending,
 )
 from agent_gateway.extensions.agentos.agentos_router.backend import (
-    AGENT_GENERATION_ENV, deterministic_agent_instance_id,
+    AGENT_GENERATION_ENV, TRACE_ID_HEADER, deterministic_agent_instance_id,
 )
 from agent_gateway.extensions.agentos.agentos_router.models import AgentStatus
 from agent_gateway.extensions.agentos.agentos_router.registry_client import RegistryConfig
 from agent_gateway.southbound.orchestration.instance_provider import TargetLease
+from agent_gateway.southbound.orchestration.agent_manager import AgentCreateFailed
+from tests.unit_tests.gateway.instance_fakes import BrokenRegistry, EnvironmentAPI, FakeRegistry
 
 
 # Environment lifecycle values a leaf supplies itself; ADX adds its own binding.
@@ -44,102 +45,6 @@ _LEAF_ENV = (
     'JIUWENSWARM_USER_DIRECTORY', 'JIUWENSWARM_RUNTIME_PROFILE', 'TOOL_SANDBOX_IDLE_TIMEOUT',
     'TOOL_SANDBOX_CPU', 'TOOL_SANDBOX_MEMORY', AGENT_GENERATION_ENV,
 )
-
-
-class EnvironmentAPI:
-    """In-process ADX Environment control API on the public wire format."""
-
-    def __init__(self, tenant: str = 'appliance') -> None:
-        self.tenant = tenant
-        self.environments: dict[str, dict[str, Any]] = {}
-        self.requests: list[httpx.Request] = []
-        self.creates: list[dict[str, Any]] = []
-        self.deletes: list[tuple[str, str | None]] = []
-        self.create_status = 'running'
-        self.create_before_gate = False
-        self.post_plan: list[Any] = []
-        self.post_started = asyncio.Event()
-        self.post_gate = asyncio.Event()
-        self.post_gate.set()
-
-    def arm(self, outcome: Any = 'commit', *, created_before_reply: bool = False) -> None:
-        """Hold the next create POST until it is released with ``outcome``."""
-        self.post_plan.append(outcome)
-        self.create_before_gate = created_before_reply
-        self.post_started = asyncio.Event()
-        self.post_gate.clear()
-
-    def _create(self, body: dict[str, Any]) -> str:
-        instance = f"{body['namespace']}-{body['name']}"
-        self.environments[instance] = {
-            'id': instance, 'tenant_id': self.tenant, 'status': self.create_status,
-            'env_vars': dict(body['env']), 'node_ip': '10.0.0.5', 'sandbox_ip': '10.0.0.6',
-            'runtime_id': 'runtime-' + instance,
-        }
-        return instance
-
-    async def handle(self, request: httpx.Request) -> httpx.Response:
-        self.requests.append(request)
-        assert request.headers['authorization'] == 'Bearer platform-secret'
-        if request.method == 'GET' and request.url.path == '/api/instances':
-            entry = self.environments.get(request.url.params['instance_id'])
-            return httpx.Response(200, json=[entry]) if entry is not None else httpx.Response(404)
-        if request.method == 'POST' and request.url.path == '/api/environment/v1/environments':
-            body = json.loads(request.content)
-            self.creates.append(body)
-            self.post_started.set()
-            if self.create_before_gate:
-                self._create(body)
-            await self.post_gate.wait()
-            outcome = self.post_plan.pop(0) if self.post_plan else 'commit'
-            instance = f"{body['namespace']}-{body['name']}"
-            if outcome in ('commit', 'lost_created') and instance not in self.environments:
-                self._create(body)
-            if outcome in ('lost', 'lost_created'):
-                raise httpx.ReadTimeout('response lost', request=request)
-            if isinstance(outcome, tuple):
-                return httpx.Response(outcome[0], json={'error': {'code': outcome[1]}})
-            data = base64.b64encode(json.dumps({'environmentId': instance}).encode()).decode()
-            return httpx.Response(200, json={'code': 200, 'data': data})
-        if request.method == 'DELETE':
-            # httpx decodes the path: '%2B' is one character inside one segment.
-            instance = request.url.path.rsplit('/', 1)[1]
-            self.deletes.append((instance, request.headers['x-request-id']))
-            if instance not in self.environments:
-                return httpx.Response(404)
-            del self.environments[instance]
-            return httpx.Response(200, json={'success': True})
-        raise AssertionError(f'unexpected ADX request: {request.method} {request.url}')
-
-    @property
-    def posts(self) -> list[httpx.Request]:
-        return [request for request in self.requests if request.method == 'POST']
-
-
-class FakeRegistry:
-    def __init__(self, config: Any) -> None:
-        self.config = config
-        self.registered: list[Any] = []
-        self.closed = False
-        self.fail_registration: Exception | None = None
-        self.register_started = asyncio.Event()
-        self.register_gate = asyncio.Event()
-        self.register_gate.set()
-
-    async def register_agent(self, agent_info: Any) -> None:
-        self.register_started.set()
-        await self.register_gate.wait()
-        if self.fail_registration is not None:
-            raise self.fail_registration
-        self.registered.append(agent_info.copy())
-
-    async def close(self) -> None:
-        self.closed = True
-
-
-class BrokenRegistry:
-    def __init__(self, config: Any) -> None:
-        raise RuntimeError('registry constructor failed')
 
 
 @pytest.fixture(autouse=True)
@@ -829,3 +734,126 @@ def test_spec_may_name_the_configured_root_through_a_symlink(monkeypatch, tmp_pa
 
     # The same directory, however it is spelled, manages the same workspaces.
     WorkerInstanceBackend(_spec(alias), _config(monkeypatch, root), slot_id=0)
+
+
+# --------------------------------------------------------------------------- data-path hooks
+
+
+async def test_each_dial_takes_a_fresh_ingress_credential(leaf, managed_root):
+    backend, api = leaf(managed_root)
+    with pytest.raises(RuntimeError, match='not started'):
+        backend.dial_headers()
+    provider = await backend.start()
+    lease = await provider.acquire(provider.validate_owner('alice'))
+    first, second = backend.dial_headers(), backend.dial_headers()
+    assert first is not second and first['Authorization'] == 'Bearer platform-secret'
+    # The trace carrier the control plane binds, so a dial can be followed in ADX.
+    assert first[TRACE_ID_HEADER]
+    first['Authorization'] = 'changed by the caller'
+    assert backend.dial_headers()['Authorization'] == 'Bearer platform-secret'
+    # It reaches the control plane and the ingress only: no lease, target, record or spec carries it.
+    assert 'platform-secret' not in repr(lease) + repr(lease.target) + repr(lease.runtime.info.metadata)
+    assert 'platform-secret' not in backend.spec.to_json()
+    assert 'platform-secret' not in repr(backend.registry.registered[0].metadata)
+    assert {request.url.host for request in api.requests} == {'adx.example'}
+    await backend.close()
+    with pytest.raises(RuntimeError, match='not started'):
+        backend.dial_headers()
+
+
+def _write_model_config(user_root: Path, api_base: str) -> None:
+    config = user_root / '.jiuwenswarm' / 'config'
+    config.mkdir(parents=True, exist_ok=True)
+    (config / 'config.yaml').write_text(f'models:\n  primary:\n    api_base: {api_base}\n')
+
+
+def _network_deployment(root: Path) -> dict:
+    """A deployment whose builtin Environments get a network policy from the workspace."""
+    for user in ('alice', 'bob'):
+        _write_model_config(root / user, 'https://model.example/v1')
+    return {
+        'builtin_image': 'registry.example/agentserver:1',
+        'builtin_launch': {
+            'process': {'commands': [['/opt/agent/server', '--port', '18092']]},
+            'network': {'ingress_url': 'https://ingress.example'},
+        },
+    }
+
+
+async def test_network_admission_is_skipped_unless_the_deployment_configures_one(leaf, managed_root):
+    backend, api = leaf(managed_root)
+    provider = await backend.start()
+    lease = await provider.acquire(provider.validate_owner('alice'))
+    before = len(api.requests)
+    # No model configuration exists in this workspace: nothing is even looked up.
+    await backend.admit_network(lease.target)
+    assert len(api.requests) == before and api.networks == []
+
+
+async def test_network_admission_reconciles_the_leased_environment_with_its_workspace(leaf, managed_root):
+    backend, api = leaf(managed_root, adx=_network_deployment(managed_root))
+    provider = await backend.start()
+    lease = await provider.acquire(provider.validate_owner('alice'))
+    # Creation carried the workspace's policy: an unchanged one is admitted without a request.
+    await backend.admit_network(lease.target)
+    assert api.networks == []
+    (create,) = api.creates
+    assert 'model.example' in json.dumps(create['network'])
+    # The user's model configuration changed after the Environment started.
+    _write_model_config(managed_root / 'alice', 'https://other-model.example/v1')
+    await backend.admit_network(lease.target)
+    ((instance, policy),) = api.networks
+    assert instance == lease.runtime.info.sandbox_id == lease.target.physical_id.split(':', 1)[1]
+    assert 'other-model.example' in json.dumps(policy) and 'model.example/' not in json.dumps(policy)
+    # Once per policy: the next request of the same generation asks for nothing.
+    await backend.admit_network(lease.target)
+    assert len(api.networks) == 1
+    # Another route reconciles its own Environment once its own configuration changes.
+    bob = await provider.acquire(provider.validate_owner('bob'))
+    await provider.release(bob, outcome='finished')
+    await backend.admit_network(bob.target)
+    assert [item[0] for item in api.networks] == [instance]
+    _write_model_config(managed_root / 'bob', 'https://bob-model.example/v1')
+    await backend.admit_network(bob.target)
+    assert [item[0] for item in api.networks] == [instance, bob.runtime.info.sandbox_id]
+    assert 'bob-model.example' in json.dumps(api.networks[1][1])
+    assert 'other-model.example' not in json.dumps(api.networks[1][1])
+    await provider.release(lease, outcome='finished')
+    assert {request.url.host for request in api.requests} == {'adx.example'}
+    assert api.deletes == []
+
+
+async def test_network_admission_refuses_a_generation_that_is_no_longer_current(leaf, managed_root):
+    backend, api = leaf(managed_root, adx=_network_deployment(managed_root))
+    provider = await backend.start()
+    lease = await provider.acquire(provider.validate_owner('alice'))
+    await provider.manager.pop_agent('alice', 'jiuwenswarm', expected_agent_id=lease.agent_id)
+    _write_model_config(managed_root / 'alice', 'https://other-model.example/v1')
+    before = len(api.requests)
+    with pytest.raises(RuntimeError, match='stale'):
+        await backend.admit_network(lease.target)
+    assert len(api.requests) == before and api.networks == []
+    with pytest.raises(ValueError, match='instance target'):
+        await backend.admit_network(lease.route)
+    with pytest.raises(ValueError, match='instance target'):
+        await backend.admit_network(object())
+    await backend.close()
+    with pytest.raises(RuntimeError, match='not started'):
+        await backend.admit_network(lease.target)
+
+
+async def test_a_refused_network_policy_is_reported_and_not_remembered_as_applied(leaf, managed_root):
+    backend, api = leaf(managed_root, adx=_network_deployment(managed_root))
+    provider = await backend.start()
+    lease = await provider.acquire(provider.validate_owner('alice'))
+    _write_model_config(managed_root / 'alice', 'https://other-model.example/v1')
+    api.network_reply = 403
+    with pytest.raises(AgentCreateFailed, match='AGENT_NETWORK_UPDATE_FAILED') as refused:
+        await backend.admit_network(lease.target)
+    assert type(refused.value.__cause__).__name__ == 'AdxControlError'
+    assert refused.value.__cause__.code == 'PERMISSION_DENIED'
+    assert len(api.networks) == 1
+    # Nothing was applied, so the next admission asks again instead of assuming success.
+    api.network_reply = None
+    await backend.admit_network(lease.target)
+    assert len(api.networks) == 2

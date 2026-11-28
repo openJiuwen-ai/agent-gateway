@@ -16,6 +16,7 @@ become part of a route or a lease.
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import aclosing
 from dataclasses import dataclass, field
@@ -28,6 +29,7 @@ from e2a.agent_models import AgentResponse, AgentResponseChunk
 from e2a.models import E2AEnvelope
 
 from agent_gateway.application.worker_instance_push import InstancePushGuard
+from agent_gateway.application.worker_session_routes import SessionRouteIndex
 from agent_gateway.southbound.data.websocket import (
     DuplicateRequestIdError, RequestNotSentError, WebSocketConnection,
 )
@@ -57,6 +59,11 @@ class _InstanceSocket(WebSocketConnection):
         # The engine forgets a connection when its receiver fails, without
         # closing it. Whoever retires this socket still needs the handle.
         self.retired_raw: Any = None
+
+    @property
+    def connection(self) -> Any:
+        """The connection this socket still owes a close, retired or not."""
+        return self._ws if self._ws is not None else self.retired_raw
 
     @property
     def live(self) -> bool:
@@ -116,6 +123,7 @@ class WorkerInstanceRoutedClient(SouthboundAgentClient):
     # may read or write another user's files.
     shared_directory_layout = False
     managed_routing = False
+    user_routing = True
     # A socket failure is isolated per generation; no supervisor task is owned.
     required_tasks: tuple[asyncio.Future, ...] = ()
 
@@ -143,6 +151,8 @@ class WorkerInstanceRoutedClient(SouthboundAgentClient):
         self._stop_timeout = stop_timeout
         self._connect_limit = asyncio.Semaphore(4)
         self._push_guard = InstancePushGuard()
+        self.session_routes = SessionRouteIndex()
+        self._request_users: OrderedDict[str, str] = OrderedDict()
         self._entries: dict[str, _TargetEntry] = {}
         self._sockets: set[_InstanceSocket] = set()
         self._close_errors: list[BaseException] = []
@@ -171,6 +181,34 @@ class WorkerInstanceRoutedClient(SouthboundAgentClient):
         """There is no single readiness promise for a set of generations."""
         return False
 
+    @property
+    def can_reconnect(self) -> bool:
+        return self.server_ready
+
+    @property
+    def frame_gate(self):
+        from agent_gateway.application.worker_routed_ingress import RoutedFrameGate
+
+        return RoutedFrameGate(self)
+
+    def remember_request(self, user_id: str | None, request_id: str | None) -> None:
+        if not request_id or not user_id:
+            return
+        previous = self._request_users.get(request_id)
+        if previous is not None and previous != user_id:
+            raise ValueError('request ID belongs to another instance owner')
+        self._request_users[request_id] = user_id
+        self._request_users.move_to_end(request_id)
+        if len(self._request_users) > 4096:
+            self._request_users.popitem(last=False)
+
+    def request_owner(self, request_id: str | None) -> str | None:
+        return self._request_users.get(request_id) if request_id else None
+
+    def session_owner(self, session_id: str | None) -> str | None:
+        target_id = self._push_guard.session_target_id(session_id)
+        return self._provider.user_for_target_id(target_id) if target_id else None
+
     def validate_bound_user(
         self, user_id: str | None, *, agent_type: str | None = None,
     ) -> OwnedRoute:
@@ -179,7 +217,9 @@ class WorkerInstanceRoutedClient(SouthboundAgentClient):
 
     def validate_bound_session(self, user_id: str | None, session_id: str | None) -> None:
         """Reserve a session owner before shared northbound state is changed."""
-        self._push_guard.claim_session(self.validate_bound_user(user_id), session_id)
+        route = self.validate_bound_user(user_id)
+        self.session_routes.check_acp_session(route, session_id)
+        self._push_guard.claim_session(route, session_id)
 
     def validate_bound_request(self, user_id: str | None, request_id: str | None) -> None:
         """Refuse a request id that is active or protected on any route."""
@@ -195,7 +235,8 @@ class WorkerInstanceRoutedClient(SouthboundAgentClient):
                 raise ValueError('request has no owned instance route')
         route = self.validate_bound_user(envelope.user_id)
         self._push_guard.reserve_request(route, envelope.request_id)
-        self._push_guard.claim_session(route, envelope.params.get('session_id') or envelope.session_id)
+        self.validate_bound_session(route.user_id, envelope.params.get('session_id') or envelope.session_id)
+        self.remember_request(route.user_id, envelope.request_id)
         return route
 
     # ------------------------------------------------------------------ #
@@ -267,6 +308,13 @@ class WorkerInstanceRoutedClient(SouthboundAgentClient):
         self._push_guard.dispatched(rid)
         return socket
 
+    def _pin_acp_alias(self, target: InstanceTarget, envelope: E2AEnvelope) -> None:
+        context = envelope.channel_context or {}
+        alias = context.get('acp_original_session_id')
+        if envelope.channel == 'acp' and alias:
+            self.session_routes.check_acp_session(target, alias)
+            self._push_guard.pin(target, alias)
+
     @staticmethod
     def _confirmed_session(response: AgentResponse) -> str:
         """The session an AgentServer reported for the request that created it."""
@@ -299,6 +347,7 @@ class WorkerInstanceRoutedClient(SouthboundAgentClient):
         rid = None
         outcome = 'not_sent'
         try:
+            self._pin_acp_alias(entry.target, envelope)
             rid = self._push_guard.begin(entry.target, envelope)
             entry.active_calls += 1
             socket = await self._prepare(entry, lease, rid)
@@ -328,6 +377,7 @@ class WorkerInstanceRoutedClient(SouthboundAgentClient):
         outcome = 'not_sent'
         complete = False
         try:
+            self._pin_acp_alias(entry.target, envelope)
             rid = self._push_guard.begin(entry.target, envelope)
             entry.active_calls += 1
             socket = await self._prepare(entry, lease, rid)
@@ -436,6 +486,10 @@ class WorkerInstanceRoutedClient(SouthboundAgentClient):
                 if self._entries.get(key) is entry:
                     self._entries.pop(key, None)
 
+    async def retire_stale_connections(self) -> None:
+        """Drop data connections whose instances are no longer current."""
+        await self._retire_stale_entries()
+
     def _close(self, socket: _InstanceSocket) -> asyncio.Task[None]:
         """Close one socket once; later callers observe the same bounded task."""
         task = socket.close_task
@@ -451,44 +505,62 @@ class WorkerInstanceRoutedClient(SouthboundAgentClient):
         if not task.cancelled() and task.exception() is not None:
             self._close_errors.append(task.exception())
 
-    async def _close_socket(self, socket: _InstanceSocket) -> None:
-        # The receiver of a retired socket has already forgotten its connection.
-        raw = socket._ws if socket._ws is not None else socket.retired_raw
-        # A socket closed before shutdown (a failed dial) still gets a bounded wait.
-        deadline = self._stop_deadline
-        if deadline is None:
-            deadline = asyncio.get_running_loop().time() + self._stop_timeout
-        try:
-            async with asyncio.timeout_at(deadline):
-                await socket.notify_failure()
-                await socket.disconnect()
-                # Nothing else closes a connection the receiver forgot.
-                if raw is not None and raw.close_code is None:
-                    await raw.close()
-            return
-        except TimeoutError:
-            logger.warning('instance transport did not close before the deadline')
-        finally:
-            leftover = set(socket._server_push_tails.values()) | set(socket._cleanup_tasks)
-            if socket._receiver_task is not None:
-                leftover.add(socket._receiver_task)
-            for task in leftover:
-                if not task.done() and task is not asyncio.current_task():
-                    task.cancel()
-            if leftover:
-                await asyncio.gather(*leftover, return_exceptions=True)
-        # The deadline elapsed: drop the socket without waiting for its peer.
-        socket._running = False
-        socket._connection_generation += 1
-        socket._ws = None
-        socket._reconnect_enabled = False
-        socket._server_ready = False
-        socket._agent_ready = False
+    async def _close_gracefully(self, socket: _InstanceSocket) -> None:
+        """Ask the peer to close; only the stop budget decides how long to wait for it."""
+        raw = socket.connection
+        await socket.notify_failure()
+        await socket.disconnect()
+        # Nothing else closes a connection the receiver forgot.
+        if raw is not None and raw.close_code is None:
+            await raw.close()
+
+    @staticmethod
+    def _drop_socket(socket: _InstanceSocket) -> None:
+        """Drop the connection of a socket whose peer never closed it.
+
+        ``close_code`` stays ``None`` until the connection is lost. A close that
+        was cut short leaves the connection to this method and to nothing else:
+        no timer of the library's is left to drop it. The engine retires a
+        socket on its own once it reads that the connection is gone.
+        """
+        raw = socket.connection
         try:
             if raw is not None and raw.close_code is None:
                 raw.transport.abort()
         except Exception:  # noqa: BLE001 - the peer may already be gone
             pass
+
+    async def _close_socket(self, socket: _InstanceSocket) -> None:
+        """Close one socket within the stop budget; past it, drop its connection."""
+        # A socket closed before shutdown (a failed dial) still gets a bounded wait.
+        deadline = self._stop_deadline
+        if deadline is None:
+            deadline = asyncio.get_running_loop().time() + self._stop_timeout
+        graceful = asyncio.create_task(
+            self._close_gracefully(socket), name='gateway-instance-close-handshake',
+        )
+        try:
+            # websockets' close() absorbs a cancellation, which would also kill its
+            # receiver. The graceful close is shielded, so the budget lands here.
+            async with asyncio.timeout_at(deadline):
+                await asyncio.shield(graceful)
+        except TimeoutError:
+            logger.warning('instance transport did not close before the deadline')
+        finally:
+            # Whatever cut this close short, the connection goes before anything
+            # is awaited: then nothing is left waiting for the peer.
+            self._drop_socket(socket)
+            try:
+                leftover = set(socket._server_push_tails.values()) | set(socket._cleanup_tasks)
+                if socket._receiver_task is not None:
+                    leftover.add(socket._receiver_task)
+                for task in leftover:
+                    if not task.done() and task is not asyncio.current_task():
+                        task.cancel()
+                if leftover:
+                    await asyncio.gather(*leftover, return_exceptions=True)
+            finally:
+                await asyncio.gather(graceful, return_exceptions=True)
 
     # ------------------------------------------------------------------ #
     # Shutdown
@@ -518,14 +590,25 @@ class WorkerInstanceRoutedClient(SouthboundAgentClient):
             if not task.done():
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        closes = [self._close(socket) for socket in tuple(self._sockets)]
+        sockets = tuple(self._sockets)
+        closes = [self._close(socket) for socket in sockets]
         try:
             async with asyncio.timeout_at(self._stop_deadline) as budget:
                 self._cleanup_budget = budget
-                await asyncio.gather(*(asyncio.shield(task) for task in closes))
+                await asyncio.gather(*(asyncio.shield(task) for task in closes), return_exceptions=True)
+        except TimeoutError:
+            # An elapsed budget is not a failure to report: the sockets are dropped
+            # below. A close that failed on its own is still reported at the end.
+            logger.warning('instance transport stop budget elapsed; sockets are dropped')
         finally:
             self._cleanup_budget = None
             self._push_guard.clear()
+            self.session_routes.clear()
+            self._request_users.clear()
+            # Nothing waits for a peer past the budget, and a close that never ran
+            # owns its socket no less.
+            for socket in sockets:
+                self._drop_socket(socket)
             for task in closes:
                 if not task.done():
                     task.cancel()

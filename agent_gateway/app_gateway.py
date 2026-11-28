@@ -370,6 +370,8 @@ def main() -> None:
     parser.add_argument("--southbound-routes-file", metavar="<path>",
                         help="Multiprocess static multi-AgentServer trial: a local JSON route directory "
                              "that fixes each named user's loopback AgentServer per Worker slot.")
+    parser.add_argument("--instance-provider-file", metavar="<path>",
+                        help="Multiprocess ADX trial: local JSON Worker and user manifest (no credentials).")
     parser.add_argument(
         "--require-adx-router",
         # Accept previously generated service units; validation itself is generic.
@@ -387,6 +389,8 @@ def main() -> None:
         parser.error("--check-cron requires --mode multiprocess --enable-cron")
     if args.southbound_routes_file is not None and args.mode != "multiprocess":
         parser.error("--southbound-routes-file requires --mode multiprocess")
+    if args.instance_provider_file is not None and (args.mode != "multiprocess" or args.check_cron):
+        parser.error("--instance-provider-file requires the multiprocess ADX trial")
 
     if args.check_cron:
         _check_cron(args, parser)
@@ -444,6 +448,7 @@ def main() -> None:
                 web_path=web_path, web_ws_deflate=web_ws_deflate,
                 required_client_type=args.required_client_type, accounts=args.enable_accounts,
                 cron=args.enable_cron, southbound_routes_file=args.southbound_routes_file,
+                instance_provider_file=args.instance_provider_file,
             )
 
             async def run_multiprocess_until_shutdown(shutdown_event: asyncio.Event) -> None:

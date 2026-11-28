@@ -13,6 +13,7 @@ import sys
 import uuid
 
 from agent_gateway.common.southbound_routes import StaticRouteDirectory
+from agent_gateway.common.instance_routes import InstanceProviderSpec
 from agent_gateway.common.worker_affinity import WorkerManifest
 from agent_gateway.processes.capabilities import management_preflight
 from agent_gateway.processes.channel import ManagementChannel
@@ -31,6 +32,7 @@ RUNTIME_IDS = ("web-http", "web-ws", "protocol")
 # The Worker positional that names one AgentServer carries this marker when a
 # static route directory follows as an option instead.
 STATIC_SOUTHBOUND = "static"
+ADX_SOUTHBOUND = "adx"
 
 
 class _WorkerFrameError(RuntimeError):
@@ -63,6 +65,7 @@ class WorkerPool:
         self, agent_server_url: str | None, count: int, *, startup_timeout: float = 30,
         control_services: ControlServices | None = None, cron_manifest: WorkerManifest | None = None,
         account_services: bool = False, southbound_routes: StaticRouteDirectory | None = None,
+        instance_provider: InstanceProviderSpec | None = None,
     ) -> None:
         """Spawn ``count`` Workers over one AgentServer or over ``southbound_routes``.
 
@@ -72,7 +75,12 @@ class WorkerPool:
         if type(count) is not int or not 1 <= count <= 32:
             raise ValueError("number of Workers must be between 1 and 32")
         self.slots = tuple(range(count))
-        if southbound_routes is not None:
+        if instance_provider is not None:
+            if type(instance_provider) is not InstanceProviderSpec or instance_provider.manifest.slots != self.slots:
+                raise ValueError("the ADX Worker spec must cover the complete Worker range")
+            if any(value is not None for value in (agent_server_url, southbound_routes, control_services, cron_manifest)) or account_services:
+                raise ValueError("ADX Workers require a dedicated data-only pool")
+        elif southbound_routes is not None:
             if type(southbound_routes) is not StaticRouteDirectory:
                 raise ValueError("static routes must be an explicit static route directory")
             if southbound_routes.manifest.slots != self.slots:
@@ -82,6 +90,7 @@ class WorkerPool:
         elif agent_server_url is None:
             raise ValueError("a Worker pool requires an AgentServer URL or a static route directory")
         self.southbound_routes = southbound_routes
+        self.instance_provider = instance_provider
         if cron_manifest is not None:
             if type(cron_manifest) is not WorkerManifest or cron_manifest.slots != self.slots:
                 raise ValueError("Worker Cron manifest must cover the complete Worker range")
@@ -151,10 +160,12 @@ class WorkerPool:
 
             manager, manager_fd = pair()
             transfer, transfer_fd = pair()
-            args = [
-                str(manager_fd), str(transfer_fd),
-                STATIC_SOUTHBOUND if self.southbound_routes is not None else self._agent_server_url,
-            ]
+            target = self._agent_server_url
+            if self.southbound_routes is not None:
+                target = STATIC_SOUTHBOUND
+            elif self.instance_provider is not None:
+                target = ADX_SOUTHBOUND
+            args = [str(manager_fd), str(transfer_fd), target]
             pass_fds = [manager_fd, transfer_fd]
             control = None
             if self._control_services is not None:
@@ -168,6 +179,8 @@ class WorkerPool:
             if self.southbound_routes is not None:
                 # A bounded, non-secret snapshot: at most 16 KiB per Worker.
                 args += ["--southbound-routes-json", self.southbound_routes.to_json()]
+            if self.instance_provider is not None:
+                args += ["--instance-provider-json", self.instance_provider.to_json()]
 
             # Keep the spawn task owned if start is cancelled during fork/exec.
             spawn = asyncio.create_task(asyncio.create_subprocess_exec(

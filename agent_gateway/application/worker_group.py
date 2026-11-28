@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 from agent_gateway.application.cron_preflight import require_controlled_cron
 from agent_gateway.common.ingress_identity import LocalIdentityPolicy
 from agent_gateway.common.southbound_routes import StaticRouteDirectory
+from agent_gateway.common.instance_routes import InstanceProviderSpec
 from agent_gateway.common.worker_affinity import FixedUserHash, WorkerManifest
 from agent_gateway.enterprise import is_enterprise
 from agent_gateway.processes.pool import WorkerPool
@@ -34,6 +35,7 @@ class WorkerGroup:
         protocol_port: int = 19001, handoff_timeout: float = 2,
         auth_service_provider: Callable | None = None,
         cron: bool = False, southbound_routes: StaticRouteDirectory | None = None,
+        instance_provider: InstanceProviderSpec | None = None,
     ) -> None:
         """Supervise Workers over one AgentServer or over ``southbound_routes``.
 
@@ -46,7 +48,13 @@ class WorkerGroup:
             raise ValueError("cron must be an explicit boolean")
         if type(workers) is not int or not 1 <= workers <= 32:
             raise ValueError("number of Workers must be between 1 and 32")
-        if southbound_routes is not None:
+        if instance_provider is not None:
+            if (type(instance_provider) is not InstanceProviderSpec
+                    or instance_provider.manifest.slots != tuple(range(workers))):
+                raise ValueError("the ADX Worker spec must cover the Worker range")
+            if is_enterprise() or agent_server_url is not None or southbound_routes is not None or cron or auth_service_provider:
+                raise ValueError("ADX Worker trial requires its own loopback data-only group")
+        elif southbound_routes is not None:
             if type(southbound_routes) is not StaticRouteDirectory:
                 raise ValueError("static routes must be an explicit static route directory")
             if southbound_routes.manifest.slots != tuple(range(workers)):
@@ -64,8 +72,9 @@ class WorkerGroup:
                 raise ValueError("the Worker group only supports personal loopback with a single local AgentServer")
         self._credential_authority = self._control_web = None
         self._cron_ownership = self._cron_commands = None
-        self._manifest = southbound_routes.manifest if southbound_routes is not None else WorkerManifest(tuple(range(workers)))
-        self._identity_policy = southbound_routes.identity_policy if southbound_routes is not None else LocalIdentityPolicy()
+        source = instance_provider if instance_provider is not None else southbound_routes
+        self._manifest = source.manifest if source is not None else WorkerManifest(tuple(range(workers)))
+        self._identity_policy = source.identity_policy if source is not None else LocalIdentityPolicy()
         if cron:
             from agent_gateway.cron.control_commands import ControlCronCommands
             from agent_gateway.cron.ownership import CronOwnership
@@ -126,6 +135,7 @@ class WorkerGroup:
             agent_server_url, workers, control_services=control_services,
             cron_manifest=self._cron_ownership.manifest if self._cron_ownership is not None else None,
             account_services=auth_service_provider is not None, southbound_routes=southbound_routes,
+            **({"instance_provider": instance_provider} if instance_provider is not None else {}),
         )
         self._ports = (web_port, protocol_port)
         self._handoff_timeout = handoff_timeout

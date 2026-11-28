@@ -15,6 +15,7 @@ from agent_gateway.application.cron_preflight import require_controlled_cron
 from agent_gateway.application.worker_group import WorkerGroup
 from agent_gateway.common.agentos_runtime import is_agentos_runtime
 from agent_gateway.common.ingress_identity import LocalIdentityPolicy
+from agent_gateway.common.instance_routes import InstanceProviderSpec, MAX_INSTANCE_SPEC_BYTES
 from agent_gateway.common.southbound_routes import MAX_ROUTE_DIRECTORY_BYTES, StaticRouteDirectory
 from agent_gateway.common.worker_affinity import WorkerManifest
 from agent_gateway.cron.ownership import CronOwnership
@@ -35,13 +36,15 @@ class MultiprocessOptions:
     cron: bool = False
     # Opt-in static multi-AgentServer trial: one non-secret route snapshot.
     southbound_routes: StaticRouteDirectory | None = None
+    instance_provider: InstanceProviderSpec | None = None
 
     @classmethod
     def from_cli(cls, *, workers: int | None, web_host: str, web_port: int,
                  web_path: str, web_ws_deflate: bool,
                  required_client_type: str | tuple[str, ...] | None,
                  accounts: bool = False, cron: bool = False,
-                 southbound_routes_file: str | None = None) -> MultiprocessOptions:
+                 southbound_routes_file: str | None = None,
+                 instance_provider_file: str | None = None) -> MultiprocessOptions:
         count = DEFAULT_WORKERS if workers is None else workers
         if not 1 <= count <= MAX_WORKERS:
             raise ValueError(f"--workers must be between 1 and {MAX_WORKERS}")
@@ -50,7 +53,12 @@ class MultiprocessOptions:
             southbound_routes = load_static_routes(southbound_routes_file, workers=count)
         if type(accounts) is not bool or type(cron) is not bool:
             raise ValueError("--enable-accounts and --enable-cron must be explicit flags")
-        if is_enterprise() or is_agentos_runtime() or required_client_type is not None:
+        instance_provider = None
+        if instance_provider_file is not None:
+            if southbound_routes is not None or accounts or cron:
+                raise ValueError("ADX Worker trial cannot be combined with static routes, accounts or Cron")
+            instance_provider = load_instance_provider(instance_provider_file, workers=count)
+        if is_enterprise() or (instance_provider is None and (is_agentos_runtime() or required_client_type is not None)):
             raise ValueError("multiprocess requires a personal deployment")
         if web_host not in {"127.0.0.1", "localhost"} or os.getenv(
             "GATEWAY_HOST", "127.0.0.1",
@@ -70,7 +78,20 @@ class MultiprocessOptions:
             raise ValueError("listen ports must be between 0 and 65535")
         if web_port == protocol_port != 0:
             raise ValueError("Web and TUI/ACP must use distinct ports")
-        return cls(count, web_port, protocol_port, accounts, cron, southbound_routes)
+        return cls(count, web_port, protocol_port, accounts, cron, southbound_routes, instance_provider)
+
+
+def load_instance_provider(path: str, *, workers: int) -> InstanceProviderSpec:
+    """Read a bounded, non-secret ADX Worker manifest."""
+    try:
+        with open(path, "rb") as source:
+            payload = source.read(MAX_INSTANCE_SPEC_BYTES + 1)
+        spec = InstanceProviderSpec.from_json(payload.decode("utf-8"))
+    except (ValueError, OSError) as exc:
+        raise ValueError("invalid or unreadable ADX Worker instance provider file") from exc
+    if spec.manifest.slots != tuple(range(workers)):
+        raise ValueError("the ADX Worker manifest must list exactly the --workers slots")
+    return spec
 
 
 def load_static_routes(path: str, *, workers: int) -> StaticRouteDirectory:
@@ -120,7 +141,8 @@ def _has_enabled_cron_jobs(path: Path) -> bool:
     return any(job.get("enabled") for job in jobs)
 
 
-async def validate_workspace(*, cron: bool = False, workers: int = DEFAULT_WORKERS) -> None:
+async def validate_workspace(*, cron: bool = False, workers: int = DEFAULT_WORKERS,
+                             instance_provider: InstanceProviderSpec | None = None) -> None:
     """Refuse a workspace the Worker group cannot serve before any listener opens.
 
     Without ``cron`` an enabled Cron record keeps the trial in single mode, as
@@ -136,7 +158,14 @@ async def validate_workspace(*, cron: bool = False, workers: int = DEFAULT_WORKE
     config = await asyncio.to_thread(get_config)
     gateway = config.get("gateway") or {}
     client_type = (gateway.get("agent_client") or {}).get("type") or "websocket"
-    if client_type != "websocket":
+    if instance_provider is not None:
+        from agent_gateway.extensions.adx.config import load_router_config
+        from agent_gateway.extensions.adx.instance_backend import WorkerInstanceBackend
+
+        if client_type not in {"agentos_router", "adx_router"}:
+            raise ValueError("ADX Worker trial requires the ADX AgentServer client")
+        WorkerInstanceBackend(instance_provider, load_router_config(config), slot_id=0)
+    elif client_type != "websocket":
         raise ValueError("multiprocess requires the direct WebSocket AgentServer client")
     for name, channel in (config.get("channels") or {}).items():
         if name == "web":
@@ -164,7 +193,8 @@ async def validate_workspace(*, cron: bool = False, workers: int = DEFAULT_WORKE
 
 async def run_multiprocess(options: MultiprocessOptions, agent_server_url: str,
                            shutdown_event: asyncio.Event) -> None:
-    await validate_workspace(cron=options.cron, workers=options.workers)
+    instance_options = ({"instance_provider": options.instance_provider} if options.instance_provider else {})
+    await validate_workspace(cron=options.cron, workers=options.workers, **instance_options)
     if shutdown_event.is_set():
         return
     auth_service_provider = None
@@ -173,10 +203,10 @@ async def run_multiprocess(options: MultiprocessOptions, agent_server_url: str,
 
         auth_service_provider = get_auth_service
     group = WorkerGroup(
-        None if options.southbound_routes is not None else agent_server_url,
+        None if options.southbound_routes is not None or instance_options else agent_server_url,
         workers=options.workers, web_port=options.web_port, protocol_port=options.protocol_port,
         auth_service_provider=auth_service_provider, cron=options.cron,
-        southbound_routes=options.southbound_routes,
+        southbound_routes=options.southbound_routes, **instance_options,
     )
     shutdown = asyncio.create_task(shutdown_event.wait())
     startup = asyncio.create_task(group.start())

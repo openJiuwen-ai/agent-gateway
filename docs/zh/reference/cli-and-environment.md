@@ -90,6 +90,12 @@ def owner_slot(user_id: str, workers: int) -> int:
 - **附件。** 带 `files`、`media_items`、`attachments` 或 `documents` 的 `chat.send` 会被拒绝：每个用户都有私有的 AgentServer 目录，Gateway 无法代用户导入文件。
 - **其他智能体与配置写入。** `jiuwenswarm` 以外的 `agent_type`，以及所有 Gateway 配置变更。
 
+### ADX 动态实例试点
+
+在受信的回环部署中使用 `--mode multiprocess --workers 2 --instance-provider-file instances.json`。`InstanceProviderSpec` 文件不含密钥，定义槽位、允许的用户、命名空间、Ingress、注册表及工作目录，并须与现有 ADX 路由配置一致（`gateway.agent_client.type` 为 `adx_router` 或 `agentos_router`）。Ingress 凭据仍来自配置指定的环境变量。试点不可与静态路由、账号服务或 Cron 同时开启。
+
+首个数据请求按用户归属领取或创建实例。写入和主动推送受实例代次约束；在途或结果不确定的请求保留占用，空闲实例按配置阈值回收。回收后不把旧会话迁到新代次。试点不提供生产级租户认证，也未覆盖 Worker 崩溃后发现上代实例。
+
 ### Cron 迁移预检
 
 ```bash

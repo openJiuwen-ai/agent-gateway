@@ -13,13 +13,14 @@ from typing import Any
 
 from agent_gateway.processes.channel import ManagementChannel
 from agent_gateway.common.southbound_routes import StaticRouteDirectory
+from agent_gateway.common.instance_routes import InstanceProviderSpec
 from agent_gateway.common.worker_affinity import WorkerManifest
 from agent_gateway.processes.control_channel import ControlServiceChannel
 from agent_gateway.processes.control_service import (
     ControlServiceBusy, ControlServiceClient, ControlServiceIdentity,
 )
 from agent_gateway.processes.management_protocol import validate_message
-from agent_gateway.processes.pool import STATIC_SOUTHBOUND, management_frame
+from agent_gateway.processes.pool import ADX_SOUTHBOUND, STATIC_SOUTHBOUND, management_frame
 from agent_gateway.transport.handoff import HandoffReceiver
 from agent_gateway.transport.handoff_channel import HandoffChannel
 from agent_gateway.transport.handoff_protocol import HandoffIdentity
@@ -89,9 +90,9 @@ def _parse_role_arguments(arguments: list[str]):
     return _parse_worker_role(arguments)[:4]
 
 
-def _parse_worker_role(arguments: list[str]):
+def _parse_worker_role(arguments: list[str], *, include_instance: bool = False):
     """Return the role of this slot and its optional static route directory."""
-    control_fd = accounts = cron_slot = cron_manifest = southbound_routes = None
+    control_fd = accounts = cron_slot = cron_manifest = southbound_routes = instance_provider = None
     positionals: list[str] = []
     index = 0
     while index < len(arguments):
@@ -116,6 +117,11 @@ def _parse_worker_role(arguments: list[str]):
             if index >= len(arguments) or southbound_routes is not None:
                 raise ValueError("--southbound-routes-json requires one directory")
             southbound_routes = StaticRouteDirectory.from_json(arguments[index])
+        elif argument == "--instance-provider-json" and include_instance:
+            index += 1
+            if index >= len(arguments) or instance_provider is not None:
+                raise ValueError("--instance-provider-json requires one spec")
+            instance_provider = InstanceProviderSpec.from_json(arguments[index])
         elif argument.startswith("--"):
             raise ValueError(f"unknown Worker argument: {argument}")
         else:
@@ -136,13 +142,17 @@ def _parse_worker_role(arguments: list[str]):
     if cron_slot is None:
         # The original contract: a Control fd alone serves the account services.
         accounts = control_fd is not None
-    return control_fd, bool(accounts), cron_slot, cron_manifest, southbound_routes
+    if instance_provider is not None and (southbound_routes is not None or control_fd is not None):
+        raise ValueError("ADX Workers require a dedicated data-only role")
+    role = (control_fd, bool(accounts), cron_slot, cron_manifest, southbound_routes)
+    return (*role, instance_provider) if include_instance else role
 
 
 async def _run(
     management_fd: int, transfer_fd: int, agent_server_url: str, control_fd: int | None = None, *,
     accounts: bool = True, cron_slot: int | None = None, cron_manifest: WorkerManifest | None = None,
     southbound_routes: StaticRouteDirectory | None = None,
+    instance_provider: InstanceProviderSpec | None = None,
 ) -> None:
     from agent_gateway.application.worker_data import data_worker
     from agent_gateway.application.worker_routed_client import RoutedTargetsUnreachable
@@ -165,6 +175,12 @@ async def _run(
         identity = HandoffIdentity(init["group_id"], init["slot_id"], init["generation"])
         if cron_enabled and identity.slot_id != cron_slot:
             raise RuntimeError("Worker Cron slot does not match the Worker identity")
+        if instance_provider is not None or agent_server_url == ADX_SOUTHBOUND:
+            if (instance_provider is None or agent_server_url != ADX_SOUTHBOUND
+                    or identity.slot_id not in instance_provider.manifest.slots
+                    or southbound_routes is not None or control_channel is not None or cron_enabled):
+                raise _WorkerFailure("SOUTHBOUND_CONFIGURATION")
+            agent_server_url = None
         if southbound_routes is not None or agent_server_url == STATIC_SOUTHBOUND:
             # A directory or role this Worker cannot serve is a configuration
             # failure, before anything is built or any target is contacted.
@@ -214,6 +230,8 @@ async def _run(
             # A single-AgentServer Worker keeps its original keyword contract.
             static = ({"southbound_routes": southbound_routes, "slot_id": identity.slot_id}
                       if southbound_routes is not None else {})
+            if instance_provider is not None:
+                static = {"instance_provider": instance_provider, "slot_id": identity.slot_id}
             try:
                 runtimes, web_runtime, cron = await worker_scope.enter_async_context(data_worker(
                     agent_server_url, control_client=control, accounts=accounts,
@@ -223,7 +241,7 @@ async def _run(
             except RoutedTargetsUnreachable as error:
                 raise _WorkerFailure("SOUTHBOUND_UNREACHABLE") from error
             except ValueError as error:
-                if southbound_routes is None:
+                if southbound_routes is None and instance_provider is None:
                     raise
                 # A directory, slot or role the static Worker cannot serve.
                 raise _WorkerFailure("SOUTHBOUND_CONFIGURATION") from error
@@ -302,6 +320,9 @@ async def _report_failure(management: ManagementChannel, identity, error_code: s
 
 if __name__ == "__main__":
     # Positional arguments keep the original contract; role options follow them.
-    control_fd, accounts, cron_slot, cron_manifest, southbound_routes = _parse_worker_role(sys.argv[4:])
+    control_fd, accounts, cron_slot, cron_manifest, southbound_routes, instance_provider = _parse_worker_role(
+        sys.argv[4:], include_instance=True,
+    )
     asyncio.run(_run(int(sys.argv[1]), int(sys.argv[2]), sys.argv[3], control_fd, accounts=accounts,
-                     cron_slot=cron_slot, cron_manifest=cron_manifest, southbound_routes=southbound_routes))
+                     cron_slot=cron_slot, cron_manifest=cron_manifest, southbound_routes=southbound_routes,
+                     instance_provider=instance_provider))

@@ -5,13 +5,16 @@
 The leaf composes the shared owner provider and sandbox lifecycle with the ADX
 control plane. From its private spec it owns admission, the builtin launch
 specification, registry publication and the cleanup of instances it created
-itself. Request routing, credentials for the data connection and idle
-reclamation stay with the caller.
+itself. Request routing, the data connection and idle reclamation stay with
+the caller; the leaf only supplies what a dial and a request need from the
+control plane: an ingress credential and the admission of the Environment's
+builtin network policy.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -22,7 +25,7 @@ from agent_gateway.common.agentos_runtime import is_agentos_runtime
 from agent_gateway.common.instance_routes import InstanceProviderSpec
 from agent_gateway.extensions.adx.config import AdxRouterConfig
 from agent_gateway.extensions.adx.control_adapter import AdxControl
-from agent_gateway.extensions.adx.control_client import AdxControlClient
+from agent_gateway.extensions.adx.control_client import AdxControlClient, AdxControlError
 from agent_gateway.extensions.adx.router_client import adx_sandbox_name
 from agent_gateway.extensions.adx.workspace import check_workspace_config
 from agent_gateway.extensions.agentos.agentos_router.backend import (
@@ -39,10 +42,12 @@ from agent_gateway.extensions.agentos.agentos_router.models import AgentInfo, Ag
 from agent_gateway.extensions.agentos.agentos_router.registry_client import (
     RegistryClient,
     RegistryConfig,
+    instance_service_id,
 )
 from agent_gateway.southbound.control.managed import SandboxCreateRequest
 from agent_gateway.southbound.orchestration.agent_manager import (
     BUILTIN_AGENT_TYPE,
+    AgentCreateFailed,
     AgentCreateInterrupted,
     AgentManager,
     AgentPreCreateError,
@@ -53,7 +58,10 @@ from agent_gateway.southbound.orchestration.instance_lifecycle import (
     AgentOSSandboxAttempt,
     AgentOSSandboxLifecycle,
 )
-from agent_gateway.southbound.orchestration.instance_provider import AgentOSInstanceProvider
+from agent_gateway.southbound.orchestration.instance_provider import (
+    AgentOSInstanceProvider,
+    InstanceTarget,
+)
 from agent_gateway.southbound.orchestration.managed_router import (
     USER_DIRECTORY_ENV_KEY,
     resolve_agent_workspace,
@@ -62,6 +70,7 @@ from agent_gateway.southbound.orchestration.managed_router import (
 
 
 _DEFAULT_AGENT_PORT = 18092
+logger = logging.getLogger(__name__)
 # Placement is all the registry reads from the sandbox record. ADX instance views
 # may also return Environment variables, which carry the node credential.
 _PLACEMENT_FIELDS = ('node', 'address')
@@ -196,6 +205,74 @@ class WorkerInstanceBackend:
             finally:
                 if client is not None:
                     await client.close()
+
+    async def reap_idle_once(self) -> int:
+        """Detach an idle generation atomically before asking ADX to delete it."""
+        manager, lifecycle_service, registry = self.manager, self._instance_lifecycle, self.registry
+        timeout = self._config.router.sandbox_idle_timeout_seconds
+        if timeout <= 0 or manager is None or lifecycle_service is None or registry is None:
+            return 0
+        reaped = 0
+        for runtime in await manager.list_all_agents():
+            info = runtime.info
+            lifecycle = self._lifecycles.get(sandbox_name(info.user_id, info.agent_type))
+            if lifecycle is None or not info.sandbox_id:
+                continue
+            async with lifecycle.lock:
+                if lifecycle.provisioned_instance != info.sandbox_id or lifecycle.retired_instance:
+                    continue
+                retired = await manager.pop_if_idle(runtime.key, timeout, expected_agent_id=info.agent_id)
+                if retired is None:
+                    continue
+                lifecycle.retired_instance = info.sandbox_id
+                lifecycle.provisioned_instance = ''
+                await lifecycle_service.request_sandbox_delete(lifecycle)
+                if registry.enabled:
+                    try:
+                        await registry.unregister_instance(
+                            instance_service_id(info.user_id, info.agent_type), expected_instance_id=info.sandbox_id,
+                        )
+                    except Exception:
+                        logger.warning('ADX Worker could not unregister a retired instance', exc_info=True)
+                reaped += 1
+        return reaped
+
+    def dial_headers(self) -> dict[str, str]:
+        """A fresh ingress credential for one dial; it never enters a route or a lease."""
+        control = self._control
+        if control is None:
+            raise RuntimeError('worker instance backend is not started')
+        return control.ws_headers(None)
+
+    async def admit_network(self, target: InstanceTarget) -> None:
+        """Admit the builtin network policy of the Environment a lease named.
+
+        As in the business router, only a deployment that configures a builtin
+        network pays for the workspace lookup and the policy request. The
+        request is idempotent per policy in the control client. Nothing is
+        written to the instance, so a failure here means the request was not sent.
+        """
+        if type(target) is not InstanceTarget:
+            raise ValueError('instance network admission requires an instance target')
+        provider, client = self._provider, self.client
+        if provider is None or client is None:
+            raise RuntimeError('worker instance backend is not started')
+        if 'network' not in (self._config.builtin_launch or {}):
+            return
+        runtime = await provider.manager.get_agent(target.user_id, target.agent_type)
+        # One runtime object is read and checked, so the policy can only reach
+        # the physical generation the lease named.
+        if (
+            runtime is None or not runtime.is_ready()
+            or runtime.info.metadata.get('physical_generation') != target.generation
+            or f'{self.spec.namespace}:{runtime.info.sandbox_id}' != target.physical_id
+        ):
+            raise RuntimeError('instance route became stale before network admission')
+        try:
+            workspace = resolve_agent_workspace(target.user_id, workspace_root=self.spec.workspace_root)
+            await client.ensure_builtin_network(runtime.info.sandbox_id, workspace)
+        except AdxControlError as exc:
+            raise AgentCreateFailed(f'AGENT_NETWORK_UPDATE_FAILED: {exc}') from exc
 
     async def _workspace(self, user_id: str) -> str:
         """Admit one user's workspace before any ADX request."""

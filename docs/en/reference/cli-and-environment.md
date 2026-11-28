@@ -90,6 +90,12 @@ What a static Worker does not serve in this release:
 - **Attachments.** `chat.send` with `files`, `media_items`, `attachments` or `documents` is refused: each user has a private AgentServer directory, so the Gateway cannot import files for the user.
 - **Other agents and configuration writes.** `agent_type` other than `jiuwenswarm`, and every Gateway configuration change.
 
+### ADX dynamic-instance trial
+
+Use `--mode multiprocess --workers 2 --instance-provider-file instances.json` on a trusted loopback deployment. The non-secret `InstanceProviderSpec` fixes the slot manifest, admitted users, namespace, ingress origin, registry endpoint and managed workspace. These must agree with the existing ADX router configuration (`gateway.agent_client.type: adx_router` or `agentos_router`); the ingress credential is read from the configured environment, not from the file. Static routes, account services and Cron cannot be combined with this trial.
+
+The first data request leases or creates its owner instance. Writes and unsolicited events are fenced by the instance generation. A live or uncertain request keeps its hold; closed idle instances are reaped using the configured idle threshold. Reclamation does not move an existing session to another generation. The trial does not provide production tenant authentication or crash-time rediscovery of the prior Worker’s instances.
+
 ### Preview Cron migration
 
 ```bash
