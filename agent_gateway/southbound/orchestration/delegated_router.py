@@ -37,6 +37,10 @@ _TOUCH_INTERVAL_SECONDS = 20.0
 _KEEPALIVE_MAX_BACKOFF_SHIFT = 3
 _RPC_ORIGIN_TTL_SECONDS = 30 * 60
 _MAX_RPC_ORIGINS = 8192
+# Upper bound for team busy-hold after processing_status_deferred. Prevents a
+# leaked hold (interrupt/error/AS crash with no terminal frame) from touching
+# forever. Follow-up deferred frames refresh the deadline.
+_BUSY_HOLD_MAX_SECONDS = 6 * 60 * 60
 # 路由阶段总预算（含每次 route 请求本身的耗时）：覆盖 Runtime Manager 默认
 # 30s 分配队列后仍有重试余量。
 _ROUTE_BUDGET_SECONDS = 60.0
@@ -334,6 +338,12 @@ class _StreamKeepalive:
     users: int = 1
 
 
+@dataclass
+class _BusyHoldState:
+    key: tuple[str, str, str, str | None]
+    expires_at: float  # time.monotonic() deadline
+
+
 class DelegatedRouter(SouthboundAgentClient):
     """查 Runtime Manager 路由，再用 HTTP 客户端把信封发到对应 Pod。"""
 
@@ -370,6 +380,12 @@ class DelegatedRouter(SouthboundAgentClient):
         # Runtime 亲和可能过期；interrupt 多播时带上这里，避免杀错 Pod。
         self._session_stream_bases: dict[str, dict[object, str]] = {}
         self._stream_keepalives: dict[tuple[str, str, str, str | None], _StreamKeepalive] = {}
+        # Enterprise team short streams end with ``processing_status_deferred``
+        # while AS keeps running on a background waiter. Hold one extra keepalive
+        # user per session so Runtime affinity (1 session slot) survives until
+        # the team round actually finishes. Personal / ordinary chat never set this.
+        self._busy_holds: dict[str, _BusyHoldState] = {}
+        self._busy_hold_max_seconds = float(_BUSY_HOLD_MAX_SECONDS)
 
     def set_server_push_handler(
         self, handler: Callable[[dict[str, Any]], Awaitable[None]] | None
@@ -463,6 +479,7 @@ class DelegatedRouter(SouthboundAgentClient):
 
     async def disconnect(self) -> None:
         self._connected = False
+        self._busy_holds.clear()
         keepalives = [state.task for state in self._stream_keepalives.values()]
         self._stream_keepalives.clear()
         for task in keepalives:
@@ -811,6 +828,21 @@ class DelegatedRouter(SouthboundAgentClient):
                 keepalive.users += 1
         try:
             async for chunk in self._http.send_request_stream(envelope, base_url=base_url):
+                payload = getattr(chunk, "payload", None)
+                if (
+                    isinstance(payload, dict)
+                    and payload.get("event_type") == "chat.processing_status_deferred"
+                ):
+                    # Team short stream: keep the same session slot occupied while
+                    # the background team producer continues (leader or members).
+                    self.hold_busy_session_affinity(
+                        session_id=session_id,
+                        route_id=route_id,
+                        base_url=base_url,
+                        group_id=group_id,
+                        bot_id=bot_id,
+                        user_id=user_id,
+                    )
                 yield chunk
         finally:
             streams.pop(stream_token, None)
@@ -823,6 +855,91 @@ class DelegatedRouter(SouthboundAgentClient):
                     keepalive.task.cancel()
                     await asyncio.gather(keepalive.task, return_exceptions=True)
 
+    def hold_busy_session_affinity(
+        self,
+        *,
+        session_id: str,
+        route_id: str,
+        base_url: str,
+        group_id: str,
+        bot_id: str,
+        user_id: str | None,
+    ) -> None:
+        """Keep Runtime session affinity after a team deferred short stream ends.
+
+        Per ``session_id``: leader/member work share one chat session, so this
+        adds at most one extra keepalive user (still one SM session slot).
+        A later deferred on the same session only refreshes the hold deadline.
+        No-op when touch is disabled. Ordinary enterprise chat never emits
+        ``processing_status_deferred``, so it never enters this path.
+        """
+        if self._touch_interval_seconds <= 0:
+            return
+        sid = str(session_id or "").strip()
+        if not sid:
+            return
+        expires_at = time.monotonic() + max(0.0, self._busy_hold_max_seconds)
+        existing = self._busy_holds.get(sid)
+        if existing is not None:
+            existing.expires_at = expires_at
+            logger.debug(
+                "[RuntimeRouted] team busy affinity hold refreshed: session=%s",
+                sid,
+            )
+            return
+        # Same key shape as ``_stream_with_touch`` so we bump that keepalive
+        # instead of starting a second touch loop for one session slot.
+        key = (session_id, group_id, bot_id, user_id)
+        keepalive = self._stream_keepalives.get(key)
+        if keepalive is None:
+            task = asyncio.create_task(
+                self._keep_stream_affinity(key, route_id, base_url),
+                name="runtime-team-busy-keepalive",
+            )
+            keepalive = self._stream_keepalives[key] = _StreamKeepalive(task)
+        else:
+            keepalive.users += 1
+        self._busy_holds[sid] = _BusyHoldState(key=key, expires_at=expires_at)
+        logger.info(
+            "[RuntimeRouted] team busy affinity hold: session=%s users=%s ttl=%.0fs",
+            sid,
+            keepalive.users,
+            self._busy_hold_max_seconds,
+        )
+
+    async def release_busy_session_affinity(self, session_id: str) -> None:
+        """Drop the deferred-stream busy hold for ``session_id`` (idempotent)."""
+        sid = str(session_id or "").strip()
+        if not sid:
+            return
+        hold = self._busy_holds.pop(sid, None)
+        if hold is None:
+            return
+        key = hold.key
+        keepalive = self._stream_keepalives.get(key)
+        if keepalive is None:
+            logger.info(
+                "[RuntimeRouted] team busy affinity release (no keepalive): session=%s",
+                sid,
+            )
+            return
+        keepalive.users -= 1
+        logger.info(
+            "[RuntimeRouted] team busy affinity release: session=%s users=%s",
+            sid,
+            keepalive.users,
+        )
+        if keepalive.users > 0:
+            return
+        if self._stream_keepalives.get(key) is keepalive:
+            self._stream_keepalives.pop(key, None)
+        # Timeout can call release from inside the keepalive task itself.
+        # Cancelling/awaiting the current task recurses on runner shutdown.
+        if asyncio.current_task() is keepalive.task:
+            return
+        keepalive.task.cancel()
+        await asyncio.gather(keepalive.task, return_exceptions=True)
+
     async def _keep_stream_affinity(
         self, key: tuple[str, str, str, str | None], route_id: str, base_url: str,
     ) -> None:
@@ -831,6 +948,16 @@ class DelegatedRouter(SouthboundAgentClient):
         while True:
             shift = min(failures, _KEEPALIVE_MAX_BACKOFF_SHIFT)
             await asyncio.sleep(self._touch_interval_seconds * 2**shift)
+            hold = self._busy_holds.get(session_id)
+            if hold is not None and hold.key == key and time.monotonic() >= hold.expires_at:
+                logger.warning(
+                    "[RuntimeRouted] team busy affinity hold timed out: session=%s",
+                    session_id,
+                )
+                await self.release_busy_session_affinity(session_id)
+                # Hold-only keepalive exits here; shared stream keepalives continue.
+                if self._stream_keepalives.get(key) is None:
+                    return
             if await self._touch_quiet(session_id, route_id) is True:
                 failures = 0
                 continue
