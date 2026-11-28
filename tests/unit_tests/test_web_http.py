@@ -365,6 +365,88 @@ def test_http_dispatch_registers_outbound_not_ws(monkeypatch: pytest.MonkeyPatch
     asyncio.run(_run())
 
 
+def test_http_dispatch_verified_identity_backfills_routing(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """P4 verified identity must drive both the connection user and routing metadata."""
+    from agent_gateway.channel_manager.base import RobotMessageRouter
+    from agent_gateway.channel_manager.web.web_connect import (
+        WebChannel,
+        WebChannelConfig,
+        _WEB_CONNECTION_USER_ID_ATTR,
+    )
+    from agent_gateway.channel_manager.web import web_http_dispatch as disp
+
+    async def _intercept(**kwargs):
+        return False, kwargs["params"], "verified-user"
+
+    monkeypatch.setattr(disp, "_intercept_http_dispatch", _intercept)
+
+    channel = WebChannel(WebChannelConfig(host="localhost", port=0), RobotMessageRouter())
+
+    async def _handler(ws, req_id, params, session_id, **kwargs):
+        await channel.send_response(ws, req_id, ok=True, payload={"pong": True})
+
+    channel.register_method("connection.status", _handler)
+
+    async def _run():
+        out, _rid, _sid = await disp.dispatch_http_request(
+            channel,
+            method="connection.status",
+            params={},
+            headers={"X-Request-Id": "req-verified", "X-User-Id": "client-user"},
+            client_host="gateway-test-client",
+            use_sse=False,
+        )
+        try:
+            assert getattr(out, _WEB_CONNECTION_USER_ID_ATTR) == "verified-user"
+            assert out._web_routing["user_id"] == "verified-user"
+        finally:
+            await channel.unregister_request_outbound(out)
+
+    asyncio.run(_run())
+
+
+def test_http_dispatch_sse_consume_finishes_the_stream(monkeypatch: pytest.MonkeyPatch):
+    """A synthetic P4 response must not leave the SSE consumer idling to a timeout."""
+    from agent_gateway.channel_manager.base import RobotMessageRouter
+    from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+    from agent_gateway.channel_manager.web import web_http_dispatch as disp
+
+    async def _intercept(**kwargs):
+        out = kwargs["outbound"]
+        assert out.accept_frame(
+            {"type": "res", "id": kwargs["req_id"], "ok": True, "payload": {"pong": True}},
+        )
+        return True, kwargs["params"], None
+
+    monkeypatch.setattr(disp, "_intercept_http_dispatch", _intercept)
+    channel = WebChannel(WebChannelConfig(host="localhost", port=0), RobotMessageRouter())
+
+    async def _handler(ws, req_id, params, session_id, **kwargs):
+        return None
+
+    channel.register_method("chat.send", _handler)
+
+    async def _run():
+        out, req_id, _sid = await disp.dispatch_http_request(
+            channel,
+            method="chat.send",
+            params={},
+            headers={"X-Request-Id": "req-sse"},
+            use_sse=True,
+        )
+        try:
+            return [frame async for frame in out.iter_sse_frames(req_id, idle_timeout=0.3)]
+        finally:
+            await channel.unregister_request_outbound(out)
+
+    frames = asyncio.run(_run())
+
+    assert [frame["type"] for frame in frames] == ["res"]
+    assert frames[0]["payload"] == {"pong": True}
+
+
 def test_http_dispatch_session_create_emits_resolve_identity(
     monkeypatch: pytest.MonkeyPatch,
 ):

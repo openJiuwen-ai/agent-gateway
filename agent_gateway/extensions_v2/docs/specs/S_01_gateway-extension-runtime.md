@@ -8,7 +8,7 @@
 | 编号 / slug | `S_01 / gateway-extension-runtime` |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/` |
 | 设计依据 | [详细架构](../designs/extensions-v2-architecture.md) |
-| 最近一次修订日期 | 2026-11-23 |
+| 最近一次修订日期 | 2026-11-28 |
 | 契约状态 | 已实现；本文是 Gateway 扩展对外契约的唯一维护位置 |
 
 本文维护 Gateway 扩展运行时的对外契约：入口函数、事件数据类、路由语义、错误码、配置键与不变量。具体实现方案与决策历史见对应 feature 文档。
@@ -19,9 +19,11 @@
 | --- | --- | --- |
 | `init_gateway_extensions` | `async (channel, config=None) -> GatewayRuntime \| None` | 装配并启动；已装配时返回同一实例；禁用或失败返回 `None` |
 | `intercept_gateway_frame` | `async (ws, req_id, method, params, headers=None, *, request_context=None) -> tuple[bool, dict]` | 返回 `(visited, params)`；`visited=True` 表示已处置，原生分发必须跳过 |
+| `authenticate_gateway_handshake` | `async (channel, *, path, headers=None, query=None, remote_addr="", channel_id="web", transport="websocket") -> GatewayHandshakeOutput \| None` | Upgrade 前询问 `gateway.handshake`；`None` 表示无 V2 意见，调用方保持 V1 决策；不置 `_extensions_active` |
+| `intercept_gateway_http` | `async (*, channel=None, method, params, headers=None, session_id=None, request_id="", routing=None, user_id=None, connection_id="", channel_id="web", outbound=None) -> tuple[bool, dict, str \| None]` | HTTP 业务分发询问 `gateway.request`；返回 `(handled, params, verified_user_id)`，`handled=True` 表示已注入合成帧；运行时未装配且提供 `channel` 时优先调用其 `start_extensions()` 装配，`deny` 注入失败会抛 `GatewayHttpDenyInjectionError` |
 | `notify_gateway_disconnect` | `async (ws, session_ids=None) -> None` | 对齐 WebChannel 断连回调，向运行时传递会话集合并清理该连接的 connection 作用域状态；不抛异常 |
 
-三个入口均幂等或 fail-open：任何异常都不得阻断 Gateway 的原生路径。
+这些入口均幂等或 fail-open：任何异常都不得阻断 Gateway 的原生路径；`http_pre_route` 中间件是唯一例外，保持 fail-closed。
 
 ## 2. 配置契约
 
@@ -122,6 +124,7 @@ Gateway 过了提交点会先完成收尾再抛出取消，调用方收到的仍
 | 事件 | 输入 | 输出 | CORE 默认 |
 | --- | --- | --- | --- |
 | `gateway.request` | `GatewayRequestInput` | `GatewayRequestOutput` | 校验 method，`forward` |
+| `gateway.handshake` | `GatewayHandshakeInput` | `GatewayHandshakeOutput` | CORE 显式返回无意见：`handled=false`、`allow=true`，调用方沿用 V1 握手钩子 |
 | `ui.render` | `UiRenderInput` | `UiRenderOutput` | 校验并下发 |
 | `ui.ready` / `ui.click` / `ui.select` / `ui.change` / `ui.press_enter` / `ui.search` / `ui.clear` | `UiActionInput` | `UiActionOutput` | 默认未接管；浏览器分派器在触发前校验当前实例及动作 |
 | `ui.closed` | `UiActionInput` | `UiActionOutput` | 通知真实容器已关闭；开场见 S_09，应用形态的版本与容器序号校验见 S_11 |
@@ -136,7 +139,7 @@ Gateway 过了提交点会先完成收尾再抛出取消，调用方收到的仍
 
 所有事件名满足 `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$`；重复注册同名事件返回 `EVENTS_REGISTRATION_INVALID`。
 
-## 5. `gateway.request` 路由契约
+## 5. `gateway.request` 路由与触发点契约
 
 | `route` | 必填字段 | 运行时行为 |
 | --- | --- | --- |
@@ -152,16 +155,58 @@ Gateway 过了提交点会先完成收尾再抛出取消，调用方收到的仍
 继续处理的应用级 UI 包 application 交互由 BUILTIN 浏览器分派器消费。插件拒绝或自行应答的请求不会触发 UI 动作。
 HTTP 接入将合法的默认 `forward` 结果继续交给原接口，不要求 `handled=true`。具体范围见 [浏览器接入规约](S_06_local-browser-bridge.md)。
 
+### 5.1 触发点与作用域
+
+| `entry` | 触发位置 | 说明 |
+| --- | --- | --- |
+| `ws_frame`（默认） | 业务 WS 帧进入原生分发前 | `transport="websocket"` |
+| `http_pre_route` | 应用级 HTTP 中间件，路由匹配前 | 冻结的 FastAPI 中间件；失败返回 503，不继续放行 |
+| `http_dispatch` | HTTP 业务分发：会话绑定后、租户头信任判断前 | `transport="http"`；见 5.2 |
+
+`routing` 只包含连接建立时缓存的 `group_id`、`bot_id`、`gateway_id`，从不取自 `params`（`chat.send` 的 `group_id` 是会话 id），也不含 `user_id`；
+`user_id` 使用独立字段。`request_id` 透传调用方请求标识，HTTP 前置中间件取 `X-Request-Id`。
+
+### 5.2 HTTP 业务分发（`http_dispatch`）
+
+| 结果 | 运行时行为 |
+| --- | --- |
+| `forward` / 未提供结果 | 使用返回的 `params` 继续原生 HTTP 分发 |
+| `consume` | 向该请求的 outbound 注入 `{"type":"res","id":<request_id>,"ok":true,"payload":...}`，注入成功后跳过原生分发 |
+| `deny` | 注入 `{"type":"res","id":<request_id>,"ok":false,"error":...,"code":...}`，注入成功后跳过原生分发 |
+| `local` | HTTP 下无对应原生形态，回落原生分发 |
+| `consume` 注入失败（outbound 缺失、已关闭或队列满） | 回落原生分发，`handled` 保持 false |
+| `deny` 注入失败（outbound 缺失、已关闭或队列满） | 抛 `GatewayHttpDenyInjectionError`，请求转 5xx；不回落原生执行 |
+| 链超时或异常 | 回落原生分发 |
+
+`deny` 的注入失败是 fail-closed：拒绝已成立，合成帧发不出去时以 5xx 结束，不能让原生分发执行被拒绝的业务。
+`consume` 只是扩展自行应答，注入失败与 `forward` 等价，回落原生。
+
+合成帧在 outbound 注册后注入，调用方按 `type=="res" and id==request_id` 匹配，与原生响应使用同一通道。
+`accept_frame` 返回 `bool`，outbound 已关闭或队列满时返回 false，运行时据此判定注入失败。
+SSE 请求在合成帧注入后由分发层关闭 outbound，队列以 `[res, None]` 结束。
+只有当处理器返回 `identity_source="verified"` 且 `user_id` 非空时，才覆盖该请求的 `X-User-Id`；其他取值维持 `client_trust`；
+覆盖时同步回填 `routing.user_id` 与 metadata，保证 `Message.user_id` 和 `metadata.user_id` 一致。
+`intercept_gateway_http()` 在运行时未装配时优先调用通道的 `start_extensions()`（与握手入口共用同一生命周期，
+只启动运行时、不消费首帧 connect 通告），无通道时退回按需装配，装配失败回落原生分发。
+实现与验证见 [F_02](../features/F_02_gateway-request-and-auth-gate.md) 第 4.1、4.2 节。
+
 ## 6. 扩展鉴权职责
 
 鉴权由 `gateway.request` 的 USER handler 完整负责，包括凭据校验、匿名请求范围、拒绝结果和登录视图。
 宿主提供规范化 `headers` 和完整 `request_context`，不把 Authorization 头存在视作认证成功。
 没有鉴权扩展时按原生访问流程继续；普通包的安装与卸载不切换登录要求。
 
+`gateway.handshake` 是握手阶段的同一职责：扩展可在 `accept()` 前拒绝、放行并声明连接身份。
+它与渠道既有的 V1 握手钩子叠加，规则固定为：`handled=true` 且 `allow=false` 直接 401、不运行 V1；
+`handled=true` 且 `allow=true` 仍运行 V1 作为第二道门禁，绑定 V2 身份时最终身份取 V2，否则保持 V1；仅 `bind_connection_identity=true` 且 `user_id` 非空才绑定；
+未绑定的 `user_id` 不写入 `authenticated_user_id` / `verified_user_id`；
+`handled=false`、超时或异常完全保持 V1 行为。未订阅该事件时握手与升级前一致。
+总线为洋葱式链，`trigger` 只返回最外层处理结果；多个包同时订阅同一事件时外层可覆盖或丢弃内层结果，本规范不定义合并语义。
+
 USER handler 返回 `deny` 或 `consume` 时，内层 UI 分派器及 CORE 均不执行；
 调用 `next_handler` 时，客户端能力包的 application 交互仍由独立的 BUILTIN 浏览器分派器校验和消费。
 平台不提供内置认证门禁、专属认证配置、包鉴权标记或登录状态查询方法。
-删除与迁移记录见 [F_02](../features/F_02_gateway-request-and-auth-gate.md)。
+删除与迁移记录见 [F_02](../features/F_02_gateway-request-and-auth-gate.md)，握手挂点实现见 [F_17](../features/F_17_gateway-handshake.md)。
 
 ## 7. 本地方法契约
 
@@ -215,12 +260,23 @@ USER handler 返回 `deny` 或 `consume` 时，内层 UI 分派器及 CORE 均�
     过了提交点（开始关闭旧开场）的安装、重载与卸载即使被取消（包括重复取消）也保证收尾，收尾结束后调用方才收到取消；
     安装副本只在新版本提交后保留；卸载收尾时第二次忙检查仍可能拒绝卸载，此时开场已关闭、包继续运行。
     停机后不能提交已有准备项，也不能新建准备项。卸载删除包数据前只等待本包导入目录的后台删除，其他包的浏览器通知或文件清理不会拖住卸载。
+15. `gateway.handshake` 默认无意见；`handled=true` 且 `allow=false` 的拒绝短路 V1，`allow=true` 仍执行 V1；
+    只有 `bind_connection_identity=true` 且 `user_id` 非空才把该身份绑定到连接；凭据/身份类单值头重复时握手入口直接 401。
+16. `gateway.request` **事件输入**的 `routing` 只含连接建立时缓存的 `group_id`、`bot_id`、`gateway_id`，不含 `user_id`，不取自 `params`；
+    `http_pre_route` 中受信任的 `X-User-Id` 放入独立 `user_id` 字段而非 `routing`；
+    verified 身份覆盖时，适配器在自身 routing/metadata 中回填 `user_id=verified`。
+17. `http_dispatch` 默认 fail-open：链超时或异常按原生分发继续；`consume` 仅在合成帧成功注入后跳过原生分发，
+    注入失败回落原生；`deny` 注入失败抛 `GatewayHttpDenyInjectionError` 转 5xx，绝不回落原生执行被拒绝的业务；
+    `accept_frame` 在 outbound 已关闭或队列满时返回 false，视为注入失败；SSE 合成应答后关闭 outbound 结束流；
+    只有 `identity_source="verified"` 且 `user_id` 非空才覆盖 `X-User-Id`。`http_pre_route` 保持 fail-closed。
 
 ## 10. 验证索引
 
 | 契约 | 用例 |
 | --- | --- |
 | 入口幂等与降级 | `test_gateway_request.py` |
+| 握手挂点、V1/V2 合并与连接身份绑定 | `test_gateway_auth_points.py` |
+| `entry`/`routing`、HTTP 业务分发合成帧与 verified 身份覆盖、演示包端到端 | `test_gateway_auth_points.py`、`test_auth_demo_packages.py` |
 | 渠道断线钩子（WebChannel 与 GatewayServer 的调用方式）释放连接状态 | `test_gateway_request.py` |
 | 同版本重装加载新代码与释放后清理模块（不变量 11） | `test_gateway_package_management.py` |
 | 四路由 | `test_gateway_request.py` |

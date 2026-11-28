@@ -208,13 +208,15 @@ class HttpJsonOutbound(_HttpOutboundBase):
         super().__init__(**kwargs)
         self._frames: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(maxsize=256)
 
-    def accept_frame(self, frame: dict[str, Any]) -> None:
+    def accept_frame(self, frame: dict[str, Any]) -> bool:
         if self.closed:
-            return
+            return False
         try:
             self._frames.put_nowait(frame)
         except asyncio.QueueFull:  # pragma: no cover
             logger.warning("[WebHTTP] HttpJsonOutbound queue full; dropping frame")
+            return False
+        return True
 
     async def wait_response(
         self,
@@ -338,9 +340,9 @@ class HttpSseOutbound(_HttpOutboundBase):
                 return
             yield frame
 
-    def accept_frame(self, frame: dict[str, Any]) -> None:
+    def accept_frame(self, frame: dict[str, Any]) -> bool:
         if self.closed:
-            return
+            return False
         try:
             self._frames.put_nowait(frame)
         except asyncio.QueueFull:
@@ -348,6 +350,8 @@ class HttpSseOutbound(_HttpOutboundBase):
                 "[WebHTTP] HttpSseOutbound queue full outbound_id=%s; dropping frame",
                 self.outbound_id,
             )
+            return False
+        return True
 
     async def iter_sse_frames(
         self,

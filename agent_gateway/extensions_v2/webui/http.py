@@ -65,9 +65,30 @@ def attach_browser_routes(app: FastAPI, runtime_provider=get_gateway_runtime) ->
             # request the policy already continued; the ticket decides access.
             return await call_next(request)
         context = MappingProxyType({"headers": dict(request.headers)})
+        routing: dict[str, str] = {}
+        declared_user: str | None = None
+        try:
+            from agent_gateway.channel_manager.web.web_http_dispatch import resolve_http_routing_identity
+            from agent_gateway.extensions_v2.runtime import _routing_mapping
+
+            client = request.client
+            identity = resolve_http_routing_identity(
+                request.headers,
+                getattr(client, "host", None) if client is not None else None,
+            )
+            # ``routing`` only carries the connection scope; a trusted client identity
+            # belongs to the top-level ``user_id`` field, never to ``routing``.
+            routing = dict(_routing_mapping(identity))
+            declared_user = str(identity.get("user_id") or "").strip() or None
+        except Exception:  # noqa: BLE001 - routing scope is optional for a coarse pre-route policy
+            routing = {}
+            declared_user = None
         request_input = GatewayRequestInput(
             method=request.method, request_context=context, transport="http", path=request.url.path,
-            headers=MappingProxyType(dict(request.headers)),
+            headers=MappingProxyType(dict(request.headers)), entry="http_pre_route",
+            routing=MappingProxyType(routing),
+            user_id=declared_user,
+            request_id=str(request.headers.get("x-request-id", "") or "").strip(),
         )
         try:
             result = await asyncio.wait_for(runtime.bus.trigger(

@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "package_type": "extension",
+  "package": {
+    "id": "demo.ws.auth",
+    "version": "1.0.0",
+    "domain": "gateway"
+  },
+  "extensions": [
+    {
+      "id": "ws_auth",
+      "runtime": "backend",
+      "module": "ws_auth/extension.py"
+    }
+  ],
+  "display": {
+    "name": {
+      "zh": "WS 握手鉴权示例",
+      "en": "WS handshake auth demo"
+    }
+  }
+}
