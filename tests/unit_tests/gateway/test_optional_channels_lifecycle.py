@@ -131,6 +131,21 @@ for key in ('JIUWENSWARM_HOME', 'JIUWENSWARM_DATA_DIR', 'AGENTOS_GATEWAY_LOG_DIR
     assert result.returncode == 0, result.stderr
 
 
+def test_channel_package_import_keeps_optional_sdks_unloaded(tmp_path):
+    env = os.environ.copy()
+    for key in ('JIUWENSWARM_HOME', 'JIUWENSWARM_DATA_DIR', 'AGENTOS_GATEWAY_LOG_DIR'):
+        env[key] = str(tmp_path / key)
+    result = subprocess.run(
+        [sys.executable, '-c', '''
+import importlib, sys
+importlib.import_module('agent_gateway.channel_manager')
+for module in ('telegram', 'discord', 'slack_bolt', 'dingtalk_stream', 'wecom_aibot_sdk', 'lark_oapi'):
+    assert module not in sys.modules, module
+'''], env=env, capture_output=True, text=True, timeout=25,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 async def test_configuration_enable_unchanged_update_disable_owns_one_instance(monkeypatch):
     instances = _telegram(monkeypatch)
     owner, manager = _owner()
