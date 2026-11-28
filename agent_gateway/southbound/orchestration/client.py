@@ -3,6 +3,7 @@
 """Northbound southbound-client contract and fixed-target implementation."""
 
 from contextlib import aclosing
+import logging
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from e2a.agent_models import AgentResponse, AgentResponseChunk
@@ -126,16 +127,25 @@ class StaticAgentClient(SouthboundAgentClient):
                 raise
 
 
-def build_static_client(uri: str, *, shared_directory_layout: bool = False) -> SouthboundAgentClient:
+def build_static_client(
+    uri: str, *, shared_directory_layout: bool = False, wire_logger: logging.Logger | None = None,
+    private_methods: frozenset[str] = frozenset(),
+) -> SouthboundAgentClient:
+    """The fixed local client; the optional log options keep it the same connection."""
     target = ConnectionTarget(TransportKind.WEBSOCKET, uri)
     control = FixedTargetControl(target)
     return StaticAgentClient(
-        control, StaticRouter(control), StaticWebSocketTransport(target),
+        control, StaticRouter(control),
+        # The transport owns the socket, so the log options belong to it.
+        StaticWebSocketTransport(target, wire_logger=wire_logger, private_methods=private_methods),
         shared_directory_layout=shared_directory_layout,
     )
 
 
-def assemble_client(extension: Any, *, mode: str, enterprise: bool, uri: str) -> AgentServerClient:
+def assemble_client(
+    extension: Any, *, mode: str, enterprise: bool, uri: str, wire_logger: logging.Logger | None = None,
+    private_methods: frozenset[str] = frozenset(),
+) -> AgentServerClient:
     """Reuse extension-owned clients and select the default fixed deployment.
 
     Preserve extension-declared layout capabilities, except for the legacy
@@ -145,7 +155,9 @@ def assemble_client(extension: Any, *, mode: str, enterprise: bool, uri: str) ->
 
     def websocket_factory() -> AgentServerClient:
         if not enterprise:
-            return build_static_client(uri, shared_directory_layout=True)
+            return build_static_client(
+                uri, shared_directory_layout=True, wire_logger=wire_logger, private_methods=private_methods,
+            )
         client = WebSocketAgentServerClient(ping_interval=20.0, ping_timeout=600.0)
         client.shared_directory_layout = False
         return client

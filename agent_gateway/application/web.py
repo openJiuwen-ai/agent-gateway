@@ -21,8 +21,33 @@ from e2a.message import (
 )
 from agent_gateway.channel_manager.web.media import normalize_chat_media_attachments
 from agent_gateway.application.inbound import MessagePreprocessor
+from agent_gateway.application.personal_settings import PERSONAL_SETTINGS_METHODS, protect_settings_handler
 
 logger = logging.getLogger("gateway")
+
+
+class _PersonalSettingsRegistration:
+    """Registration-only proxy used by the account-free personal Worker.
+
+    Nothing else changes: every attribute is forwarded to the channel and no
+    global hook is installed. A settings method is registered behind the Web
+    Origin and parameter gate, and it never takes the generic forwarding path.
+    """
+
+    def __init__(self, channel: Any) -> None:
+        object.__setattr__(self, "_channel", channel)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._channel, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(self._channel, name, value)
+
+    def register_method(self, method: str, handler: Any, *, local_only: bool = False) -> None:
+        if method in PERSONAL_SETTINGS_METHODS:
+            handler = protect_settings_handler(self._channel, method, handler)
+            local_only = True
+        self._channel.register_method(method, handler, local_only=local_only)
 
 
 def assemble_web(
@@ -44,6 +69,7 @@ def assemble_web(
     log_stage: Callable[[str], None],
     auth_service_provider: Callable[[], AuthService] | None = None,
     credential_update_sink: CredentialUpdateSink | None = None,
+    personal_settings: bool = False,
 ) -> tuple[Any, asyncio.Event]:
     from agent_gateway.channel_manager.protocol.web_proxy.web_proxy_listen import register_3rdagent_web_method
     from agent_gateway.channel_manager.web.app_web_handlers import (
@@ -121,7 +147,7 @@ def assemble_web(
 
     _register_web_handlers(
         WebHandlersBindParams(
-            channel=web_channel,
+            channel=_PersonalSettingsRegistration(web_channel) if personal_settings else web_channel,
             agent_client=client,
             message_handler=message_handler,
             channel_manager=channel_manager,

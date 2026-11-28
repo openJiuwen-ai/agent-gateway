@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from contextlib import aclosing
+import logging
 from typing import AsyncIterator, Callable
 
 from e2a.models import E2AEnvelope
@@ -145,9 +146,13 @@ class StaticWebSocketTransport(AgentDataTransport):
     """One fixed WebSocket connection with synchronous readiness and push hooks."""
 
     def __init__(self, target: ConnectionTarget, *, ping_interval: float = 20.0,
-                 ping_timeout: float = 600.0) -> None:
+                 ping_timeout: float = 600.0, wire_logger: logging.Logger | None = None,
+                 private_methods: frozenset[str] = frozenset()) -> None:
         self._target = target
-        self._connection = WebSocketConnection(ping_interval=ping_interval, ping_timeout=ping_timeout)
+        self._connection = WebSocketConnection(
+            ping_interval=ping_interval, ping_timeout=ping_timeout,
+            wire_logger=wire_logger, private_methods=private_methods,
+        )
         super().__init__(websocket_factory=lambda: self._connection)
 
     def set_credential_runtime(self, runtime) -> None:

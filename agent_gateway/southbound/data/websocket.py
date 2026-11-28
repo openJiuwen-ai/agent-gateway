@@ -164,6 +164,7 @@ class WebSocketConnection:
 
     def __init__(
         self, *, ping_interval: float | None = 30.0, ping_timeout: float | None = 300.0,
+        wire_logger: logging.Logger | None = None, private_methods: frozenset[str] = frozenset(),
     ) -> None:
         self._uri: str | None = None
         self._extra_headers: dict[str, str] = {}
@@ -173,6 +174,10 @@ class WebSocketConnection:
         self._reconnect_enabled = False
         self._ping_interval = ping_interval
         self._ping_timeout = ping_timeout
+        # Opt-in: a deployment whose settings cross this link keeps whole frames
+        # out of the websockets DEBUG log and out of the request payload log.
+        self._wire_logger = wire_logger
+        self._private_methods = frozenset(private_methods)
         self._server_ready: bool = False
         self._agent_ready: bool = False
         self._readiness_state: str | None = None
@@ -326,6 +331,8 @@ class WebSocketConnection:
                 "close_timeout": 5.0,
                 "max_size": AGENT_WS_MAX_MESSAGE_BYTES,
             }
+            if self._wire_logger is not None:
+                connect_kwargs["logger"] = self._wire_logger
             cleaned_headers = {
                 str(key): str(value)
                 for key, value in dict(extra_headers or {}).items()
@@ -734,6 +741,7 @@ class WebSocketConnection:
             float(timeout) if timeout is not None else _UNARY_REQUEST_TIMEOUT_SECONDS
         )
         sid = str(envelope.session_id or "")
+        log_payload = envelope.method not in self._private_methods
         logger.debug(
             "[E2A][out][nostream] request_id=%s channel=%s method=%s session_id=%s is_stream=%s",
             rid,
@@ -744,7 +752,8 @@ class WebSocketConnection:
             extra={"session_id": sid} if sid else {},
         )
         if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("[WebSocketAgentServerClient] 发送请求(非流式) E2A: %s", _to_json(envelope.to_dict()))
+            if log_payload:
+                logger.debug("[WebSocketAgentServerClient] 发送请求(非流式) E2A: %s", _to_json(envelope.to_dict()))
 
         if rid in self._message_queues:
             raise DuplicateRequestIdError(rid)
@@ -778,7 +787,8 @@ class WebSocketConnection:
                             self._credential_runtime.check(envelope)
                         payload = _e2a_to_wire(wire_envelope)
                         if logger.isEnabledFor(logging.DEBUG):
-                            logger.debug("[WebSocketAgentServerClient] 发送请求(非流式) payload: %s", _to_json(payload))
+                            if log_payload:
+                                logger.debug("[WebSocketAgentServerClient] 发送请求(非流式) payload: %s", _to_json(payload))
                         send_started = monotonic()
                         await self._send_wire_payload(payload)
                         send_outcome = "written"

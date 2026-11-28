@@ -30,6 +30,35 @@ _DATA_METHODS = frozenset({
 _ACP_METHODS = frozenset({"initialize", "session/new", "session/prompt", "session/cancel"})
 
 
+# Requests the account-free personal Worker answers on its Web listener with the
+# regular read and Session handlers. Settings, and every write that needs a
+# gate of its own, are added by personal_web_methods().
+PERSONAL_WEB_WORKER_METHODS = frozenset({
+    "commands.list",
+    "heartbeat.job.list",
+    "heartbeat.job.meta",
+    "locale.get_conf",
+    "mcp.list",
+    "path.get",
+    "permissions.tools.get",
+    "personal_context.runtime.status",
+    "project.get_sessions",
+    "project.git.diff_status",
+    "project.git.status",
+    "project.git.turn_diff",
+    "project.git.turn_diff_list",
+    "project.info",
+    "project.list",
+    "project.pinned_sessions",
+    "session.archive",
+    "session.archived.list",
+    "session.assets.list",
+    "session.delete",
+    "session.unarchive",
+    "skills.list",
+})
+
+
 class _DisabledAccounts:
     async def remember(self, session_id, credential_ref, model_name):
         raise RuntimeError("account bindings are not enabled in the Worker")
@@ -53,9 +82,16 @@ class _DisabledAccounts:
         return None
 
 
+def personal_web_methods() -> frozenset[str]:
+    """What the personal Worker's Web listener admits beyond the data plane."""
+    from agent_gateway.application.personal_settings import PERSONAL_SETTINGS_METHODS
+
+    return PERSONAL_WEB_WORKER_METHODS | PERSONAL_SETTINGS_METHODS
+
+
 def is_data_frame(
     raw: str | bytes, *, acp: bool = False, accounts: bool = False, cron: bool = False,
-    tui: bool = False, personal: bool = False,
+    tui: bool = False, web: bool = False, personal: bool = False,
 ) -> bool:
     """Keep unadapted login, configuration and Cron out of this Worker host.
 
@@ -75,10 +111,13 @@ def is_data_frame(
     methods = _ACP_METHODS if acp and frame.get("jsonrpc") == "2.0" else _DATA_METHODS
     if cron and not acp:
         methods = methods | CRON_PANEL_METHODS
-    if tui and personal and not acp:
-        from agent_gateway.application.personal_tui import PERSONAL_TUI_METHODS
+    if personal and not acp:
+        if tui:
+            from agent_gateway.application.personal_tui import PERSONAL_TUI_METHODS
 
-        methods = methods | PERSONAL_TUI_METHODS
+            methods = methods | PERSONAL_TUI_METHODS
+        if web:
+            methods = methods | personal_web_methods()
     if not isinstance(method, str) or method not in methods:
         return False
     params = frame.get("params")
@@ -182,13 +221,23 @@ async def data_worker(
     from agent_gateway.southbound.orchestration.client import assemble_client
 
     async with AsyncExitStack() as cleanup:
+        from agent_gateway.application.personal_settings import (
+            PERSONAL_SETTINGS_METHODS, is_local_settings_target, settings_transport_logger,
+        )
         from agent_gateway.application.personal_tui import enable_personal_tui
 
         registry = ExtensionRegistry.create_instance(
             callback_framework=None, callback_framework_factory=callback_framework, config={}, logger=logger,
         )
         cleanup.callback(ExtensionRegistry.reset_instance)
-        client = assemble_client(None, mode="websocket", enterprise=False, uri=agent_server_url)
+        personal = not (control_client is not None and accounts)
+        personal_settings = personal and is_local_settings_target(agent_server_url)
+        wire_options = {}
+        if personal_settings:
+            wire_options = {
+                "wire_logger": settings_transport_logger(), "private_methods": PERSONAL_SETTINGS_METHODS,
+            }
+        client = assemble_client(None, mode="websocket", enterprise=False, uri=agent_server_url, **wire_options)
         cleanup.push_async_callback(client.disconnect)
         await client.connect(agent_server_url)
         credentials = None
@@ -204,7 +253,6 @@ async def data_worker(
         accounts = credentials.bindings if credentials is not None else _DisabledAccounts()
         # The account-free profile is the personal Worker: it alone offers the
         # native TUI compatibility requests, and only to a loopback AgentServer.
-        personal = credentials is None
         personal_tui = personal and enable_personal_tui(agent_server_url)
         handler = MessageHandler(client, session_login_bindings=accounts)
         if credentials is not None:
@@ -249,6 +297,7 @@ async def data_worker(
                 heartbeat_controller=None, updater_service=None,
                 host="127.0.0.1", port=0, path="/ws", ws_permessage_deflate=False,
                 preprocessor=preprocessor, log_stage=lambda _stage: None,
+                personal_settings=personal_settings,
             )
             northbound.push_async_callback(web.stop)
             tui = await assemble_tui_acp(
@@ -268,7 +317,7 @@ async def data_worker(
             frame_allowed = partial(
                 is_data_frame, accounts=credentials is not None, cron=cron is not None, personal=personal,
             )
-            web_app = _build_web_app(web, frame_allowed=frame_allowed)
+            web_app = _build_web_app(web, frame_allowed=partial(frame_allowed, web=True))
             web_runtime = WebProtocolRuntime(
                 web_app, ws_per_message_deflate=False, single_request_http=True,
             )

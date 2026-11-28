@@ -18,7 +18,7 @@ import pytest
 from e2a.agent_models import AgentResponse
 from e2a.wire_codec import encode_agent_response_for_wire
 from websockets.asyncio.client import connect
-from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import ConnectionClosed, InvalidStatus
 
 from agent_gateway.application.worker_group import WorkerGroup
 from agent_gateway.common.ingress_identity import LocalIdentityPolicy, resolve_local_identity
@@ -273,10 +273,148 @@ async def test_default_model_switch_needs_the_agentserver_capability(tmp_path, m
 
 async def test_web_listener_does_not_take_tui_compatibility_requests(personal):
     group, stub = personal
-    async with connect(web_url(group)) as web:
-        await web.send(json.dumps({"type": "req", "id": "display", "method": "config.get", "params": {}}))
-        assert (await answer(web, "display")) == {"id": "display", "closed": 1008}
-    assert not any(request["method"] == "config.get" for request in stub.requests)
+    for method in ("command.diff", "command.rewind_compact", "session.rewind"):
+        async with connect(web_url(group), additional_headers=ORIGIN) as web:
+            await web.send(request(method, method, {}))
+            assert await answer(web, method) == {"id": method, "closed": 1008}
+    assert not any(request["method"] in {"command.diff", "session.rewind"} for request in stub.requests)
+
+
+ORIGIN = {"Origin": "http://127.0.0.1:5173"}
+
+
+def request(request_id, method, params):
+    return json.dumps({"type": "req", "id": request_id, "method": method, "params": params})
+
+
+def sent(stub, *methods):
+    return [request for request in stub.requests if request["method"] in methods]
+
+
+async def test_web_settings_are_forwarded_once_for_a_browser_origin(personal):
+    group, stub = personal
+    stub.replies["config.get"] = {"preferred_language": "zh", "model_api_key": "synthetic-settings-readback"}
+    stub.replies["config.save_all"] = {"updated": ["free_search_ddg_enabled"], "applied_without_restart": True}
+    async with connect(web_url(group), additional_headers=ORIGIN) as web:
+        # The Web page gets the AgentServer's answer as it is; the TUI's display
+        # projection is a different, route-local contract.
+        await web.send(request("read", "config.get", {}))
+        assert await answer(web, "read") == {"type": "res", "id": "read", "ok": True, "payload": {
+            "preferred_language": "zh", "model_api_key": "synthetic-settings-readback",
+        }}
+        await web.send(request("save", "config.save_all", {"config": {"free_search_ddg_enabled": "true"}}))
+        assert await answer(web, "save") == {"type": "res", "id": "save", "ok": True, "payload": {
+            "updated": ["free_search_ddg_enabled"], "applied_without_restart": True,
+        }}
+        # A request the Worker cannot save is refused as a unit, before a handler runs.
+        for request_id, method, params in (
+            ("unknown", "config.save_all", {"config": {"agents": {"codex": {"enabled": True}}}}),
+            ("cli", "config.set", {"external_cli_agent_codex_enabled": True}),
+            ("empty", "config.set", {}),
+            ("account", "models.upsert", {"model": {"model_client_config": {"client_provider": "OpenAIAccount"}}}),
+            ("argument", "config.get", {"key": "model_api_key"}),
+            # The channel reads a non-object params value as {}, so the same
+            # checks apply: a save still needs its config object.
+            ("array", "config.save_all", ["config"]),
+        ):
+            await web.send(request(request_id, method, params))
+            refused = await answer(web, request_id)
+            assert (refused["ok"], refused["code"]) == (False, "BAD_REQUEST"), (request_id, refused)
+        # Connection status is the Worker's own answer and still works on the same socket.
+        await web.send(request("status", "connection.status", {}))
+        assert (await answer(web, "status"))["ok"] is True
+    assert [(request["method"], request["params"], request["channel"], request["user_id"])
+            for request in stub.requests] == [
+        ("config.get", {}, "web", USER),
+        ("config.save_all", {"config": {"free_search_ddg_enabled": "true"}}, "web", USER),
+    ]
+
+
+@pytest.mark.parametrize("headers", [{}, {"Origin": "https://untrusted.example"}, {"Origin": "null"},
+                                     {"Origin": "http://127.0.0.1:0"}, {"Origin": "http://user:pw@localhost:5173"}])
+async def test_web_settings_refuse_a_foreign_or_missing_origin(personal, headers):
+    group, stub = personal
+    async with connect(web_url(group), additional_headers=headers) as web:
+        await web.send(request("denied", "config.get", {}))
+        assert await answer(web, "denied") == {
+            "type": "res", "id": "denied", "ok": False, "payload": {}, "code": "FORBIDDEN",
+            "error": "Settings require an allowed Web Origin",
+        }
+        # The refusal is answered; the socket itself stays open for the data plane.
+        await web.send(request("status", "connection.status", {}))
+        assert (await answer(web, "status"))["ok"] is True
+    assert not sent(stub, "config.get")
+
+
+async def test_web_listener_rejects_an_ambiguous_origin_at_the_handshake(personal):
+    # Two Origin headers never reach a settings handler: the listener refuses the upgrade.
+    group, stub = personal
+    with pytest.raises(InvalidStatus) as refused:
+        async with connect(web_url(group), additional_headers={
+            "origin": "http://127.0.0.1:5173", "Origin": "http://localhost:5173",
+        }):
+            pass
+    assert refused.value.response.status_code == 400
+    assert not stub.requests
+
+
+async def test_personal_web_reads_use_the_regular_handlers(personal):
+    group, stub = personal
+    stub.replies["project.list"] = {"projects": [{"project_id": "default"}]}
+    stub.replies["mcp.list"] = {"servers": []}
+    stub.replies["skills.list"] = {"skills": []}
+    async with connect(web_url(group), additional_headers=ORIGIN) as web:
+        # Static Gateway metadata: answered locally, like the single process does.
+        await web.send(request("commands", "commands.list", {}))
+        commands = await answer(web, "commands")
+        assert commands["ok"] is True and commands["payload"], commands
+        # Registered proxy handlers and the generic forward path both end at the AgentServer.
+        for request_id, method, params in (("projects", "project.list", {"work_mode": "work"}),
+                                           ("mcp", "mcp.list", {}),
+                                           ("skills", "skills.list", {})):
+            await web.send(request(request_id, method, params))
+            assert await answer(web, request_id) == {
+                "type": "res", "id": request_id, "ok": True, "payload": stub.replies[method],
+            }, method
+        # Everything outside the personal Web set still closes the socket, unread methods included.
+        await web.send(request("write", "project.create", {"name": "p", "dir": "/tmp"}))
+        assert await answer(web, "write") == {"id": "write", "closed": 1008}
+    # project.list also starts the regular lifecycle event poll of the Web channel.
+    assert sorted(request["method"] for request in stub.requests) == [
+        "mcp.list", "project.lifecycle", "project.list", "skills.list",
+    ], stub.requests
+    assert sorted((request["method"], request["params"]) for request in sent(stub, "mcp.list", "project.list", "skills.list")) == [
+        ("mcp.list", {}), ("project.list", {"work_mode": "work"}), ("skills.list", {}),
+    ]
+    assert all(request["channel"] == "web" and request["user_id"] == USER for request in stub.requests)
+
+
+@pytest.mark.parametrize("method", ["cron.job.list", "skills.install", "path.set", "models.replace_all",
+                                    "permissions.tools.set", "openai_account.auth.status", "locale.set_conf"])
+async def test_personal_web_listener_keeps_ungated_writes_out(personal, method):
+    group, stub = personal
+    async with connect(web_url(group), additional_headers=ORIGIN) as web:
+        await web.send(request(method, method, {}))
+        assert await answer(web, method) == {"id": method, "closed": 1008}
+    assert not sent(stub, method)
+
+
+async def test_protocol_listener_keeps_web_settings_out(personal):
+    group, stub = personal
+    stub.replies["config.get"] = {"preferred_language": "zh", "model_api_key": "synthetic-settings-readback"}
+    host, port = group.addresses[1]
+    for route, method in (("/tui", "config.set"), ("/tui", "config.save_all"), ("/tui", "models.upsert"),
+                          ("/acp", "config.get"), ("/acp", "models.list")):
+        async with connect(f"ws://{host}:{port}{route}?user_id={USER}", additional_headers=ORIGIN) as protocol:
+            await protocol.send(request(method, method, {}))
+            assert await answer(protocol, method) == {"id": method, "closed": 1008}, (route, method)
+    # config.get on the TUI route is the display projection, never the Web readback.
+    async with connect(tui_url(group)) as tui:
+        await tui.send(request("display", "config.get", {}))
+        assert await answer(tui, "display") == {
+            "type": "res", "id": "display", "ok": True, "payload": {"preferred_language": "zh"},
+        }
+    assert [(request["channel"], request["params"]) for request in sent(stub, "config.get")] == [("tui", {})]
 
 
 async def test_account_worker_keeps_the_tui_compatibility_requests_out(tmp_path, monkeypatch):
@@ -304,6 +442,11 @@ async def test_account_worker_keeps_the_tui_compatibility_requests_out(tmp_path,
         async with connect(tui_url(group)) as tui:
             await tui.send(json.dumps({"type": "req", "id": "display", "method": "config.get", "params": {}}))
             assert (await answer(tui, "display")) == {"id": "display", "closed": 1008}
+        # The account Worker's Web listener keeps the data-plane admission it had.
+        for method in ("config.get", "config.save_all", "models.list", "commands.list", "project.list"):
+            async with connect(web_url(group), additional_headers=ORIGIN) as web:
+                await web.send(request(method, method, {}))
+                assert await answer(web, method) == {"id": method, "closed": 1008}, method
     finally:
         try:
             await group.stop()
