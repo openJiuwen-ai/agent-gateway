@@ -88,16 +88,24 @@ def sort_by_order(rows: list[dict[str, Any]], order_by: str) -> list[dict[str, A
     if not field:
         return rows
 
-    def _key(row: dict[str, Any]) -> tuple[int, Any]:
-        # 分组元组键：(数值, 字符串, None)，组间永不互比，避免
-        # Python3 中 int 与 str（如 None 归一为 0 的旧行为）直接比较抛 TypeError。
+    def _key(row: dict[str, Any]) -> tuple:
+        # SQL ORDER BY 内存兜底语义：NULL 视为最小（ASC 最前 / DESC 最后，与
+        # sqlite 原生一致）。数值、字符串、其余富类型各自分组，组间首元素必
+        # 不同而短路，任何混合形态都不会跨类型比较抛 TypeError。
         value = row.get(field)
         if value is None:
-            return (2, 0)
+            return (-1, 0)
         try:
-            return (0, int(value))
-        except (TypeError, ValueError):
-            return (1, str(value))
+            # float 而非 int：int("50")/int(Decimal("1.2")) 会截断失序，
+            # int(float("inf")) 抛 OverflowError；float 对三者都保序且不抛
+            return (0, float(value))
+        except (TypeError, ValueError, OverflowError):
+            pass
+        if isinstance(value, str):
+            return (1, value)
+        # 其余富类型（datetime / date / uuid 等）按类型名分组，组内保留
+        # 原生比较：混时区 datetime 按时刻排序，不会被降级成字典序。
+        return (2, type(value).__name__, value)
 
     return sorted(rows, key=_key, reverse=reverse)
 
