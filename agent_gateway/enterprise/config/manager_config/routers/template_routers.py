@@ -12,6 +12,7 @@ from agent_gateway.enterprise.capabilities.a2a_manager.outbound.discovery import
 from agent_gateway.enterprise.capabilities.a2a_manager.outbound.errors import A2AOutboundError
 
 from ..core.template.a2a_access_policy_template import A2AAccessPolicyTemplateService
+from ..core.template.advanced_config_template import AdvancedConfigTemplateService
 from ..core.template.a2a_outbound_template import A2AOutboundTemplateService
 from ..core.template.agent_template import AgentTemplateService
 from ..core.template.embedding_template import EmbeddingTemplateService
@@ -26,6 +27,8 @@ from ..core.template.skill_prebuilt_template import SkillPrebuiltTemplateService
 from ..schemas.common_schemas import ResponseModel
 from ..schemas.sync_schemas import SyncEnvelopeOnlyBody, make_sync_body
 from ..schemas.template_schemas import (
+    AdvancedConfigTemplateCreateRequest,
+    AdvancedConfigTemplateUpdateRequest,
     A2AAccessPolicyTemplateCreateRequest,
     A2AAccessPolicyTemplateUpdateRequest,
     A2AOutboundTemplateCreateRequest,
@@ -240,6 +243,13 @@ _add_template_crud(
     "execution_guard",
     ExecutionGuardTemplateCreateRequest,
     ExecutionGuardTemplateUpdateRequest,
+)
+_add_template_crud(
+    "/advanced-config-templates",
+    AdvancedConfigTemplateService,
+    "advanced_config",
+    AdvancedConfigTemplateCreateRequest,
+    AdvancedConfigTemplateUpdateRequest,
 )
 _add_template_crud(
     "/react-templates",

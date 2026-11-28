@@ -1,4 +1,5 @@
 from .a2a_access_policy_template import A2AAccessPolicyTemplateService
+from .advanced_config_template import AdvancedConfigTemplateService
 from .a2a_outbound_template import A2AOutboundTemplateService
 from .embedding_template import EmbeddingTemplateService
 from .execution_guard_template import ExecutionGuardTemplateService
@@ -11,6 +12,7 @@ from .react_template import ReactTemplateService
 from .skill_prebuilt_template import SkillPrebuiltTemplateService
 
 __all__ = (
+    "AdvancedConfigTemplateService",
     "A2AAccessPolicyTemplateService",
     "A2AOutboundTemplateService",
     "EmbeddingTemplateService",

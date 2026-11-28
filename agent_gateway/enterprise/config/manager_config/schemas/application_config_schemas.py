@@ -32,20 +32,6 @@ class UserPreferenceDefaultUpsertRequest(BaseModel):
     extras: dict[str, Any] | None = Field(default=None)
 
 
-class AdvancedConfigUpsertRequest(BaseModel):
-    """对齐 advanced_config：按 agent_template_id 绑定的高级开关。"""
-
-    model_config = ConfigDict(extra="ignore")
-
-    agent_template_id: str = Field(..., min_length=1, max_length=100)
-    progressive_tool_enabled: bool = True
-    progressive_tool_optimize: bool = False
-    a4p_enabled: bool = False
-    auto_memory_enabled: bool = False
-    enable_kv_cache_affinity: bool = False
-    data: dict[str, Any] | None = None
-
-
 class TaskMemoryUpsertRequest(BaseModel):
     """对齐 task_memory_config：仅 ``enabled`` NOT NULL；模型/密钥等列可空。"""
 
