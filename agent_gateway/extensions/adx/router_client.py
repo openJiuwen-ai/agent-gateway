@@ -7,6 +7,7 @@ import asyncio
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import aclosing
 from pathlib import Path
+from typing import Any
 
 from e2a.agent_models import AgentResponse, AgentResponseChunk
 from e2a.models import E2AEnvelope

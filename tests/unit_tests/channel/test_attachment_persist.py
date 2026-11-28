@@ -237,7 +237,7 @@ def test_legacy_single_user_keeps_file_service_local_persistence():
 
 
 @pytest.mark.asyncio
-async def test_agentos_attachment_never_falls_back_to_gateway_workspace(monkeypatch):
+async def test_agentos_attachment_never_falls_back_to_gateway_workspace():
     """缺少 IM user_id 路由键时必须失败，不能写 Gateway 本地目录。
 
     AgentOS 态安装的是明确失败的 stub hook（等 IM 多用户路由）——
