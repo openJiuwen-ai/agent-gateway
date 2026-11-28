@@ -1,10 +1,4 @@
-"""``get_cron_jobs_path`` is pinned to ``agent/home``.
-
-历史上 getter 曾在 legacy 迁移后优先选择 ``gateway/``；现在 cron 固定读写
-``agent/home``。遗留的 ``gateway/cron_jobs.json`` 不再读取、不做迁移也不
-删除，原样留在磁盘上；旧布局目录（agent/home、agent/skills、agent/memory）
-同样既不搬迁也不清理。
-"""
+"""Gateway-owned cron path, upgrade, and scheduler diagnostics."""
 
 from __future__ import annotations
 
@@ -14,7 +8,7 @@ import logging
 
 import pytest
 
-from agent_gateway.common.paths import get_cron_jobs_path
+from agent_gateway.common.paths import get_cron_jobs_path, get_legacy_cron_jobs_path
 
 
 @pytest.fixture
@@ -25,17 +19,11 @@ def workspace(tmp_path, monkeypatch):
     return tmp_path
 
 
-def test_cron_always_reads_home_even_when_gateway_file_exists(workspace):
-    """A leftover gateway file must not win: cron is pinned to agent/home."""
+def test_cron_uses_dedicated_directory(workspace):
     gateway_dir = workspace / "gateway"
     gateway_dir.mkdir(parents=True)
     (gateway_dir / "cron_jobs.json").write_text("{}", encoding="utf-8")
-    assert get_cron_jobs_path() == workspace / "agent" / "home" / "cron_jobs.json"
-
-
-def test_fresh_workspace_uses_home(workspace):
-    """No files on disk: still agent/home, never agent_gateway."""
-    assert get_cron_jobs_path() == workspace / "domain" / "agent" / "home" / "cron_jobs.json"
+    assert get_cron_jobs_path() == gateway_dir / "cron" / "cron_jobs.json"
 
 
 _JOB = {
@@ -91,6 +79,21 @@ def _scheduler(store):
     from agent_gateway.cron.scheduler import CronSchedulerService
 
     return CronSchedulerService(store=store, agent_client=None, message_handler=None)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_only_uses_authoritative_file_after_upgrade(workspace):
+    from agent_gateway.runtime.cron.factory import create_gateway_cron_store
+
+    old = _write_job(get_legacy_cron_jobs_path())
+    store = await create_gateway_cron_store({})
+    scheduler = _scheduler(store)
+    await scheduler.reload()
+    assert set(scheduler._jobs) == {_JOB["id"]}
+
+    old.write_text('{"jobs":[]}', encoding="utf-8")
+    await scheduler.reload()
+    assert set(scheduler._jobs) == {_JOB["id"]}
 
 
 @pytest.mark.asyncio

@@ -312,8 +312,18 @@ def get_interactions_dir() -> Path:
     return get_agent_workspace_dir() / "interactions"
 
 
+def get_gateway_cron_dir() -> Path:
+    """Return the Gateway-owned cron state directory, outside the Agent home."""
+    return get_user_workspace_dir() / "gateway" / "cron"
+
+
 def get_cron_jobs_path() -> Path:
-    """``agent/home/cron_jobs.json`` 的规范路径（禁止业务代码硬编码）。"""
+    """Return the authoritative file for the Gateway file backend."""
+    return get_gateway_cron_dir() / "cron_jobs.json"
+
+
+def get_legacy_cron_jobs_path() -> Path:
+    """Return the shared file used before Gateway took ownership."""
     return get_agent_home_dir() / "cron_jobs.json"
 
 
