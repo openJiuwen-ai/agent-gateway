@@ -25,6 +25,8 @@ import logging
 import time
 from typing import Any
 
+from agent_gateway.common.protocol_ids import InvalidProtocolId, validate_session_id
+
 logger = logging.getLogger(__name__)
 
 #: /ws/git 支持的 source 取值
@@ -41,9 +43,19 @@ class GitDiffWebSocketHandler:
     ``handle_connection``。
     """
 
-    def __init__(self, channel: Any, registry: Any) -> None:
+    def __init__(
+        self, channel: Any, registry: Any, *, require_activity_snapshot: bool = False,
+        app_id: str = "default",
+    ) -> None:
+        """``require_activity_snapshot`` is for a Gateway that only caches Session activity.
+
+        Its cache can miss a running turn, so before a write it asks the
+        AgentServer, which owns the Session, whether the turn is idle.
+        """
         self._channel = channel
         self._registry = registry
+        self._require_activity_snapshot = require_activity_snapshot
+        self._app_id = app_id
 
     async def handle_connection(self, ws: Any) -> None:
         """处理 /ws/git 连接的消息循环。
@@ -179,6 +191,12 @@ class GitDiffWebSocketHandler:
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
         session_id = str(params.get("session_id") or "").strip()
+        if self._require_activity_snapshot:
+            try:
+                session_id = validate_session_id(params.get("session_id"))
+            except InvalidProtocolId as exc:
+                await self._channel.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
+                return
         if session_id and self._channel.is_session_busy(session_id):
             await self._channel.send_response(
                 ws, req_id, ok=False, error=busy_error, code="SESSION_BUSY"
@@ -186,6 +204,13 @@ class GitDiffWebSocketHandler:
             return
         project_id = str(params.get("project_id") or "").strip()
         connection_user_id = self._channel.connection_user_id(ws)
+
+        if session_id and self._require_activity_snapshot:
+            rejection = await self._turn_mutation_rejection(session_id, connection_user_id, busy_error)
+            if rejection is not None:
+                code, error = rejection
+                await self._channel.send_response(ws, req_id, ok=False, error=error, code=code)
+                return
 
         def _on_done(ok: bool, payload: dict[str, Any]) -> None:
             # 成功或"已发生局部变更的失败"（discard/redo 部分恢复）都唤醒 watcher，
@@ -206,6 +231,43 @@ class GitDiffWebSocketHandler:
             preserve_error_payload=True,
             on_done=_on_done,
         )
+
+    async def _turn_mutation_rejection(
+        self, session_id: str, user_id: str | None, busy_error: str,
+    ) -> tuple[str, str] | None:
+        """A Worker cache miss can't establish that a turn is idle."""
+        from e2a.message import ReqMethod
+
+        from agent_gateway.routing.e2a_proxy import fetch_agent_unary
+
+        ok, payload = await fetch_agent_unary(
+            agent_client=self._channel.agent_client,
+            req_method=ReqMethod.SESSION_GET_METADATA,
+            params={"session_id": session_id, "enable_writeback": False},
+            session_id=session_id,
+            user_id=user_id,
+            channel_id=self._channel.channel_id,
+            metadata={"app_id": self._app_id},
+            label="git turn activity",
+            timeout_seconds=5.0,
+        )
+        if not ok:
+            return (
+                payload.get("code") or "SERVICE_UNAVAILABLE",
+                payload.get("error") or "Could not verify session activity",
+            )
+        stored_user_id = payload.get("user_id") or None
+        if stored_user_id != user_id:
+            return "SESSION_IDENTITY_REQUIRED", "Reconnect Git with the session's user before editing changes"
+        runtime = payload.get("runtime")
+        if self._channel.is_session_busy(session_id) or (
+            isinstance(runtime, dict) and runtime.get("is_processing") is True
+        ):
+            return "SESSION_BUSY", busy_error
+        if (not isinstance(runtime, dict) or runtime.get("recovery_pending")
+                or runtime.get("is_processing") is not False):
+            return "SERVICE_UNAVAILABLE", "Could not verify session activity"
+        return None
 
     async def _handle_diff_watch(
         self, ws: Any, req_id: str, params: dict[str, Any],

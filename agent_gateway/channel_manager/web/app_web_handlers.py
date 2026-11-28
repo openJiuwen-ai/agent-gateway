@@ -1922,6 +1922,9 @@ class WebHandlersBindParams:
     topic_prepare_service: Any = None
     topic_service: Any = None
     topic_outcome_queue: Any = None
+    #: The account-free personal Worker: settings never fall back to the
+    #: Gateway's own configuration, even without a resolved client.
+    personal_settings: bool = False
 
 
 _CONTAINER_FILE_API_METHODS = (
@@ -3497,6 +3500,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         # Removal is accepted immediately; running sessions no longer block it.
         # The AgentServer hides the project and stops those sessions in the
         # background, so this path goes straight to the cron-safe commit.
+        # The personal Worker has no Cron to coordinate with: see below.
         async def _after_remove() -> None:
             registry = getattr(channel, "git_watcher_registry", None)
             if registry is not None and project_id:
@@ -3505,9 +3509,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             # The AgentServer stops these Sessions in the background.  Settle
             # the Gateway's busy cache now: otherwise a later restore would
             # surface them as "still processing" on session.get_metadata.
+            # The personal Worker does not: it asks the AgentServer for the
+            # activity of a Session instead, and keeps the cached entry until
+            # an event reports that the background stop is done.
             stopped = (
                 remove_payload.get("stopped_sessions")
                 if isinstance(remove_payload, dict)
+                and not bind.personal_settings
                 else None
             )
             if isinstance(stopped, list):
@@ -3541,6 +3549,32 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 raise _RemoveCommitError(payload)
             remove_payload = payload
 
+        if bind.personal_settings:
+            # One request. The AgentServer that advertises the capability hides
+            # the project and stops its Sessions and jobs; there is no Gateway
+            # Cron commit to run first.
+            from agent_gateway.application.personal_web_operations import PROJECT_LIFECYCLE_CAPABILITY
+            from agent_gateway.routing.e2a_proxy import proxy_unary_request
+
+            async def removed(ok: bool, _payload: object) -> None:
+                if ok:
+                    await _after_remove()
+
+            await proxy_unary_request(
+                channel=channel,
+                agent_client=_resolve(agent_client),
+                ws=ws,
+                req_id=req_id,
+                params=params if isinstance(params, dict) else {},
+                session_id=session_id,
+                user_id=user_id,
+                req_method=ReqMethod.PROJECT_REMOVE,
+                label="project.remove",
+                on_done=removed,
+                required_capability=PROJECT_LIFECYCLE_CAPABILITY,
+            )
+            return
+
         cc = _get_cron()
         if cc is None:
             await channel.send_response(ws, req_id, ok=False, error="cron service unavailable", code="CRON_STOP_FAILED")
@@ -3566,6 +3600,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         """Forward project restoration to the target AgentServer."""
         from e2a.message import ReqMethod
 
+        from agent_gateway.application.personal_web_operations import PROJECT_LIFECYCLE_CAPABILITY
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
         project_id = str((params or {}).get("project_id") or "").strip()
@@ -3587,6 +3622,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             req_method=ReqMethod.PROJECT_RESTORE,
             label="project.restore",
             on_done=_after_restore,
+            # The personal Worker has no Cron to restore a project's jobs; the
+            # AgentServer does it, and must say so.
+            required_capability=(
+                PROJECT_LIFECYCLE_CAPABILITY if bind.personal_settings else None
+            ),
         )
 
     async def _project_info(ws, req_id, params, session_id, user_id=None):
@@ -3672,7 +3712,23 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         async def _handler(ws, req_id, params, session_id, user_id=None):
             from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
-            callbacks = {}
+            from agent_gateway.application.personal_web_operations import (
+                PROJECT_GIT_CAPABILITY, PROJECT_GIT_MARKER, PROJECT_GIT_OPERATIONS,
+            )
+
+            options = {}
+            if bind.personal_settings and label in PROJECT_GIT_OPERATIONS:
+                # Reply within the legacy panel's 15/60/90s wait limits.
+                timeout = {
+                    ReqMethod.PROJECT_GIT_COMMIT: 55.0,
+                    ReqMethod.PROJECT_GIT_PUSH: 85.0,
+                }.get(req_method, 12.0)
+                options.update(
+                    required_capability=PROJECT_GIT_CAPABILITY,
+                    extra_params={PROJECT_GIT_MARKER: True},
+                    drop_params=("user_id",),
+                    timeout_seconds=timeout,
+                )
             if mark_dirty or mark_dirty_on_failure:
                 project_id = str((params or {}).get("project_id") or "").strip()
 
@@ -3683,7 +3739,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                         return _mark_git_watcher_dirty(project_id)
                     return None
 
-                callbacks["on_done"] = _on_done
+                options["on_done"] = _on_done
             await proxy_unary_request(
                 channel=channel,
                 agent_client=_resolve(agent_client),
@@ -3695,7 +3751,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 req_method=req_method,
                 label=label,
                 preserve_error_payload=True,
-                **callbacks,
+                **options,
             )
 
         _handler.__doc__ = doc
@@ -4348,7 +4404,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
         resolved_client = _resolve(agent_client)
-        if resolved_client is None:
+        if not bind.personal_settings and resolved_client is None:
             try:
                 cfg = get_config()
                 lang = str(cfg.get("preferred_language") or "zh").strip().lower()
@@ -4424,7 +4480,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
         resolved_client = _resolve(agent_client)
-        if resolved_client is None:
+        if not bind.personal_settings and resolved_client is None:
             try:
                 update_preferred_language_in_config(lang)
                 await channel.send_response(ws, req_id, ok=True, payload={"preferred_language": lang})
@@ -6009,8 +6065,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     from agent_gateway.channel_manager.web.designer_handlers import (
         register_designer_handlers,
+        register_personal_designer_handlers,
     )
-    register_designer_handlers(channel, lambda: _resolve(agent_client))
+    if bind.personal_settings:
+        register_personal_designer_handlers(channel, lambda: _resolve(agent_client))
+    else:
+        register_designer_handlers(channel, lambda: _resolve(agent_client))
 
     channel.register_method("project.list", _project_list)
     channel.register_method("project.info", _project_info)

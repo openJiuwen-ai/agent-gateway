@@ -36,6 +36,9 @@ class TuiChannelConfig:
     """TuiChannel 配置（占位——ws 宿主由 GatewayServer 承担，此处仅满足 BaseChannel 契约）."""
 
     enabled: bool = True
+    # Sharded Cron: deliver a Cron push only to connections of its owner user.
+    # Single mode keeps the historical broadcast to every TUI client.
+    cron_owner_filter: bool = False
 
 
 class TuiChannel(BaseWsChannel):
@@ -117,6 +120,10 @@ class TuiChannel(BaseWsChannel):
             for ws_list in self._clients_by_key.values():
                 for w in ws_list:
                     if not getattr(w, "closed", False):
+                        if self.config.cron_owner_filter:
+                            owner = str(msg.payload.get("user_id") or "")
+                            if not owner or self._extract_ws_user_id(w) != owner:
+                                continue
                         clients.add(w)
             for w in clients:
                 self._enqueue_send(w, frame)

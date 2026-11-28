@@ -107,6 +107,10 @@ class RouteConfig:
     # 到该 Channel.send（按 delivery.ws_id 物理寻址）。None 表示该 route 无需委托
     # （如 acp 自带 _session_to_client 反查，web 有独立 WebChannel 不经此路径）。
     ws_channel: Any = None
+    # Route-scoped compatibility requests that are answered before forwarding
+    # and local handlers, without binding or selecting a Session. It returns
+    # True once it has replied; False leaves the frame on the regular path.
+    unbound_request_handler: Callable[..., Awaitable[bool]] | None = None
 
 
 def _acp_route_decision(route: RouteConfig, method: str) -> str | None:
@@ -1429,6 +1433,11 @@ class ProtocolRuntime(BaseWebChannel):
         session_key = self._client_route_key(route.channel_id, session_id) if explicit_session_id else None
 
         req_user_id = self._connection_user_id(ws)
+        if route.unbound_request_handler is not None and await route.unbound_request_handler(
+            ws, req_id, method, data.get("params"), data.get("timeout_ms"), req_user_id,
+        ):
+            return
+
         # Only foreground operations select the TUI window's Session. A target
         # ID on preview, rename, or lifecycle requests is not a selection. The one
         # exception is a reconnected window taking back the Session it dropped.

@@ -291,6 +291,48 @@ class AuthSessionStore:
                 return None
             return session
 
+    def matches_live_memory(
+        self, session_id: str, user_id: str, created_at: float,
+        *, expected_id_token: str | None = None,
+    ) -> bool | None:
+        """Check a Control commit without disk access or waiting for a store lock.
+
+        Blocking lookup/refresh must precede this check. None means the memory
+        view is busy; callers must fail closed rather than wait on the loop.
+        """
+        if not self._lock.acquire(blocking=False):
+            return None
+        try:
+            session = self._by_session.get(session_id)
+            return bool(
+                session is not None and session.user_id == user_id
+                and session.created_at == created_at and not self._is_stale(session)
+                and session.credential.id_token and not session.credential.is_expired()
+                and (expected_id_token is None or session.credential.id_token == expected_id_token)
+            )
+        finally:
+            self._lock.release()
+
+    def matches_identity_memory(
+        self, session_id: str, user_id: str, created_at: float,
+        *, expected_id_token: str | None = None,
+    ) -> bool | None:
+        """Check only stable identity, allowing logout of an expired token."""
+        if not self._lock.acquire(blocking=False):
+            return None
+        try:
+            session = self._by_session.get(session_id)
+            return bool(
+                session is not None
+                and session.user_id == user_id
+                and session.created_at == created_at
+                and self._by_user.get(user_id) == session_id
+                and (expected_id_token is None
+                     or session.credential.id_token == expected_id_token)
+            )
+        finally:
+            self._lock.release()
+
     def get_by_user(self, user_id: str) -> AuthSession | None:
         with self._lock:
             self._ensure_loaded()

@@ -35,7 +35,7 @@ from e2a.message import ReqMethod
 from agent_gateway.common.request_identity import apply_routing_metadata
 from agent_gateway.telemetry import bind_request_trace, current_request_trace, ensure_request_trace, start_request_trace
 from agent_gateway.trace_context import trace_context_from_headers
-from agent_gateway.routing.agent_client import DuplicateRequestIdError
+from agent_gateway.routing.agent_client import AgentCapabilityUnavailable, DuplicateRequestIdError
 from agent_gateway.routing.agent_request_timeout import (
     AGENT_SERVER_TIMEOUT_CODE,
     AGENT_SERVER_TIMEOUT_ERROR,
@@ -58,6 +58,20 @@ def _agent_unavailable(agent_client: Any) -> bool:
     if getattr(agent_client, "server_ready", True) is not False:
         return False
     return getattr(agent_client, "can_reconnect", False) is not True
+
+
+def _supports_capabilities(agent_client: Any) -> bool:
+    """Whether the client qualifies its live socket with connection.ack capabilities."""
+    return callable(getattr(agent_client, "advertises_capability", None))
+
+
+class ProxyResponseValidationError(ValueError):
+    """A fixed, public failure raised before a successful proxy reply."""
+
+    def __init__(self, code: str, error: str) -> None:
+        self.code = code
+        self.error = error
+        super().__init__(error)
 
 
 def _new_fetch_request_id() -> str:
@@ -158,6 +172,8 @@ async def proxy_unary_request(
     default_error_code: str = "BAD_REQUEST",
     metadata: dict[str, Any] | None = None,
     transform_payload: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    required_capability: str | None = None,
+    response_validator: Callable[[Any], Awaitable[None]] | None = None,
 ) -> bool:
     """向目标 AgentServer 发起一次 unary E2A 请求并按原外部协议返回。
 
@@ -181,6 +197,12 @@ async def proxy_unary_request(
         metadata: Gateway 提供的请求上下文，路由身份仍以入口解析结果为准。
         transform_payload: 仅在 AgentServer 成功应答时调用，用于在原应答上
             追加 Gateway 侧数据（如 Gateway 域扩展的设置声明）。
+        required_capability: Capability required on the actual southbound socket.
+            A socket that does not advertise it, or a client that cannot report
+            one, is answered ``UNSUPPORTED_DATA_PLANE`` without sending anything.
+        response_validator: Optional async gate applied to the complete successful
+            AgentResponse before maintenance callbacks or a channel reply.
+            Typed rejections produce a fixed failure; cancellation propagates.
 
     Returns:
         True 表示已向通道回写响应（调用方无需再 send_response）。
@@ -231,13 +253,24 @@ async def proxy_unary_request(
                 getattr(ws, "_web_routing", None),
             ),
         )
+        send_options = {}
+        if required_capability is not None:
+            send_options["required_capability"] = required_capability
         try:
+            if required_capability is not None and not _supports_capabilities(agent_client):
+                raise AgentCapabilityUnavailable()
             response = await send_agent_request_with_timeout(
                 agent_client,
                 env,
                 label=f"{label} {req_method.value}",
                 timeout_seconds=timeout_seconds,
+                **send_options,
             )
+        except AgentCapabilityUnavailable as exc:
+            if operation is not None:
+                operation.record_outcome("failed", reason="agent_capability_missing")
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="UNSUPPORTED_DATA_PLANE")
+            return True
         except AgentRequestTimeoutError:
             if operation is not None:
                 operation.record_outcome("timeout", reason="agent_timeout")
@@ -267,6 +300,25 @@ async def proxy_unary_request(
                 code=SERVICE_UNAVAILABLE_CODE,
             )
             return True
+
+        if response.ok and response_validator is not None:
+            try:
+                await response_validator(response)
+            except ProxyResponseValidationError as exc:
+                if operation is not None:
+                    operation.record_outcome("failed", reason="response_validation")
+                await channel.send_response(
+                    ws, req_id, ok=False, error=exc.error, code=exc.code,
+                )
+                return True
+            except Exception:
+                if operation is not None:
+                    operation.record_outcome("failed", reason="response_validation")
+                await channel.send_response(
+                    ws, req_id, ok=False, error="AgentServer response validation failed",
+                    code=SERVICE_UNAVAILABLE_CODE,
+                )
+                return True
 
         if operation is not None and not response.ok:
             operation.record_outcome("failed", reason="agent_response")
@@ -306,6 +358,7 @@ async def fetch_agent_unary(
     label: str = DEFAULT_PROXY_LABEL,
     timeout_seconds: float | None = None,
     metadata: dict[str, Any] | None = None,
+    required_capability: str | None = None,
 ) -> tuple[bool, dict[str, Any]]:
     """向目标 AgentServer 发起一次 unary E2A 请求，返回 ``(ok, payload)``。
 
@@ -313,12 +366,18 @@ async def fetch_agent_unary(
     需要消费 AgentServer 结果后自行决策的桥接场景（如 Git watch 快照计算）
     使用。目标 AgentServer 不可达/超时/失败时返回 ``(False, {error, code})``；
     失败 payload 自带整数 ``status`` 时一并转发。
+    ``required_capability`` 为空时保持既有行为；否则仅当南向 socket 的
+    ``connection.ack`` 声明了该能力才发送，未声明（或客户端无法报告能力）
+    时不发送并返回 ``(False, {error, code: UNSUPPORTED_DATA_PLANE})``，不向
+    轮询方或桥接调用方抛出异常。
     """
     if _agent_unavailable(agent_client):
         return False, {
             "error": "AgentServer is unavailable",
             "code": SERVICE_UNAVAILABLE_CODE,
         }
+    if required_capability is not None and not _supports_capabilities(agent_client):
+        return False, {"error": str(AgentCapabilityUnavailable()), "code": "UNSUPPORTED_DATA_PLANE"}
 
     response = None
     # request_id 撞号时请求尚未发出（拒绝发生在注册响应队列阶段），换号重试
@@ -341,8 +400,11 @@ async def fetch_agent_unary(
                 env,
                 label=f"{label} {req_method.value}",
                 timeout_seconds=timeout_seconds,
+                required_capability=required_capability,
             )
             break
+        except AgentCapabilityUnavailable as exc:
+            return False, {"error": str(exc), "code": "UNSUPPORTED_DATA_PLANE"}
         except AgentRequestTimeoutError:
             return False, {
                 "error": AGENT_SERVER_TIMEOUT_ERROR,

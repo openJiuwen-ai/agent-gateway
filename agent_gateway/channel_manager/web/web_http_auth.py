@@ -28,7 +28,8 @@ from __future__ import annotations
 
 import html
 import logging
-from typing import Annotated, Callable
+from collections.abc import Awaitable, Callable
+from typing import Annotated
 
 from fastapi import Body, FastAPI, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
@@ -175,6 +176,7 @@ def register_auth_routes(
     *,
     auth_service_provider: Callable[[], AuthService] | None = None,
     credential_update_sink: CredentialUpdateSink | None = None,
+    logout_callback: Callable[[str | None], Awaitable[None]] | None = None,
 ) -> None:
     from agent_gateway.auth.remote_config import warm_up_in_background
 
@@ -294,8 +296,13 @@ def register_auth_routes(
         rejected = _reject_without_auth_header(request)
         if rejected is not None:
             return rejected
-        service = await run_in_threadpool(service_provider)
         session_id = resolve_session_id(request)
+        if logout_callback is not None:
+            await logout_callback(session_id)
+            response = JSONResponse({"ok": True, "islogin": False})
+            response.delete_cookie(AUTH_SESSION_COOKIE, path="/")
+            return response
+        service = await run_in_threadpool(service_provider)
         # 先取账号再登出：句柄按账号算，会话删了就查不到是谁了
         session = await run_in_threadpool(service.resolve_session, session_id)
         await run_in_threadpool(service.logout, session_id)

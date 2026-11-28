@@ -10,6 +10,7 @@ from agent_gateway.southbound.data.websocket import (
     AGENT_REQUEST_TIMEOUT_SECONDS,
     AGENT_WS_MAX_MESSAGE_BYTES,
     AgentServerUnaryTimeout,
+    AgentCapabilityUnavailable,
     DuplicateRequestIdError,
     WebSocketConnection,
     _build_ws_origin,

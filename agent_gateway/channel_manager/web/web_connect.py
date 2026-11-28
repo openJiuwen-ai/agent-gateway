@@ -284,6 +284,9 @@ class WebChannelConfig:
     # the CPU cost outweighs the bandwidth saving, so it stays off by default.
     # Public-network deployments can re-enable it with WEB_WS_PERMESSAGE_DEFLATE=1.
     ws_permessage_deflate: bool = False
+    #: A Gateway that only caches Session activity asks the AgentServer before
+    #: a /ws/git turn mutation. Off by default; the single process keeps its cache.
+    require_git_activity_snapshot: bool = False
 
 
 class WebChannel(BaseWsChannel):
@@ -2401,12 +2404,16 @@ class WebChannel(BaseWsChannel):
         from agent_gateway.channel_manager.web.git_ws_handler import (
             GitDiffWebSocketHandler,
         )
-        handler = GitDiffWebSocketHandler(self, registry)
+        _app_id = flat_query.get("app_id") or "default"
+        handler = GitDiffWebSocketHandler(
+            self, registry,
+            require_activity_snapshot=self.config.require_git_activity_snapshot,
+            app_id=_app_id,
+        )
 
         connection_user_id, _user_id = self._resolve_ws_identity(
             ws, flat_query, remote,
         )
-        _app_id = flat_query.get("app_id") or "default"
         _rk = RoutingKey(
             user_id=_user_id,
             channel_id=self.channel_id,
