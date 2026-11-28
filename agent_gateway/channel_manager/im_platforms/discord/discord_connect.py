@@ -1,6 +1,5 @@
 """Discord channel implementation based on discord.py."""
 
-import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -13,6 +12,10 @@ from agent_gateway.channel_manager.base import (
     ChannelMetadata,
     RobotMessageRouter,
     is_web_only_telemetry_event,
+)
+from agent_gateway.channel_manager.im_platforms.inbound_dispatch import (
+    CallbackAwaitMode,
+    dispatch_inbound_message,
 )
 from agent_gateway.routing.keys import DeliveryTarget
 from agent_gateway.routing.session_sharing import RoutingTarget
@@ -220,12 +223,12 @@ class DiscordChannel(BaseChannel):
             },
         )
 
-        if self._on_message_cb is not None:
-            result = self._on_message_cb(req)
-            if asyncio.iscoroutine(result):
-                await result
-        else:
-            await self.bus.route_user_message(req)
+        await dispatch_inbound_message(
+            req,
+            router=self.bus,
+            callback=self._on_message_cb,
+            await_mode=CallbackAwaitMode.COROUTINE,
+        )
 
     def _extract_target_channel_id(self, msg: Message) -> int | None:
         meta = msg.metadata or {}

@@ -18,6 +18,10 @@ from agent_gateway.channel_manager.base import (
     RobotMessageRouter,
     is_web_only_telemetry_event,
 )
+from agent_gateway.channel_manager.im_platforms.inbound_dispatch import (
+    CallbackAwaitMode,
+    dispatch_inbound_message,
+)
 from agent_gateway.routing.keys import DeliveryTarget
 from agent_gateway.routing.session_sharing import RoutingTarget
 
@@ -388,12 +392,12 @@ class TelegramChannel(BaseChannel):
             )
 
             # 发送到 Gateway 或 Router
-            if self._on_message_cb:
-                result = self._on_message_cb(user_message)
-                if asyncio.iscoroutine(result):
-                    await result
-            else:
-                await self.bus.route_user_message(user_message)
+            await dispatch_inbound_message(
+                user_message,
+                router=self.bus,
+                callback=self._on_message_cb,
+                await_mode=CallbackAwaitMode.COROUTINE,
+            )
 
             logger.info(
                 f"Telegram message received: "

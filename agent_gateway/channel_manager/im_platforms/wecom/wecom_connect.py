@@ -26,6 +26,10 @@ from agent_gateway.channel_manager.base import (
 from agent_gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
 )
+from agent_gateway.channel_manager.im_platforms.inbound_dispatch import (
+    CallbackAwaitMode,
+    dispatch_inbound_message,
+)
 from agent_gateway.channel_manager.im_platforms.group_ack import (
     DEFAULT_GROUP_ACK,
     generate_group_ack_text,
@@ -768,10 +772,12 @@ class WecomChannel(BaseChannel):
                         enable_memory=self.config.enable_memory,
                         enable_streaming=False,
                     )
-                    if self._message_callback:
-                        self._message_callback(resume_msg)
-                    else:
-                        await self.bus.route_user_message(resume_msg)
+                    await dispatch_inbound_message(
+                        resume_msg,
+                        router=self.bus,
+                        callback=self._message_callback,
+                        await_mode=CallbackAwaitMode.NONE,
+                    )
                     return
 
         effective_group_digital_avatar = self.config.group_digital_avatar and is_group_chat
@@ -792,10 +798,12 @@ class WecomChannel(BaseChannel):
             enable_streaming=msg_enable_streaming,
         )
 
-        if self._message_callback:
-            self._message_callback(msg)
-        else:
-            await self.bus.route_user_message(msg)
+        await dispatch_inbound_message(
+            msg,
+            router=self.bus,
+            callback=self._message_callback,
+            await_mode=CallbackAwaitMode.NONE,
+        )
 
     async def _handle_incoming_message(self, frame: dict) -> None:
         """处理 SDK 收到的消息，转换为 jiuwenswarm Message 并分发。"""
@@ -1737,10 +1745,12 @@ class WecomChannel(BaseChannel):
             },
         )
 
-        if self._message_callback:
-            self._message_callback(msg)
-        else:
-            await self.bus.route_user_message(msg)
+        await dispatch_inbound_message(
+            msg,
+            router=self.bus,
+            callback=self._message_callback,
+            await_mode=CallbackAwaitMode.NONE,
+        )
 
     # ==================== 文件发送方法 ====================
 
