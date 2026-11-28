@@ -40,6 +40,41 @@ def _session_target_error(method: str, params: dict) -> str | None:
     return None
 
 
+def _lifecycle_item_pending(item: dict) -> bool:
+    return bool(
+        item.get("finalizing")
+        or item.get("stop_pending")
+        or (item.get("accepted") and item.get("finalizing") is not False)
+    )
+
+
+def _lifecycle_entry(entry) -> tuple | None:
+    """解析服务端 ``project.lifecycle`` 事件条目，畸形条目返回 None。
+
+    events 来自跨进程 RPC，字段可能缺失或类型不符（服务端版本 skew、字段更名）。
+    watch() 的轮询没有游标、异常只被 debug 级 except 捕获并整批放弃——单条畸形
+    条目若在这里打穿，其后全部合法事件会每 2 秒重复丢失（poison-pill），前端
+    表现为会话状态永久卡死且无 error 日志。所有字段读取集中在此处校验。
+    """
+    if not isinstance(entry, dict):
+        return None
+    event = entry.get("event")
+    payload = entry.get("payload")
+    if not isinstance(event, str) or not isinstance(payload, dict):
+        return None
+    resource_id = payload.get("resource_id")
+    revision = payload.get("revision")
+    if not isinstance(resource_id, str) or not resource_id:
+        return None
+    if isinstance(revision, bool) or not isinstance(revision, int):
+        return None
+    result = entry.get("result")
+    if not isinstance(result, dict):
+        result = {}
+    completed = bool(entry.get("completed")) and not _lifecycle_item_pending(result)
+    return event, payload, resource_id, revision, entry.get("kind"), completed, result
+
+
 def register_lifecycle_handlers(
     channel, resolve_client, resolve_cron, on_session_deleted=None, *, register_method=None,
     clients_for_user=None, session_event_clients=None, project_ids_for_client=None,
@@ -113,11 +148,16 @@ def register_lifecycle_handlers(
                     # lookup; otherwise the hook may answer from its cache.
                     client_projects = None
                     if project_ids_for_client is not None:
+                        parsed_events = [
+                            fields for fields in (
+                                _lifecycle_entry(item) for item in response.get("events", [])
+                            )
+                            if fields is not None
+                        ]
                         changed = any(
-                            item["event"].startswith("project.")
-                            and item["payload"]["revision"]
-                            > revisions.get((item["event"], item["payload"]["resource_id"]), -1)
-                            for item in response.get("events", [])
+                            fields[0].startswith("project.")
+                            and fields[3] > revisions.get((fields[0], fields[2]), -1)
+                            for fields in parsed_events
                         )
                         client_projects = list(zip(clients, await asyncio.gather(*(
                             project_ids_for_client(
@@ -126,30 +166,35 @@ def register_lifecycle_handlers(
                             for ws in clients
                         ))))
                         polled = clients
-                    for entry in response.get("events", []):
-                        payload = entry["payload"]
-                        key = (entry["event"], payload["resource_id"])
+                    else:
+                        parsed_events = [
+                            fields for fields in (
+                                _lifecycle_entry(item) for item in response.get("events", [])
+                            )
+                            if fields is not None
+                        ]
+                    for event, payload, resource_id, revision, kind, completed, result in parsed_events:
+                        key = (event, resource_id)
                         previous = revisions.get(key, -1)
-                        revisions[key] = payload["revision"]
-                        scoped_project = client_projects is not None and entry["event"].startswith("project.")
+                        revisions[key] = revision
+                        scoped_project = client_projects is not None and event.startswith("project.")
                         recipient_scoped = scoped_project or (
                             session_event_clients is not None
-                            and entry["event"].startswith("session.")
+                            and event.startswith("session.")
                             and payload.get("execution_blocked")
                         )
-                        if not recipient_scoped and payload["revision"] <= previous:
+                        if not recipient_scoped and revision <= previous:
                             continue
                         # Completion can precede stop/finalization cleanup.
-                        completed = entry["completed"] and not _lifecycle_item_pending(entry["result"])
-                        if completed and entry["kind"] in {"archive", "delete"} and payload["revision"] > previous:
-                            if entry["event"].startswith("session."):
-                                mark_sessions_idle([payload["resource_id"]])
+                        if completed and kind in {"archive", "delete"} and revision > previous:
+                            if event.startswith("session."):
+                                mark_sessions_idle([resource_id])
                         if first and not recipient_scoped:
                             continue
                         if scoped_project:
-                            recipients = [ws for ws, ids in client_projects if payload["project_id"] in ids]
-                        elif session_event_clients is not None and entry["event"].startswith("session."):
-                            recipients = session_event_clients(user_id, payload["resource_id"])
+                            recipients = [ws for ws, ids in client_projects if payload.get("project_id") in ids]
+                        elif session_event_clients is not None and event.startswith("session."):
+                            recipients = session_event_clients(user_id, resource_id)
                         else:
                             recipients = clients
                         for ws in recipients:
@@ -159,33 +204,40 @@ def register_lifecycle_handlers(
                             seen_ws, seen_revision = delivered.get((id(ws), *key), (None, -1))
                             if recipient_scoped and (
                                 getattr(ws, "_lifecycle_binding_generation", 0) != generation
-                                or (seen_ws is ws and payload["revision"] <= seen_revision)
+                                or (seen_ws is ws and revision <= seen_revision)
                             ):
                                 continue
-                            await channel.send_event(ws, entry["event"], payload)
+                            await channel.send_event(ws, event, payload)
                             # A rebind during the send voids this delivery; it retries next poll.
                             if recipient_scoped and getattr(ws, "_lifecycle_binding_generation", 0) != generation:
                                 continue
                             if completed and not (
-                                entry["kind"] == "delete"
-                                and entry["event"].startswith("project.")
-                                and not entry["result"].get("deleted")
+                                kind == "delete"
+                                and event.startswith("project.")
+                                and not result.get("deleted")
                             ):
                                 suffix = {
                                     "archive": "archived",
                                     "unarchive": "unarchived",
                                     "delete": "deleted",
-                                }[entry["kind"]]
+                                }.get(kind)
+                                if suffix is None:
+                                    # 服务端新增 completed 事件类型时不能 KeyError 打穿整批轮询
+                                    logging.getLogger(__name__).warning(
+                                        "lifecycle polling: unknown completed kind %r, skip completion notice",
+                                        kind,
+                                    )
+                                    break
                                 await channel.send_event(
                                     ws,
-                                    entry["event"].split(".")[0] + "." + suffix,
+                                    event.split(".")[0] + "." + suffix,
                                     {
-                                        **entry["result"],
-                                        "project_id": payload["project_id"],
+                                        **result,
+                                        "project_id": payload.get("project_id"),
                                     },
                                 )
                             if recipient_scoped:
-                                delivered[(id(ws), *key)] = (ws, payload["revision"])
+                                delivered[(id(ws), *key)] = (ws, revision)
                     first = False
             except DuplicateRequestIdError:
                 # request_id 撞号说明 id 生成器出了问题（或同一连接上请求串行
@@ -210,13 +262,6 @@ def register_lifecycle_handlers(
             )
 
     channel.ensure_lifecycle_watch = ensure_watch
-
-    def _lifecycle_item_pending(item: dict) -> bool:
-        return bool(
-            item.get("finalizing")
-            or item.get("stop_pending")
-            or (item.get("accepted") and item.get("finalizing") is not False)
-        )
 
     def _completed_session_ids(payload: dict) -> list[str]:
         results = payload.get("results")
