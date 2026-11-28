@@ -9,6 +9,8 @@ from types import SimpleNamespace
 import pytest
 from e2a.agent_models import AgentResponse
 from e2a.message import ReqMethod
+from websockets.exceptions import ConnectionClosedOK
+from websockets.frames import Close
 
 from agent_gateway.application.worker_cron_models import WorkerCronModelResolver
 
@@ -203,7 +205,8 @@ async def test_resolver_ignores_rows_with_empty_names_or_non_boolean_flags() -> 
         await resolver("bad-flag")
 
 
-async def test_resolver_sanitizes_failures_and_bounds_the_wait() -> None:
+async def test_resolver_sanitizes_failures_and_bounds_the_wait(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level("DEBUG")
     with pytest.raises(ValueError, match="Cron model catalog unavailable") as caught:
         await WorkerCronModelResolver(Client(ok=False))("config-model")
     assert "error" not in str(caught.value)
@@ -212,6 +215,7 @@ async def test_resolver_sanitizes_failures_and_bounds_the_wait() -> None:
     with pytest.raises(ValueError, match="Cron model catalog unavailable") as caught:
         await WorkerCronModelResolver(Client(error=secret_error))("config-model")
     assert "sk-live-secret" not in str(caught.value)
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
 
     for payload in (
         {"models": []},
@@ -225,6 +229,41 @@ async def test_resolver_sanitizes_failures_and_bounds_the_wait() -> None:
     async with asyncio.timeout(2):
         with pytest.raises(ValueError, match="Cron model catalog unavailable"):
             await WorkerCronModelResolver(Client(delay=5), timeout_seconds=0.01)("config-model")
+    assert "sk-live-secret" not in caplog.text
+
+
+async def test_resolver_does_not_log_peer_supplied_close_reason(caplog: pytest.LogCaptureFixture) -> None:
+    # websockets prints an AgentServer-chosen close reason verbatim, and the
+    # static client re-raises that raw cause instead of its sanitized wrapper.
+    close = ConnectionClosedOK(rcvd=Close(1000, "token=sk-live-secret-reason"), sent=None)
+    assert "sk-live-secret-reason" in str(close)
+    caplog.set_level("DEBUG")
+
+    with pytest.raises(ValueError, match="Cron model catalog unavailable") as caught:
+        await WorkerCronModelResolver(Client(error=close))("config-model")
+
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
+    assert "sk-live-secret-reason" not in caplog.text
+
+
+async def test_resolver_rejects_mismatched_or_non_response_replies() -> None:
+    class WrongClient(Client):
+        async def send_request(self, envelope):
+            self.requests.append(envelope)
+            return AgentResponse(request_id="another-request", channel_id=envelope.channel,
+                                 payload=self.payload)
+
+    class ObjectClient(Client):
+        async def send_request(self, envelope):
+            self.requests.append(envelope)
+            return {"ok": True, "payload": self.payload}
+
+    with pytest.raises(ValueError, match="Cron model catalog protocol error"):
+        await WorkerCronModelResolver(WrongClient())("config-model")
+    with pytest.raises(ValueError, match="Cron model catalog protocol error"):
+        await WorkerCronModelResolver(ObjectClient())("config-model")
+    with pytest.raises(ValueError, match="Cron model catalog unavailable"):
+        await WorkerCronModelResolver(None)("config-model")
 
 
 async def test_validate_job_accepts_unspecified_model_only_for_allowed_active_model() -> None:

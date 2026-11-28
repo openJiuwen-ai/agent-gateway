@@ -6,14 +6,18 @@ from __future__ import annotations
 
 import asyncio
 import math
+import time
 from typing import Any, Literal
+import uuid
 
+from e2a.agent_models import AgentResponse
+from e2a.gateway_normalize import e2a_from_agent_fields
 from e2a.message import ReqMethod
 
 from agent_gateway.auth.model_catalog import LOGIN_MODEL_SOURCE
 from agent_gateway.common.model_selection import ModelSelection
 from agent_gateway.common.request_identity import apply_routing_metadata, normalize_routing_identity
-from agent_gateway.routing.e2a_proxy import fetch_agent_unary
+from agent_gateway.routing.agent_request_timeout import send_agent_request_with_timeout
 
 CronModelSource = Literal["", "config", "zen"]
 _SUPPORTED_SOURCES = frozenset({"config", "zen"})
@@ -93,28 +97,52 @@ class WorkerCronModelResolver:
         return selection.model_dump()
 
     async def _request_catalog(self, user_id: str | None) -> dict[str, Any]:
-        """Read the target catalog once, bounded in time and sanitized on failure."""
+        """Read the target catalog once, bounded in time.
+
+        This call site deliberately bypasses the shared unary forward helper:
+        that helper logs the transport exception text, and a WebSocket close
+        carries an AgentServer-chosen reason verbatim. The request holds no
+        credential and the response holds model configuration, so neither the
+        exception nor its text is logged, chained or returned from here.
+        """
+        if self._agent_client is None:
+            raise ValueError("Cron model catalog unavailable")
         identity = normalize_routing_identity(
             {"user_id": user_id or "", "group_id": "", "bot_id": ""}
         )
+        envelope = e2a_from_agent_fields(
+            request_id=f"cron-models-{uuid.uuid4().hex}",
+            channel_id="web",
+            session_id=None,
+            req_method=ReqMethod.MODELS_LIST,
+            params={},
+            is_stream=False,
+            timestamp=time.time(),
+            user_id=user_id or None,
+            metadata=apply_routing_metadata(None, identity),
+        )
+        failed = False
         try:
             async with asyncio.timeout(self._timeout_seconds):
-                ok, payload = await fetch_agent_unary(
-                    agent_client=self._agent_client,
-                    req_method=ReqMethod.MODELS_LIST,
-                    params={},
-                    session_id=None,
-                    user_id=user_id,
-                    channel_id="web",
-                    metadata=apply_routing_metadata(None, identity),
-                    label="models.list",
+                response = await send_agent_request_with_timeout(
+                    self._agent_client, envelope, label="models.list",
                 )
         except Exception:
-            raise ValueError("Cron model catalog unavailable") from None
-        if not ok:
+            failed = True
+        # Raised outside ``except`` so the transport exception is not kept as
+        # implicit context either.
+        if failed:
             raise ValueError("Cron model catalog unavailable")
-        self._validate_payload(payload)
-        return payload
+        if (
+            not isinstance(response, AgentResponse)
+            or response.request_id != envelope.request_id
+            or response.channel_id != envelope.channel
+        ):
+            raise ValueError("Cron model catalog protocol error")
+        if not response.ok:
+            raise ValueError("Cron model catalog unavailable")
+        self._validate_payload(response.payload)
+        return response.payload
 
     @staticmethod
     def _validate_payload(payload: Any) -> None:
