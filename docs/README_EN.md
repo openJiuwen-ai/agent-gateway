@@ -19,6 +19,7 @@ This documentation covers installation, usage, reference, and design for Agent G
 
 | Document | Description |
 | --- | --- |
+| [AG-UI integration guide (Chinese)](zh/AG-UI.md) | Gateway setup, sessions, and application tools |
 | [local-validation](en/how-to/local-validation.md) | Full local validation steps, expected output, and troubleshooting |
 | [configure-channels](en/how-to/configure-channels.md) | Configure Feishu, DingTalk, WeCom, Telegram, Discord, Slack, and other IM channels |
 | [run-multiple-instances](en/how-to/run-multiple-instances.md) | Run multiple isolated Gateway + AgentServer instances on one host |
