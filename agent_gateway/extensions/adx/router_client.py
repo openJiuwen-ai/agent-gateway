@@ -7,6 +7,7 @@ import asyncio
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import aclosing
 from pathlib import Path
+from typing import Any
 
 from e2a.agent_models import AgentResponse, AgentResponseChunk
 from e2a.models import E2AEnvelope
@@ -114,6 +115,9 @@ class AdxRouterClient(AdxFileMixin, SouthboundAgentClient):
     def set_or_update_server_config(self, *, config: dict, env: dict | None = None) -> None:
         self._router.set_or_update_server_config(config=config, env=env)
         self._control.agent_idle_timeout_seconds = self._router._sandbox_idle_timeout_seconds
+
+    async def update_channel_config(self, channels: dict[str, Any]) -> bool:
+        return await self._router.update_channel_config(channels)
 
     async def send_request(self, envelope: E2AEnvelope, *, timeout: float | None = None) -> AgentResponse:
         if envelope.channel == HEALTH_CHECK_CHANNEL_ID:

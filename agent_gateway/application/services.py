@@ -406,7 +406,11 @@ async def assemble_services(
     # suppressing every later channel or terminating the Gateway.
     from agent_gateway.channel_manager.persistent_output import resolve_output_file
 
-    channel_manager = ChannelManager(message_handler, config={})
+    from agent_gateway.application.client_policies import select_im_attachment_guard
+
+    channel_manager = ChannelManager(
+        message_handler, config={}, im_attachment_guard=select_im_attachment_guard(client)
+    )
     channel_manager.set_persistent_output_file_resolver(resolve_output_file)
     # 回填引用：MessageHandler 实例化早于 ChannelManager，广播全局事件时需经它取 web channel。
     message_handler.set_channel_manager(channel_manager)

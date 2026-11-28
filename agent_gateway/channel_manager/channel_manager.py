@@ -93,8 +93,12 @@ class ChannelManager(ABC):
         message_handler: "MessageHandler",
         config: dict[str, Any] | None = None,
         on_config_updated: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+        *,
+        im_attachment_guard: Callable[[], None] | None = None,
     ) -> None:
         self._message_handler = message_handler
+        self._im_attachment_guard = im_attachment_guard
+        self._im_attachment_client = getattr(message_handler, "agent_client", None)
         set_delivery_handler = getattr(message_handler, "set_result_delivery_handler", None)
         if callable(set_delivery_handler):
             set_delivery_handler(self.deliver_persistent_result)
@@ -611,24 +615,12 @@ class ChannelManager(ABC):
         agent_client = getattr(self._message_handler, "agent_client", None)
         if agent_client is None:
             return
-        # IM AgentOS routing is explicitly deferred.  In particular, the
-        # attachment hook has no authenticated per-message user_id, so routing
-        # its HTTP/E2A upload by a Gateway-local default would target the wrong
-        # user.  Leave the existing single-user IM path untouched until the IM
-        # channel carries that route context end to end.
-        from agent_gateway.routing.e2a_proxy import is_agentos_routing_client
+        from agent_gateway.application.client_policies import select_im_attachment_guard
 
-        # IM 的 AgentOS 多用户路由尚未实现。绝不能让 FileService 因此回退到
-        # Gateway 的部署目录；安装一个明确失败的 hook，让上层返回可重试附件
-        # 错误，直至入站 IM 协议具备受认证的 user_id 路由键。
-        if is_agentos_routing_client(agent_client):
-            async def _agentos_route_required(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-                raise RuntimeError(
-                    "IM attachment routing requires an authenticated AgentOS user_id"
-                )
-
-            setter(_agentos_route_required)
-            return
+        # Bind the guard to the same client captured by the persistence hook.
+        guard = self._im_attachment_guard
+        if guard is None or agent_client is not self._im_attachment_client:
+            guard = select_im_attachment_guard(agent_client)
         # A1g：legacy 单用户也装真 hook（E2A IM_FILE_PERSIST 落 AgentServer
         # 注入目录，server 侧 docstring 明言"Gateway 不再直写"决策 D6）——
         # 本地回落仅为无 AgentServer 上下文的测试场景保留（hook 未注入时）。
@@ -642,6 +634,7 @@ class ChannelManager(ABC):
         ).strip("_") or "im"
 
         async def _persist_hook(content: Any, category: str, filename: str) -> dict[str, Any]:
+            guard()
             import base64 as _base64
 
             from e2a.message import ReqMethod

@@ -106,6 +106,8 @@ async def assemble_tui_acp(
     )
     await acp_inbound_server.start()
 
+    from agent_gateway.application.client_policies import select_harmonyos_local_execution
+
     route_bindings = [
         _build_acp_route_binding(
             path="/acp",
@@ -125,6 +127,7 @@ async def assemble_tui_acp(
                 cron_controller=cron_controller,
                 heartbeat_controller=heartbeat_controller,
                 ws_channel=tui_channel,
+                harmonyos_local_execution=select_harmonyos_local_execution(client),
             )
         ),
     ]

@@ -332,12 +332,12 @@ async def test_anonymous_refresh_restores_only_local_host_session(monkeypatch, m
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     client = SimpleNamespace(server_ready=True, send_request=AsyncMock(
         return_value=SimpleNamespace(ok=True, payload={})))
+    client.shared_directory_layout = local
     _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
     channel.send_response = AsyncMock()
     channel.on_message(lambda msg: None)
     fetch = AsyncMock(return_value=(found, {"mode": mode} if found else {}))
     monkeypatch.setattr(e2a_proxy, "fetch_agent_unary", fetch)
-    monkeypatch.setattr(e2a_proxy, "is_legacy_shared_directory_client", lambda ac: local)
     old = Socket()
     old._web_connection_user_id = None
     await channel.register_ws(old, route(mode, user=str(old.remote_address)))
@@ -378,6 +378,7 @@ async def test_pending_metadata_failure_never_uses_default_route(monkeypatch, lo
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     client = SimpleNamespace(server_ready=True, send_request=AsyncMock(
         return_value=SimpleNamespace(ok=True, payload={})))
+    client.shared_directory_layout = True
     _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
     channel.send_response = AsyncMock()
     ws = SimpleNamespace(_web_connection_user_id=None, _jiuwen_app_id="default")
@@ -391,7 +392,6 @@ async def test_pending_metadata_failure_never_uses_default_route(monkeypatch, lo
     if lookup == "exception":
         fetch.side_effect = TimeoutError()
     monkeypatch.setattr(e2a_proxy, "fetch_agent_unary", fetch)
-    monkeypatch.setattr(e2a_proxy, "is_legacy_shared_directory_client", lambda ac: True)
     await channel._method_handlers["a4p.authorization.pending"](ws, "rpc", {}, "s")
     if lookup != "code":
         client.send_request.assert_not_called()
@@ -449,6 +449,7 @@ async def test_pending_restores_host_identity_without_request_hint(monkeypatch, 
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     client = SimpleNamespace(server_ready=True, send_request=AsyncMock(
         return_value=SimpleNamespace(ok=True, payload={"pending": []})))
+    client.shared_directory_layout = False
     _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
     channel.send_response = AsyncMock()
     channel.on_message(lambda msg: None)
@@ -459,7 +460,6 @@ async def test_pending_restores_host_identity_without_request_hint(monkeypatch, 
         "agent_ref": {"mode": "agent.code.normal", "id": "special-coder"},
     }))
     monkeypatch.setattr(e2a_proxy, "fetch_agent_unary", fetch)
-    monkeypatch.setattr(e2a_proxy, "is_legacy_shared_directory_client", lambda ac: False)
     try:
         for mode in existing_routes:
             await channel.register_ws(ws, route(mode))
@@ -522,6 +522,7 @@ async def test_missing_agent_id_defaults_only_without_candidates(monkeypatch, id
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     client = SimpleNamespace(server_ready=True, send_request=AsyncMock(
         return_value=SimpleNamespace(ok=True, payload={})))
+    client.shared_directory_layout = True
     _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
     channel.send_response = AsyncMock()
     ws = Socket()
@@ -536,7 +537,6 @@ async def test_missing_agent_id_defaults_only_without_candidates(monkeypatch, id
     if host_id:
         meta["agent_id"] = host_id
     monkeypatch.setattr(e2a_proxy, "fetch_agent_unary", AsyncMock(return_value=(True, meta)))
-    monkeypatch.setattr(e2a_proxy, "is_legacy_shared_directory_client", lambda ac: True)
     await channel._method_handlers["a4p.authorization.pending"](ws, "rpc", {}, "s", user_id="alice")
     if expected is None:
         client.send_request.assert_not_called()
@@ -560,6 +560,7 @@ async def test_pending_uses_cached_mode_identity_before_default(monkeypatch, cac
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     client = SimpleNamespace(server_ready=True, send_request=AsyncMock(
         return_value=SimpleNamespace(ok=True, payload={})))
+    client.shared_directory_layout = True
     _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
     channel.send_response = AsyncMock()
     ws = Socket()
@@ -577,7 +578,6 @@ async def test_pending_uses_cached_mode_identity_before_default(monkeypatch, cac
     if host_id:
         meta["agent_id"] = host_id
     monkeypatch.setattr(e2a_proxy, "fetch_agent_unary", AsyncMock(return_value=(True, meta)))
-    monkeypatch.setattr(e2a_proxy, "is_legacy_shared_directory_client", lambda ac: True)
     await channel._method_handlers["a4p.authorization.pending"](ws, "rpc", {}, "s", user_id="alice")
     if expected is None:
         client.send_request.assert_not_called()

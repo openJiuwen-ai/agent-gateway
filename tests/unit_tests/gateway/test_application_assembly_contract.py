@@ -10,9 +10,39 @@ from pathlib import Path
 import subprocess
 import sys
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import ANY, AsyncMock, Mock
 
 import pytest
+
+
+@pytest.mark.parametrize(
+    "mode,shared,managed,owns_config",
+    [
+        ("websocket", True, False, True),
+        ("websocket", False, False, False),
+        ("runtime", False, False, True),
+        ("adx_router", False, True, False),
+    ],
+)
+def test_deployment_business_policies(mode, shared, managed, owns_config):
+    from agent_gateway.application.client_policies import (
+        select_harmonyos_local_execution,
+        select_web_handler_policies,
+    )
+
+    client = SimpleNamespace(
+        agent_client_mode=mode,
+        shared_directory_layout=shared,
+        managed_routing=managed,
+    )
+    policies = select_web_handler_policies(client)
+    assert policies.gateway_owns_config is owns_config
+    assert policies.native_file_picker is shared
+    assert policies.personal_cron_browser is shared
+    assert policies.inherit_cron_project is shared
+    assert policies.install_external_cli is shared
+    assert policies.restore_local_a4p_route is shared
+    assert select_harmonyos_local_execution(client) is shared
 
 
 @pytest.mark.parametrize('module', ['services', 'web', 'tui_acp', 'single', 'config_saved_effects'])
@@ -369,7 +399,8 @@ async def test_service_assembly_preserves_selection_storage_order_and_single_ins
         handler_factory.assert_called_once_with(
             value.client, session_login_bindings=value.session_login_bindings,
         )
-        cm_factory.assert_called_once_with(handler, config={})
+        cm_factory.assert_called_once_with(handler, config={}, im_attachment_guard=ANY)
+        cm_factory.call_args.kwargs["im_attachment_guard"]()
         handler.set_channel_manager.assert_called_once_with(cm)
         handler.set_inbound_pipeline.assert_called_once_with(inbound)
         handler.set_outbound_pipeline.assert_called_once_with(outbound)

@@ -412,6 +412,7 @@ class CliHandlersBindParams:
     # (project_id, session_id) -> awaitable, after a session is deleted or moved to another project;
     # AgentServer recomputes topic sources when the session leaves a project.
     on_session_left_project: Any = None
+    harmonyos_local_execution: bool | None = None
 
 
 @dataclass
@@ -430,6 +431,7 @@ class CliRouteBindParams:
     # 派发到 TuiChannel.send（按 delivery.ws_id 物理寻址）。
     ws_channel: Any = None
     on_session_left_project: Any = None
+    harmonyos_local_execution: bool | None = None
 
 
 @dataclass
@@ -541,6 +543,16 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
     heartbeat_controller_ref = bind.heartbeat_controller
     force_local_config = bind.force_local_config
     on_session_left_project = bind.on_session_left_project
+    from agent_gateway.application.client_policies import select_harmonyos_local_execution
+
+    harmonyos_local_execution = bind.harmonyos_local_execution
+    if harmonyos_local_execution is None and not isinstance(agent_client, dict):
+        harmonyos_local_execution = select_harmonyos_local_execution(agent_client)
+
+    def allow_harmonyos_local_execution(client: Any) -> bool:
+        if harmonyos_local_execution is not None:
+            return harmonyos_local_execution
+        return select_harmonyos_local_execution(client)
     from agent_gateway.routing.third_agent import get_unsupported_third_agent
 
     third_agent = bind.third_agent if bind.third_agent is not None else get_unsupported_third_agent()
@@ -1382,10 +1394,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 )
                 from e2a.message import ReqMethod
 
-                from agent_gateway.routing.e2a_proxy import (
-                    is_legacy_shared_directory_client,
-                )
-
                 pl: dict[str, Any] = {}
                 real_client = _resolve_agent_client(agent_client)
                 try:
@@ -1420,7 +1428,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                     # 执行（与迁移前行为一致）。远程/AgentOS client 不回退，
                     # 向上抛错。业务失败（AgentServer 已正常执行并返回
                     # ok=False）不走此回退，避免本地重复执行长时操作。
-                    if not is_legacy_shared_directory_client(real_client):
+                    if not allow_harmonyos_local_execution(real_client):
                         raise
                     logger.warning(
                         "[harmonyos.dev_init] E2A unavailable, fall back to local "
@@ -2695,6 +2703,7 @@ def build_cli_route_binding(bind: CliRouteBindParams) -> GatewayRouteBinding:
                 cron_controller=bind.cron_controller,
                 heartbeat_controller=bind.heartbeat_controller,
                 on_session_left_project=bind.on_session_left_project,
+                harmonyos_local_execution=bind.harmonyos_local_execution,
             )
         )
 
