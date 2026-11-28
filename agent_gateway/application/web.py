@@ -70,6 +70,7 @@ def assemble_web(
     auth_service_provider: Callable[[], AuthService] | None = None,
     credential_update_sink: CredentialUpdateSink | None = None,
     personal_settings: bool = False,
+    require_git_activity_snapshot: bool = False,
 ) -> tuple[Any, asyncio.Event]:
     from agent_gateway.channel_manager.protocol.web_proxy.web_proxy_listen import register_3rdagent_web_method
     from agent_gateway.channel_manager.web.app_web_handlers import (
@@ -87,6 +88,7 @@ def assemble_web(
         port=web_port,
         path=web_path,
         ws_permessage_deflate=web_ws_deflate,
+        require_git_activity_snapshot=require_git_activity_snapshot,
     )
     web_channel = WebChannel(
         web_config, _DummyBus(), agent_client=client,

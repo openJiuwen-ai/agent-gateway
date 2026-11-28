@@ -298,6 +298,7 @@ async def data_worker(
                 host="127.0.0.1", port=0, path="/ws", ws_permessage_deflate=False,
                 preprocessor=preprocessor, log_stage=lambda _stage: None,
                 personal_settings=personal_settings,
+                require_git_activity_snapshot=personal,
             )
             northbound.push_async_callback(web.stop)
             tui = await assemble_tui_acp(
