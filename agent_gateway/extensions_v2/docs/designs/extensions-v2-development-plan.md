@@ -7,7 +7,7 @@
 | 类型 | 开发计划 |
 | 编号作用域 | `EXTV2-GW-NN` |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/` |
-| 最近一次修订日期 | 2026-11-23 |
+| 最近一次修订日期 | 2026-11-28 |
 | 维护责任 | Gateway Extensions V2 模块维护者 |
 
 ## 1. 计划说明
@@ -36,6 +36,7 @@
 | EXTV2-GW-14 | 真实环境联调 | 在隔离实例中运行开发分支的 Gateway、AgentServer、`app_web` 与前端构建产物，安装主题背景插件与登录示例，用无头 Chromium 走完首次启动、设置、导入导出、登录前后与断线；联调中发现的缺陷就地修复 | [F_13](../features/F_13_application-settings-page.md)（D-08）、[F_12](../features/F_12_startup-gate-and-splash.md)（V-10） | [S_01](../specs/S_01_gateway-extension-runtime.md)、[S_10](../specs/S_10_application-settings.md) | `test_gateway_request.py`、`test_gateway_package_management.py`；前端 `test:webui-components`、`test:settings-panel` | Song Haoran | 已完成（A 档真实 Gateway 与 Web、B 档 Electron 开发模式通过；打包版与 Windows 由打包团队验证） |
 | EXTV2-GW-15 | 应用形态 | `application.presentation`、`ApplicationSurface`、受控会话桥接与透明窗口、蜜蜂 / 胶囊 / 会话终端示例 | [F_15](../features/F_15_application-presentation.md) | [S_11](../specs/S_11_application-presentation.md)、S_17（jiuwenswarm 仓 `jiuwenswarm/extensions_v2/docs/specs/S_17_webui-component-props.md`） | `test_gateway_application_presentation.py`；前端 `test:application-presentation`；`tests/electron/application_presentation.test.cjs` | 未登记 | 进行中（DMG 原生交互及录屏待验收，证据见 F_15） |
 | EXTV2-GW-16 | 外观部件叠加与主页品牌 | 外观拆为配色、标识、欢迎语、吉祥物四个部件，按安装顺序分层叠加；完整快照下行帧；声明槽位 `application.appearance` 与平台帧；候选提示的外观字段；门控中的外观准备与首帧记录；主页侧栏 Logo、标签图标与标题、欢迎语、吉祥物 | [F_16](../features/F_16_layered-appearance-and-brand.md) | [S_08](../specs/S_08_appearance.md)、[S_09](../specs/S_09_startup-splash.md) | `test_gateway_appearance.py`、`test_gateway_splash.py`；jiuwenswarm `test_app_web_splash_hint.py`；前端 `test:webui-runtime`、`test:webui-components`、`test:webui-contracts` | Song Haoran | 进行中（Gateway 与 jiuwenswarm 侧已实现并变基到 2026-11-24 的 develop，单测与构建通过，完整实例中主题插件验证通过；待提交评审，固定提交升级、Logo 示例包、双包与桌面版联调未完成） |
+| EXTV2-GW-17 | `gateway.handshake` 与鉴权扩展挂点 | 新增 `gateway.handshake`（P1）、`gateway.request` 的 `entry`/`routing`（P2/P3）、HTTP 业务分发触发点（P4）、V1/V2 握手合并与 verified 身份覆盖 | [F_17](../features/F_17_gateway-handshake.md)、[F_02](../features/F_02_gateway-request-and-auth-gate.md) 第 4.1、4.2 节 | [S_01](../specs/S_01_gateway-extension-runtime.md) | `test_gateway_auth_points.py`、`test_auth_demo_packages.py` | GuoRen868 | 已实现（单测通过） |
 
 ## 3. 依赖与开工条件
 
@@ -57,6 +58,7 @@ flowchart LR
     G7 --> G15["GW-15 应用形态"]
     G10 --> G16["GW-16 外观部件叠加与主页品牌"]
     G11 --> G16
+    G2 --> G17["GW-17 鉴权扩展挂点"]
 ```
 
 - GW-01 是其余条目的前置：事件类型必须在装配阶段先注册。
@@ -67,6 +69,7 @@ flowchart LR
 - GW-07～GW-13 的整体设计见[应用级界面能力设计概览](application-surfaces-overview.md)；GW-07 是其余条目的前置，使不带浏览器请求绑定的应用级 UI 包也能取得交互、素材与激活代次。
 - GW-15 复用 GW-07 的可信声明、素材和释放通知；会话动作仍由 Web Client 的原有入口执行，Electron 只拥有窗口。
 - GW-16 修改 GW-10 的提供者规则与 GW-11 的门控；Gateway 侧与 jiuwenswarm 前端的帧格式须在同一次 agent-gateway 固定提交升级中交付（F_16 第 7 节）。
+- GW-17 复用 GW-01 的装配与 GW-02 的 `gateway.request` 事件链，不新增事件总线机制；只覆盖 Web WS 与 Web HTTP，AG-UI 入口不在 P4 范围内（F_17 第 7 节）。
 
 ## 4. 验证要求
 
@@ -88,6 +91,7 @@ flowchart LR
 | GW-14 | 真实 WebChannel 往返（平台帧、外观、背景、开场、设置页、导入导出经 `app_web`）；登录插件存在时登录前后的完整流程；断线后连接状态被清理；同版本卸载重装后执行新代码；与正在使用的 WorkSwarm 隔离（数据、家目录、worker 套接字、端口） |
 | GW-15 | 同包沙箱、当前窗口代次、请求去重、明确的完整会话目标、草稿与发送回执、失效目标拒绝、并行工具状态、原生窗口恢复；真实 DMG 安装、三形态、模型与工具交互、卸载和视频 |
 | GW-16 | 部件校验两端一致（含旧写法）；两包不同部件同时生效、同部件按安装顺序叠加、上层撤回或释放后下层露出、结果与提交先后无关；释放时 `revision` 不复用；声明槽位平台帧在请求策略拒绝一切时仍到达各包；候选提示；门控外观准备的三条路径、每次打开均执行与 3 秒时限；首帧与标签记录；主页四处显示与加载失败回退；隔离实例中主题插件与 Logo 示例同时生效且打开、刷新不闪默认品牌（F_16 第 8 节） |
+| GW-17 | P1 放行/拒绝/无意见与 V1 叠加顺序、`bind_connection_identity` 绑定条件；P2/P3 的 `entry`/`routing` 不含 `user_id` 且不取自 `params`；P4 `consume`/`deny` 合成帧、`local`/异常回落原生、仅 `verified` 覆盖 `X-User-Id`；两个演示包经真实 loader 端到端加载（F_17 第 6 节、F_02 第 4.1/4.2 节） |
 
 单元测试统一位于 `tests/unit_tests/gateway/extensions_v2/`。
 
@@ -135,6 +139,7 @@ flowchart LR
 | 2026-11-23 | GW-16 | 欢迎语增加品牌名高亮色 `welcome.highlight`（产品确认，F_16 D-13）：两端校验与共享用例、前端按页面底色保证 3:1 对比度。Gateway 外观用例 114 项、前端 components 436 项通过 |
 | 2026-11-23 | GW-16 | 欢迎语增加 `highlightScope`（`brand` 缺省、`line` 整句着色；产品追加，F_16 D-13 修订）：两端校验与 5 条新共享用例、前端后半句使用同样的颜色或渐变。Gateway 外观用例 119 项、前端 components 441 项通过，`tsc` 0 错误 |
 | 2026-11-24 | GW-16 | 两侧变基到当日 develop（agent-gateway `764cff7a`、jiuwenswarm `040357f`），无冲突：Gateway 扩展用例 816、`app_web` 16 项通过，前端 10 组 WebUI 套件、`tsc` 与 `npm run build` 通过；真实 AgentServer 的完整实例中主题壁纸插件 2.2.1 验证通过（F_16 第 8.2 节）。登录页与连接授权弹窗的 Logo、PNG 标签图标纳入本条目（F_16 D-12 修订） |
+| 2026-11-28 | GW-17 | 建立 `gateway.handshake` 条目：新增握手挂点（P1）、`gateway.request` 的 `entry`/`routing`、P3 字段补齐与 HTTP 业务分发（P4），契约写入 S_01，证据见 F_17 与 F_02 第 4.1/4.2 节。新增单测 32 项，`upstream/develop@02905b96e` 上联合回归 223 项通过；AG-UI 入口不在 P4 范围 |
 
 ### 2026-11-07 渲染与上传生命周期回归记录
 

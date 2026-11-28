@@ -16,6 +16,8 @@ from types import MappingProxyType
 from typing import Any
 
 EVENT_GATEWAY_REQUEST = "gateway.request"
+#: One Upgrade attempt, before ``accept()``: allow, deny or keep the V1 decision.
+EVENT_GATEWAY_HANDSHAKE = "gateway.handshake"
 EVENT_UI_RENDER = "ui.render"
 EVENT_GATEWAY_DISCONNECT = "gateway.disconnect"
 #: Host actions a package asks for through Ops; each runs as its own chain with a CORE default.
@@ -87,6 +89,38 @@ class GatewayRequestInput:
     transport: str = "websocket"
     path: str = ""
     request_id: str = ""
+    #: Trusted routing scope cached at connect time (``group_id``/``bot_id``/``gateway_id``).
+    #: Never derived from ``params``: ``chat.send``'s ``group_id`` is a session id.
+    routing: Mapping[str, str] = field(default_factory=_empty_headers)
+    #: Which trigger point raised the event: ``ws_frame`` / ``http_pre_route`` / ``http_dispatch``.
+    entry: str = "ws_frame"
+
+
+@dataclass(frozen=True, slots=True)
+class GatewayHandshakeInput:
+    """One Upgrade attempt, carrying the real transport facts (before ``accept()``)."""
+
+    path: str = ""
+    headers: Mapping[str, str] = field(default_factory=_empty_headers)
+    query: Mapping[str, str] = field(default_factory=_empty_headers)
+    remote_addr: str = ""
+    channel_id: str = "web"
+    transport: str = "websocket"
+
+
+@dataclass(frozen=True, slots=True)
+class GatewayHandshakeOutput:
+    """Handshake decision: no opinion by default so the V1 hook still decides."""
+
+    handled: bool = False
+    #: Deny by default: a handler that claims the handshake without ``allow=True``
+    #: must not accidentally accept the connection.
+    allow: bool = False
+    user_id: str | None = None
+    extensions: Mapping[str, Any] = field(default_factory=_empty_mapping)
+    #: When True and ``user_id`` is set, the caller binds it as the connection identity.
+    bind_connection_identity: bool = False
+    error: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +140,10 @@ class GatewayRequestOutput:
     response: Mapping[str, Any] | None = None
     error: Mapping[str, Any] | None = None
     meta: Mapping[str, Any] | None = None
+    #: Verified principal a handler returns for the HTTP business dispatch point.
+    user_id: str | None = None
+    #: ``verified`` lets the dispatcher overwrite ``X-User-Id``; anything else keeps ``client_trust``.
+    identity_source: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

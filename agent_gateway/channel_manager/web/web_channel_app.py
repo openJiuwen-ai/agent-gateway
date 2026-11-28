@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, WebSocket
@@ -23,6 +24,7 @@ from agent_gateway.extensions.application_host import (
 
 if TYPE_CHECKING:
     from agent_gateway.channel_manager.web.web_connect import WebChannel
+    from agent_gateway.extensions_v2.models import GatewayHandshakeOutput
 
 logger = logging.getLogger(__name__)
 
@@ -250,14 +252,92 @@ def _websocket_handshake_path(websocket: WebSocket) -> str:
     return f"{path}?{query}" if query else path
 
 
+# Credentials and identity inputs read by V1 and the extension runtime must have a
+# single authoritative value. The HTTP acceptor rejects duplicates for the same
+# headers; the Upgrade path does the same so V1 and V2 cannot disagree.
+_SINGLE_VALUE_HANDSHAKE_HEADERS = frozenset({
+    "authorization", "x-token", "x-user-id", "x-auth-session",
+    "x-group-id", "x-bot-id", "x-gateway-id",
+})
+
+
+def _duplicated_single_value_header(headers: Any) -> str | None:
+    """Return the first duplicated credential/identity header name, if any."""
+
+    items = getattr(headers, "items", None)
+    if not callable(items):
+        return None
+    seen: set[str] = set()
+    try:
+        pairs = list(items())
+    except Exception:  # noqa: BLE001 - unreadable headers fall back to V1
+        return None
+    for name, _value in pairs:
+        if not isinstance(name, str):
+            continue
+        key = name.strip().lower()
+        if key not in _SINGLE_VALUE_HANDSHAKE_HEADERS:
+            continue
+        if key in seen:
+            return key
+        seen.add(key)
+    return None
+
+
+async def _gateway_handshake_decision(
+    channel: WebChannel, websocket: WebSocket, path: str, remote: str
+) -> GatewayHandshakeOutput | None:
+    """Ask ``gateway.handshake`` for an opinion; ``None`` means "no V2 opinion"."""
+
+    try:
+        from agent_gateway.extensions_v2 import authenticate_gateway_handshake
+        from agent_gateway.extensions_v2.models import GatewayHandshakeOutput
+    except Exception:  # noqa: BLE001 - extensions unavailable keeps the V1 path
+        return None
+    duplicated = _duplicated_single_value_header(websocket.headers)
+    if duplicated:
+        logger.warning(
+            "WebChannel 握手拒绝 path=%s reason=duplicated-header name=%s",
+            path,
+            duplicated,
+        )
+        return GatewayHandshakeOutput(
+            handled=True,
+            allow=False,
+            error={"code": "DUPLICATE_HEADER", "message": f"duplicate {duplicated} header"},
+        )
+    try:
+        query = {str(key): str(value) for key, value in dict(websocket.query_params).items()}
+    except Exception:  # noqa: BLE001 - a malformed query means no query facts
+        query = {}
+    try:
+        start = getattr(channel, "start_extensions", None)
+        if callable(start):
+            await start()
+        decision = await authenticate_gateway_handshake(
+            channel,
+            path=path,
+            headers=websocket.headers,
+            query=query,
+            remote_addr=remote,
+            channel_id="web",
+            transport="websocket",
+        )
+    except Exception:  # noqa: BLE001 - handshake must fall back to V1
+        return None
+    return decision if isinstance(decision, GatewayHandshakeOutput) else None
+
+
 async def _reject_unauthorized_handshake(
     channel: WebChannel, websocket: WebSocket
 ) -> tuple[bool, str | None, str | None]:
     """Reject unauthorized Upgrades and retain the authenticated user identity.
 
-    Returns ``(denied, authenticated_user_id, verified_user_id)``. The last is
-    the declared user the handshake bound to the token (empty when nothing was
-    declared), or None when no check ran (no hook, or IAM off).
+    Returns ``(denied, authenticated_user_id, verified_user_id)``. ``gateway.handshake``
+    (V2) runs first; its ``deny`` short-circuits, an ``allow`` still runs the V1
+    hook as a second gate while a **bound** V2 identity wins, and "no opinion"/
+    failure keeps the V1-only behaviour. The last tuple item is the declared user
+    the handshake bound to the token, or None when no check ran.
     """
     remote = ""
     client = getattr(websocket, "client", None)
@@ -265,20 +345,64 @@ async def _reject_unauthorized_handshake(
         host = getattr(client, "host", "") or ""
         port = getattr(client, "port", "")
         remote = f"{host}:{port}" if host else ""
+    path = _websocket_handshake_path(websocket)
+    decision = await _gateway_handshake_decision(channel, websocket, path, remote)
+    if decision is not None and decision.handled and not bool(decision.allow):
+        error = decision.error if isinstance(decision.error, Mapping) else {}
+        logger.warning(
+            "WebChannel 握手拒绝 path=%s reason=unauthorized code=%s message=%s",
+            websocket.url.path,
+            error.get("code", ""),
+            error.get("message", ""),
+        )
+        await websocket.send_denial_response(
+            PlainTextResponse(_UNAUTHORIZED_BODY, status_code=401),
+        )
+        return True, None, None
+
+    v2_allowed = decision is not None and decision.handled and bool(decision.allow)
+    v2_verified: str | None = None
+    if v2_allowed:
+        v2_user = str(decision.user_id or "").strip()
+        # 未声明 bind_connection_identity 时 user_id 仅供扩展链观察，不能写入
+        # 适配器身份字段（authenticated_user_id 参与后续授权判定），避免隐式提权。
+        if v2_user and decision.bind_connection_identity:
+            v2_verified = v2_user
+
     result = await channel.authenticate_handshake(
-        path=_websocket_handshake_path(websocket),
+        path=path,
         headers=websocket.headers,
         remote=remote,
         channel="web",
     )
     if result is None:
+        if v2_verified:
+            return False, v2_verified, v2_verified
         return False, None, None
     if bool(getattr(result, "success", True)):
         extensions = getattr(result, "extensions", None)
         verified = extensions.get("connection_user_id") if isinstance(extensions, dict) else None
+        authenticated = str(getattr(result, "user_id", "") or "").strip()
+        if v2_verified:
+            if authenticated and authenticated != v2_verified:
+                logger.warning(
+                    "WebChannel 握手身份不一致 path=%s v1_authenticated=%s v2_bound=%s",
+                    websocket.url.path,
+                    authenticated,
+                    v2_verified,
+                )
+            if isinstance(verified, str) and verified and verified != v2_verified:
+                logger.warning(
+                    "WebChannel 握手身份不一致 path=%s v1_verified=%s v2_bound=%s",
+                    websocket.url.path,
+                    verified,
+                    v2_verified,
+                )
+            authenticated = v2_verified
+            verified = v2_verified
         return (
             False,
-            str(getattr(result, "user_id", "") or "").strip(),
+            authenticated,
             verified if isinstance(verified, str) else None,
         )
     logger.warning(

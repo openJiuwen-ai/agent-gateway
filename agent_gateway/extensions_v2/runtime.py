@@ -52,9 +52,12 @@ from agent_gateway.extensions_v2.config import GatewayExtensionConfig
 from agent_gateway.extensions_v2.loader import LoadedPackage, load_gateway_packages, release_package_modules
 from agent_gateway.extensions_v2.registry import HandlerDeclaration
 from agent_gateway.extensions_v2.models import (
+    EVENT_GATEWAY_HANDSHAKE,
     EVENT_GATEWAY_REQUEST,
     EVENT_GATEWAY_DISCONNECT,
     GatewayDisconnectInput,
+    GatewayHandshakeInput,
+    GatewayHandshakeOutput,
     GatewayRequestInput,
     GatewayRequestOutput,
     GatewayRoute,
@@ -75,6 +78,11 @@ if TYPE_CHECKING:
     from agent_gateway.extensions_v2.management.install_state import ExtensionInstallState
 
 logger = logging.getLogger(__name__)
+
+
+class GatewayHttpDenyInjectionError(RuntimeError):
+    """A denied HTTP request could not be answered; the caller must fail the request."""
+
 
 #: A frame must never be blocked by an extension for longer than this.
 REQUEST_TIMEOUT_S = 5.0
@@ -701,6 +709,65 @@ class GatewayRuntime:
             return []
         return [declaration.event_type for declaration in activation.package.handlers]
 
+    # ── trigger point: gateway.handshake ──────────────────────────────────
+
+    async def handshake(
+        self,
+        *,
+        path: str,
+        headers: Mapping[str, str] | None = None,
+        query: Mapping[str, str] | None = None,
+        remote_addr: str = "",
+        channel_id: str | None = None,
+        transport: str = "websocket",
+    ) -> GatewayHandshakeOutput | None:
+        """Run one Upgrade attempt through ``gateway.handshake``.
+
+        Returns the decision, or ``None`` when no USER handler takes an
+        opinion (or the chain fails). ``None`` means the caller keeps the V1
+        hook path, never "allow" on its own.
+        """
+
+        if not self.active:
+            return None
+        request = GatewayHandshakeInput(
+            path=path,
+            headers=_normalized_headers(headers),
+            query=_text_mapping(query),
+            remote_addr=remote_addr,
+            channel_id=channel_id or self._channel_id(),
+            transport=transport,
+        )
+        try:
+            result = await asyncio.wait_for(
+                self.bus.trigger(
+                    Event(EVENT_GATEWAY_HANDSHAKE, request),
+                    SessionContext(
+                        gateway_session_id("handshake"),
+                        None,
+                        {
+                            "channel_id": request.channel_id,
+                            "transport": request.transport,
+                            "entry": "handshake",
+                        },
+                    ),
+                ),
+                timeout=REQUEST_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[GatewayExtensions] gateway.handshake timed out after %.1fs: channel=%s",
+                REQUEST_TIMEOUT_S,
+                request.channel_id,
+            )
+            return None
+        except Exception as exc:  # noqa: BLE001 - a broken chain falls back to V1
+            logger.warning("[GatewayExtensions] gateway.handshake failed: %s", exc)
+            return None
+        if not isinstance(result, GatewayHandshakeOutput):
+            return None
+        return result
+
     # ── trigger point: gateway.request ────────────────────────────────────
 
     async def intercept(
@@ -741,6 +808,8 @@ class GatewayRuntime:
             headers=_normalized_headers(headers if headers is not None else (request_context or {}).get("headers")),
             request_context=MappingProxyType(dict(request_context or {})),
             request_id=req_id,
+            routing=self._routing_identity(ws),
+            entry="ws_frame",
         )
         if platform:
             # Host lifecycle frames carry no user input and bypass request policy (S_09).
@@ -793,6 +862,141 @@ class GatewayRuntime:
             return True, params
         await self._answer_locally(ws, req_id, request)
         return True, params
+
+    async def intercept_http(
+        self,
+        *,
+        method: str,
+        params: Mapping[str, Any],
+        headers: Mapping[str, str] | None = None,
+        session_id: str | None = None,
+        request_id: str = "",
+        routing: Mapping[str, str] | None = None,
+        user_id: str | None = None,
+        connection_id: str = "",
+        channel_id: str = "web",
+        outbound: Any = None,
+    ) -> tuple[bool, dict[str, Any], str | None]:
+        """Run one HTTP business dispatch through ``gateway.request`` (P4).
+
+        Returns ``(handled, params, verified_user_id)``. ``handled=True`` means
+        a synthetic response frame was injected into ``outbound`` and the
+        native dispatch must be skipped. ``verified_user_id`` is set only when
+        the handler returns ``identity_source="verified"`` and a non-empty
+        principal; the dispatcher then overwrites ``X-User-Id``.
+        """
+
+        if not self.active:
+            return False, dict(params), None
+        request = GatewayRequestInput(
+            method=method,
+            params=MappingProxyType(dict(params)),
+            session_id=session_id or _session_of(params),
+            connection_id=connection_id,
+            user_id=user_id,
+            channel_id=channel_id or "web",
+            headers=_normalized_headers(headers),
+            transport="http",
+            request_id=request_id,
+            routing=_routing_mapping(routing),
+            entry="http_dispatch",
+        )
+        try:
+            result = await asyncio.wait_for(
+                self.bus.trigger(
+                    Event(EVENT_GATEWAY_REQUEST, request),
+                    self._session_context(request),
+                ),
+                timeout=REQUEST_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[GatewayExtensions] gateway.request (http_dispatch) timed out after %.1fs: method=%s",
+                REQUEST_TIMEOUT_S,
+                method,
+            )
+            return False, dict(params), None
+        except Exception as exc:  # noqa: BLE001 - HTTP falls back to the native path
+            logger.warning("[GatewayExtensions] gateway.request (http_dispatch) failed: method=%s err=%s", method, exc)
+            return False, dict(params), None
+        return self._apply_http(outbound, request_id, request, result)
+
+    def _apply_http(
+        self,
+        outbound: Any,
+        request_id: str,
+        request: GatewayRequestInput,
+        result: object,
+    ) -> tuple[bool, dict[str, Any], str | None]:
+        params = dict(request.params)
+        if not isinstance(result, GatewayRequestOutput):
+            return False, params, None
+        route = GatewayRoute.parse(result.route)
+        if route is None or route is GatewayRoute.FORWARD:
+            forwarded = dict(result.params) if isinstance(result.params, Mapping) else params
+            return False, forwarded, _verified_identity(result)
+        if route is GatewayRoute.CONSUME:
+            injected = self._inject_http_frame(
+                outbound, request_id=request_id, ok=True, payload=result.response,
+            )
+            return injected, params, None
+        if route is GatewayRoute.DENY:
+            injected = self._inject_http_frame(
+                outbound, request_id=request_id, ok=False, error=result.error,
+            )
+            if not injected:
+                # A denied request must never fall through to the native handler.
+                logger.error(
+                    "[GatewayExtensions] cannot answer denied http_dispatch request: method=%s request_id=%s",
+                    request.method,
+                    request_id,
+                )
+                raise GatewayHttpDenyInjectionError(
+                    f"cannot answer denied http_dispatch request: method={request.method} request_id={request_id}",
+                )
+            return True, params, None
+        # ``local`` has no HTTP native equivalent; keep the native dispatch.
+        return False, params, None
+
+    @staticmethod
+    def _inject_http_frame(
+        outbound: Any,
+        *,
+        request_id: str,
+        ok: bool,
+        payload: Mapping[str, Any] | None = None,
+        error: Mapping[str, Any] | None = None,
+    ) -> bool:
+        """Write the synthetic ``res`` frame; ``False`` means the native path must run."""
+
+        accept = getattr(outbound, "accept_frame", None)
+        if not callable(accept):
+            return False
+        code: str | None = None
+        message: str | None = None
+        if isinstance(error, Mapping):
+            raw_code = error.get("code")
+            if isinstance(raw_code, str) and raw_code:
+                code = raw_code
+            raw_message = error.get("message")
+            if isinstance(raw_message, str) and raw_message:
+                message = raw_message
+        frame: dict[str, Any] = {
+            "type": "res",
+            "id": request_id,
+            "ok": ok,
+            "payload": dict(payload or {}),
+        }
+        if not ok:
+            frame["error"] = message or "request failed"
+            if code:
+                frame["code"] = code
+        try:
+            accepted = accept(frame)
+        except Exception as exc:  # noqa: BLE001 - a broken outbound must not break the frame
+            logger.warning("[GatewayExtensions] cannot inject http_dispatch response: %s", exc)
+            return False
+        return accepted is not False
 
     async def _answer_locally(
         self,
@@ -884,6 +1088,17 @@ class GatewayRuntime:
     def _channel_id(self) -> str:
         return str(getattr(self.channel, "channel_id", "web") or "web")
 
+    def _routing_identity(self, ws: Any) -> Mapping[str, str]:
+        """Read the trusted routing scope cached at connect time."""
+
+        resolve = getattr(self.channel, "routing_identity", None)
+        if callable(resolve):
+            try:
+                return _routing_mapping(resolve(ws))
+            except Exception as exc:  # noqa: BLE001 - missing routing must not break the frame
+                logger.warning("[GatewayExtensions] cannot read connection routing: %s", exc)
+        return _routing_mapping(getattr(ws, "_web_routing", None))
+
     @staticmethod
     def _session_context(request: GatewayRequestInput) -> SessionContext:
         metadata: dict[str, object] = {
@@ -891,11 +1106,15 @@ class GatewayRuntime:
             "channel_id": request.channel_id,
             "method": request.method,
             "request_id": request.request_id,
+            "transport": request.transport,
+            "entry": request.entry,
         }
         if request.user_id:
             metadata["user_id"] = request.user_id
         if request.session_id:
             metadata["session_id"] = request.session_id
+        if request.routing:
+            metadata["routing"] = dict(request.routing)
         return SessionContext(gateway_session_id(request.connection_id), None, metadata)
 
 
@@ -906,16 +1125,60 @@ def _session_of(params: Mapping[str, Any]) -> str | None:
     return None
 
 
-def _normalized_headers(headers: Mapping[str, str] | None) -> Mapping[str, str]:
-    """Lower-case header names so lookups stay case-insensitive."""
+def _normalized_headers(headers: Any) -> Mapping[str, str]:
+    """Lower-case header names so lookups stay case-insensitive.
 
-    if not isinstance(headers, Mapping):
+    Accepts any multi-dict with ``items()`` (Starlette ``Headers`` is not a
+    ``Mapping`` on every supported version).
+    """
+
+    items = getattr(headers, "items", None)
+    if not callable(items):
         return MappingProxyType({})
     normalized: dict[str, str] = {}
-    for name, value in headers.items():
+    for name, value in items():
         if isinstance(name, str) and isinstance(value, str):
             normalized[name.strip().lower()] = value
     return MappingProxyType(normalized)
+
+
+def _text_mapping(values: Any) -> Mapping[str, str]:
+    """Freeze a query mapping, keeping only text keys and values."""
+
+    items = getattr(values, "items", None)
+    if not callable(items):
+        return MappingProxyType({})
+    cleaned = {str(key): str(value) for key, value in items() if value is not None}
+    return MappingProxyType(cleaned)
+
+
+#: Routing dimensions that describe the tenant scope; ``user_id`` has its own field.
+_ROUTING_FIELDS = ("group_id", "bot_id", "gateway_id")
+
+
+def _routing_mapping(routing: Any) -> Mapping[str, str]:
+    """Keep only the trusted routing fields, dropping ``user_id`` and empty values."""
+
+    if not isinstance(routing, Mapping):
+        return MappingProxyType({})
+    cleaned: dict[str, str] = {}
+    for field in _ROUTING_FIELDS:
+        value = routing.get(field)
+        text = value.strip() if isinstance(value, str) else ""
+        if text:
+            cleaned[field] = text
+    return MappingProxyType(cleaned)
+
+
+def _verified_identity(result: GatewayRequestOutput) -> str | None:
+    """Return the principal a handler verified, or None to keep ``client_trust``."""
+
+    source = str(result.identity_source or "").strip().lower()
+    if source != "verified":
+        return None
+    value = result.user_id
+    text = str(value).strip() if value is not None else ""
+    return text or None
 
 
 @dataclass(frozen=True, eq=False)

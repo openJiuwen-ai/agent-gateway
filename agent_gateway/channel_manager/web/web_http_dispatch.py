@@ -90,6 +90,41 @@ def resolve_http_routing_identity(headers: Any, client_host: str | None) -> dict
     })
 
 
+async def _intercept_http_dispatch(
+    *,
+    channel: Any,
+    method: str,
+    params: dict[str, Any],
+    hdrs: dict[str, str],
+    session_id: str,
+    req_id: str,
+    routing: dict[str, str],
+    user_id: str | None,
+    outbound: Any,
+    channel_id: str,
+) -> tuple[bool, dict[str, Any], str | None]:
+    """Run the P4 trigger point; extensions unavailable falls back to the native path."""
+
+    try:
+        from agent_gateway.extensions_v2 import intercept_gateway_http
+    except Exception:  # noqa: BLE001 - extension support is optional
+        logger.debug("[WebHTTP] extensions unavailable", exc_info=True)
+        return False, params, None
+    return await intercept_gateway_http(
+        channel=channel,
+        method=method,
+        params=params,
+        headers=hdrs,
+        session_id=session_id,
+        request_id=req_id,
+        routing=routing,
+        user_id=user_id,
+        connection_id=str(getattr(outbound, "_jiuwen_ws_id", "") or ""),
+        channel_id=channel_id,
+        outbound=outbound,
+    )
+
+
 async def dispatch_http_request(
     channel: Any,
     *,
@@ -136,9 +171,41 @@ async def dispatch_http_request(
         _WEB_CONNECTION_USER_ID_ATTR,
     )
 
+    channel.register_request_outbound(outbound)
+    _routing = resolve_http_routing_identity(hdrs, client_host)
+
+    # P4：会话绑定之后、租户头信任判断之前触发，既能拿到 session 又能回填身份。
+    # deny/consume 由扩展向 outbound 注入合成 res 帧，调用方现有 wait_response
+    # 会把它转成标准响应；一期任何异常都回落到原生逻辑。
+    handled, params, verified_user_id = await _intercept_http_dispatch(
+        channel=channel,
+        method=method,
+        params=params,
+        hdrs=hdrs,
+        session_id=session_id,
+        req_id=req_id,
+        routing=_routing,
+        user_id=user_id,
+        outbound=outbound,
+        channel_id=channel_id_hdr,
+    )
+    if handled:
+        if use_sse:
+            # The synthetic ``res`` is the only frame for this request; close the
+            # stream so the SSE consumer finishes instead of idling to a timeout.
+            close = getattr(outbound, "close", None)
+            if callable(close):
+                await close()
+        return outbound, req_id, session_id
+    if verified_user_id:
+        # 扩展已校验的身份同时是 metadata/路由身份的权威来源，避免同一次请求里
+        # Message.user_id 与 metadata.user_id 出现两个不同值。
+        user_id = verified_user_id
+        _routing = dict(_routing)
+        _routing["user_id"] = verified_user_id
+
     setattr(outbound, _WEB_CONNECTION_USER_ID_ATTR, user_id)
     setattr(outbound, "_jiuwen_app_id", app_id)
-    channel.register_request_outbound(outbound)
 
     # 仅新建会话且解析到 user_id 时打 http_resolve_identity UA。
     if method == "session.create" and user_id:
@@ -180,7 +247,6 @@ async def dispatch_http_request(
         normalize_agent_identity,
     )
 
-    _routing = resolve_http_routing_identity(hdrs, client_host)
     setattr(outbound, "_web_routing", _routing)
     # 展示身份是企业版能力：个人版入口不采信（回环或显式开启信任开关
     # 只影响路由身份，展示身份仍不下发）。

@@ -20,7 +20,11 @@ from agent_gateway.extensions_v2.assembly import (
     shutdown_gateway_extensions,
 )
 from agent_gateway.extensions_v2.config import GatewayExtensionConfig
-from agent_gateway.extensions_v2.runtime import GatewayRuntime
+from agent_gateway.extensions_v2.models import GatewayHandshakeOutput
+from agent_gateway.extensions_v2.runtime import (
+    GatewayHttpDenyInjectionError,
+    GatewayRuntime,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +67,112 @@ async def intercept_gateway_frame(
     except Exception as exc:  # noqa: BLE001 - fail open to the native path
         logger.warning("[GatewayExtensions] frame interception failed, forwarding: %s", exc)
         return False, dict(params)
+
+
+async def authenticate_gateway_handshake(
+    channel: Any,
+    *,
+    path: str,
+    headers: Any = None,
+    query: Any = None,
+    remote_addr: str = "",
+    channel_id: str = "web",
+    transport: str = "websocket",
+) -> GatewayHandshakeOutput | None:
+    """Run one Upgrade through ``gateway.handshake`` before ``accept()``.
+
+    The runtime is started explicitly first: without it, "no subscriber" must
+    not be mistaken for "allow". ``None`` means "no V2 opinion"; the caller
+    keeps the V1 hook decision. This entry never sets the channel's
+    ``_extensions_active`` flag, so the first business frame still announces
+    the connection via :func:`notify_gateway_connect`.
+    """
+
+    try:
+        runtime = await init_gateway_extensions(channel)
+    except Exception as exc:  # noqa: BLE001 - a failed assembly falls back to V1
+        logger.warning("[GatewayExtensions] handshake runtime unavailable: %s", exc)
+        return None
+    if runtime is None:
+        return None
+    try:
+        return await runtime.handshake(
+            path=path,
+            headers=headers,
+            query=query,
+            remote_addr=remote_addr,
+            channel_id=channel_id,
+            transport=transport,
+        )
+    except Exception as exc:  # noqa: BLE001 - handshake must fall back to V1
+        logger.warning("[GatewayExtensions] handshake interception failed: %s", exc)
+        return None
+
+
+async def intercept_gateway_http(
+    *,
+    channel: Any = None,
+    method: str,
+    params: Mapping[str, Any],
+    headers: Any = None,
+    session_id: str | None = None,
+    request_id: str = "",
+    routing: Mapping[str, str] | None = None,
+    user_id: str | None = None,
+    connection_id: str = "",
+    channel_id: str = "web",
+    outbound: Any = None,
+) -> tuple[bool, dict[str, Any], str | None]:
+    """Run one HTTP business dispatch through ``gateway.request`` (P4).
+
+    Returns ``(handled, params, verified_user_id)``. ``handled=True`` means a
+    synthetic response frame was injected into ``outbound`` and the native HTTP
+    dispatch must be skipped. The runtime is assembled on demand (like the
+    handshake entry) so purely HTTP clients still hit the P4 trigger point;
+    any failure falls back to the native HTTP path.
+    """
+
+    from agent_gateway.extensions_v2.assembly import get_gateway_runtime
+
+    runtime = get_gateway_runtime()
+    if runtime is None and channel is not None:
+        try:
+            start = getattr(channel, "start_extensions", None)
+            ensure = getattr(channel, "ensure_extensions", None)
+            if callable(start):
+                # Reuse the channel lifecycle so shutdown owns the runtime it started.
+                await start()
+                runtime = get_gateway_runtime()
+            elif callable(ensure):
+                await ensure()
+                runtime = get_gateway_runtime()
+            else:
+                runtime = await init_gateway_extensions(channel)
+        except Exception as exc:  # noqa: BLE001 - a failed assembly falls back to the native path
+            logger.warning("[GatewayExtensions] http dispatch runtime unavailable: %s", exc)
+            return False, dict(params) if isinstance(params, Mapping) else {}, None
+    if runtime is None or not isinstance(params, Mapping):
+        return False, dict(params) if isinstance(params, Mapping) else {}, None
+    try:
+        return await runtime.intercept_http(
+            method=method,
+            params=dict(params),
+            headers=headers,
+            session_id=session_id,
+            request_id=request_id,
+            routing=routing,
+            user_id=user_id,
+            connection_id=connection_id,
+            channel_id=channel_id,
+            outbound=outbound,
+        )
+    except GatewayHttpDenyInjectionError:
+        # The request was denied and the synthetic answer could not be sent;
+        # the caller must fail it instead of executing the native handler.
+        raise
+    except Exception as exc:  # noqa: BLE001 - fail back to the native HTTP path
+        logger.warning("[GatewayExtensions] http dispatch interception failed, forwarding: %s", exc)
+        return False, dict(params), None
 
 
 async def notify_gateway_connect(ws: Any) -> None:

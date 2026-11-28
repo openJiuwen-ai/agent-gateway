@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "package_type": "extension",
+  "package": {
+    "id": "demo.http.policy",
+    "version": "1.0.0",
+    "domain": "gateway"
+  },
+  "extensions": [
+    {
+      "id": "http_policy",
+      "runtime": "backend",
+      "module": "http_policy/extension.py"
+    }
+  ],
+  "display": {
+    "name": {
+      "zh": "HTTP 分发策略示例",
+      "en": "HTTP dispatch policy demo"
+    }
+  }
+}

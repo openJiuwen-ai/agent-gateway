@@ -5,6 +5,7 @@ import asyncio
 import inspect
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from http import HTTPStatus
@@ -261,6 +262,24 @@ class BaseWebChannel(BaseChannel):
 
     def set_handshake_auth(self, callback: Callable[..., Any]) -> None:
         self._handshake_auth = callback
+
+    def routing_identity(self, ws: Any) -> Mapping[str, str]:
+        """Return the trusted routing scope cached at connect time.
+
+        ``group_id``/``bot_id``/``gateway_id`` only: ``user_id`` has its own
+        ``connection_user_id`` accessor and must stay out of routing.
+        """
+
+        routing = getattr(ws, "_web_routing", None)
+        if not isinstance(routing, Mapping):
+            return {}
+        cleaned: dict[str, str] = {}
+        for field in ("group_id", "bot_id", "gateway_id"):
+            value = routing.get(field)
+            text = value.strip() if isinstance(value, str) else ""
+            if text:
+                cleaned[field] = text
+        return cleaned
 
     async def authenticate_handshake(
         self,

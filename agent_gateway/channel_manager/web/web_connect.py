@@ -318,6 +318,10 @@ class WebChannel(BaseWsChannel):
         # Extension runtime starts on first use: its cold Core import can take seconds
         # and must never delay listener readiness or shutdown.
         self._extensions_active = False
+        # The runtime may be started by handshake/HTTP entries before the first
+        # business frame; shutdown must own it even if ``_extensions_active`` is
+        # still False because no connection was announced yet.
+        self._extensions_installed = False
         self._extensions_lock = asyncio.Lock()
         self._on_message_cb: Callable[[Message], Any] | None = None
         self._method_handlers: dict[str, MethodHandler] = {}
@@ -1030,6 +1034,19 @@ class WebChannel(BaseWsChannel):
             raise RuntimeError("WebChannel stopped before becoming ready")
         await self._listener.wait_ready()
 
+    async def start_extensions(self) -> None:
+        """Start the runtime without consuming the first-frame connect announcement."""
+
+        if self._extensions_installed:
+            return
+        async with self._extensions_lock:
+            if self._extensions_installed:
+                return
+            from agent_gateway.extensions_v2 import init_gateway_extensions
+
+            await init_gateway_extensions(self)
+            self._extensions_installed = True
+
     async def ensure_extensions(self, ws: Any = None) -> None:
         """Start the extension runtime on first use and announce ``ws`` to it.
 
@@ -1045,6 +1062,7 @@ class WebChannel(BaseWsChannel):
             from agent_gateway.extensions_v2 import init_gateway_extensions, notify_gateway_connect
 
             runtime = await init_gateway_extensions(self)
+            self._extensions_installed = True
             self._extensions_active = True
             if runtime is not None and ws is not None:
                 # The connection that triggered the lazy start missed the channel's
@@ -1054,13 +1072,14 @@ class WebChannel(BaseWsChannel):
     async def _shutdown_extensions(self) -> None:
         """Stop the extension runtime if this channel ever started it."""
 
-        if not self._extensions_active:
+        if not self._extensions_installed:
             return
         async with self._extensions_lock:
-            if not self._extensions_active:
+            if not self._extensions_installed:
                 return
             from agent_gateway.extensions_v2 import shutdown_gateway_extensions
 
+            self._extensions_installed = False
             self._extensions_active = False
             await shutdown_gateway_extensions()
 
