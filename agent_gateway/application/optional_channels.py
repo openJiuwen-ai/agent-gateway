@@ -895,10 +895,17 @@ class OptionalChannels:
                             user_id: str,
                             agent_type: str,
                             protocol: str,
+                            *,
+                            trace_id: str | None = None,
                             _resolve=web_resolver,
                         ) -> str | None:
+                            from agent_gateway.channel_manager.protocol.web_proxy.web_proxy_listen import (
+                                _resolver_trace_kwargs,
+                            )
                             return await _resolve(
-                                user_id, agent_type, protocol, acquire=True
+                                user_id, agent_type, protocol,
+                                acquire=True,
+                                **_resolver_trace_kwargs(_resolve, trace_id or ""),
                             )
 
                         token_resolver = getattr(self._agent_server_ext, "acquire_web_endpoint", None)

@@ -13,7 +13,7 @@ from e2a.models import E2AEnvelope
 from agent_gateway.extensions.adx.ssh_relay import AdxSshRelay
 from agent_gateway.channel_manager.base import ChannelType
 from agent_gateway.extensions.adx.config import AdxRouterConfig
-from agent_gateway.extensions.adx.control_client import AdxControlClient
+from agent_gateway.extensions.adx.control_client import AdxControlClient, trace_headers
 from agent_gateway.extensions.adx.errors import AdxRoutingError
 from agent_gateway.extensions.adx.file_client import AdxFileMixin
 from agent_gateway.extensions.agentos.agentos_router.agent_manager import AgentManager
@@ -28,7 +28,6 @@ from agent_gateway.extensions.agentos.agentos_router.router_client import (
     ws_connect_retry_interval_seconds,
 )
 from agent_gateway.extensions.auth.credential_authenticator import AuthResult
-from agent_gateway.extensions.yuanrong_frontend_client import apply_trace_header
 from agent_gateway.health_check import HEALTH_CHECK_CHANNEL_ID, HEALTH_CHECK_OK
 
 
@@ -106,10 +105,11 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
         return self._agent_ws_url(instance_id, agent_port)
 
     async def _connect_ws_until_ready(self, *, instance_id: str, agent_port: int,
-                                      user_id: str = '', session_id: str = '', agent_type: str = ''):
+                                      user_id: str = '', session_id: str = '', agent_type: str = '',
+                                      trace_id: str = ''):
         uri = self._agent_ws_url(instance_id, agent_port)
         deadline = asyncio.get_running_loop().time() + ws_connect_ready_timeout_seconds()
-        headers = apply_trace_header({'Authorization': 'Bearer ' + self._config.token})
+        headers = trace_headers({'Authorization': 'Bearer ' + self._config.token}, trace_id or None)
         while True:
             client = self._ws_client_factory()
             if self._push_handler is not None:
