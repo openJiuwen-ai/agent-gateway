@@ -55,8 +55,6 @@ class WorkerGroup:
                 raise ValueError("a static Worker group takes its targets from the directory only")
             if is_enterprise():
                 raise ValueError("the Worker group only supports a personal deployment")
-            if cron:
-                raise ValueError("static routes do not serve Cron in this slice")
         elif agent_server_url is None:
             raise ValueError("the Worker group requires an AgentServer URL or a static route directory")
         else:
@@ -66,15 +64,18 @@ class WorkerGroup:
                 raise ValueError("the Worker group only supports personal loopback with a single local AgentServer")
         self._credential_authority = self._control_web = None
         self._cron_ownership = self._cron_commands = None
+        self._manifest = southbound_routes.manifest if southbound_routes is not None else WorkerManifest(tuple(range(workers)))
+        self._identity_policy = southbound_routes.identity_policy if southbound_routes is not None else LocalIdentityPolicy()
         if cron:
             from agent_gateway.cron.control_commands import ControlCronCommands
             from agent_gateway.cron.ownership import CronOwnership
 
             # Ownership follows the configured slots, never the healthy subset.
-            self._cron_ownership = CronOwnership(WorkerManifest(tuple(range(workers))), LocalIdentityPolicy())
-            self._cron_commands = ControlCronCommands(self._cron_ownership, agent_server_url)
+            self._cron_ownership = CronOwnership(self._manifest, self._identity_policy)
+            if southbound_routes is None:
+                self._cron_commands = ControlCronCommands(self._cron_ownership, agent_server_url)
         control_services = None
-        if auth_service_provider is not None or self._cron_commands is not None:
+        if auth_service_provider is not None or cron:
             from agent_gateway.processes.control_service import ControlServices
 
             factories, connects, disconnects = [], [], []
@@ -142,7 +143,10 @@ class WorkerGroup:
             if self._cron_ownership is not None:
                 # Read-only and parent-side: no Worker is spawned while an
                 # enabled record still needs a capability this batch lacks.
-                await require_controlled_cron(self._cron_ownership)
+                if self.pool.southbound_routes is None:
+                    await require_controlled_cron(self._cron_ownership)
+                else:
+                    await require_controlled_cron(self._cron_ownership, static_routes=self.pool.southbound_routes)
             if self._credential_authority is not None:
                 await self._credential_authority.prepare()
                 await self._start_control_web()
@@ -151,7 +155,7 @@ class WorkerGroup:
                 await self.pool.activate_cron()
             if self._close_task is not None:
                 raise RuntimeError("Worker group stopped during startup")
-            affinity = FixedUserHash(WorkerManifest(self.pool.slots), LocalIdentityPolicy())
+            affinity = FixedUserHash(self._manifest, self._identity_policy)
             addresses = []
             for index, port in enumerate(self._ports):
                 listener = socket.socket()

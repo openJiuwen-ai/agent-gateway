@@ -130,7 +130,7 @@ _XIAOYI_DEFAULT_PUSH_URL = "https://hag.cloud.huawei.com/open-ability-agent/v1/a
 def _check_cron(args, parser) -> None:
     """Report Cron file compatibility without starting the Gateway, then exit."""
     from agent_gateway.application.cron_preflight import check_cron_cli
-    from agent_gateway.application.multiprocess import DEFAULT_WORKERS, MAX_WORKERS
+    from agent_gateway.application.multiprocess import DEFAULT_WORKERS, MAX_WORKERS, load_static_routes
     from agent_gateway.common.agentos_runtime import is_agentos_runtime
     from agent_gateway.dotenv_early import load_dotenv_runtime
     from agent_gateway.enterprise import is_enterprise
@@ -141,6 +141,12 @@ def _check_cron(args, parser) -> None:
         parser.error(f"--workers must be between 1 and {MAX_WORKERS}")
     if is_enterprise() or is_agentos_runtime():
         parser.error("--check-cron requires a local personal workspace")
+    if args.southbound_routes_file is not None:
+        try:
+            routes = load_static_routes(args.southbound_routes_file, workers=workers)
+        except ValueError as exc:
+            parser.error(str(exc))
+        raise SystemExit(check_cron_cli(workers, static_routes=routes))
     raise SystemExit(check_cron_cli(workers))
 
 
@@ -363,8 +369,7 @@ def main() -> None:
                         help="Print the read-only Cron file preflight and exit.")
     parser.add_argument("--southbound-routes-file", metavar="<path>",
                         help="Multiprocess static multi-AgentServer trial: a local JSON route directory "
-                             "that fixes each named user's loopback AgentServer per Worker slot. "
-                             "It cannot be combined with --enable-cron.")
+                             "that fixes each named user's loopback AgentServer per Worker slot.")
     parser.add_argument(
         "--require-adx-router",
         # Accept previously generated service units; validation itself is generic.

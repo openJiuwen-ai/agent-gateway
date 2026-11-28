@@ -178,10 +178,10 @@ async def frames_until(ws, predicate, *, timeout=20):
                 return frame
 
 
-async def chat(ws, request_id, content="hi"):
+async def chat(ws, request_id, content="hi", *, session_id="chat-session"):
     """One streamed turn; returns once its final has been delivered."""
     await ws.send(json.dumps({"type": "req", "id": request_id, "method": "chat.send", "is_stream": True,
-                              "params": {"session_id": "chat-session", "content": content}}))
+                              "params": {"session_id": session_id, "content": content}}))
     await frames_until(ws, lambda frame: frame.get("event") == "chat.final")
 
 
@@ -482,6 +482,41 @@ async def test_cron_tool_push_in_a_chat_stream_is_answered_to_the_agentserver(cr
                 "code": "CRON_CONTEXT_CONFLICT"}
     finally:
         await stop_group(group, stub)
+    assert all(process.returncode == 0 for process in group.pool.processes)
+
+
+async def test_static_cron_ack_is_bound_to_the_origin_even_when_command_ids_match(cron_workspace):
+    from agent_gateway.common.ingress_identity import LocalIdentityPolicy
+    from agent_gateway.common.southbound_routes import SouthboundTarget, StaticRouteDirectory
+    from agent_gateway.common.worker_affinity import WorkerManifest
+
+    users = ('alice', 'bob')
+    agents = [CronStubAgentServer().start() for _ in users]
+    routes = StaticRouteDirectory(1, LocalIdentityPolicy(), WorkerManifest((0,)), tuple(
+        SouthboundTarget(f'target-{user}', f'physical-{user}', 1, user, 'jiuwenswarm', 0, agent.url)
+        for user, agent in zip(users, agents)
+    ))
+    group = WorkerGroup(workers=1, web_port=0, protocol_port=0, cron=True, southbound_routes=routes)
+    try:
+        await group.start()
+        host, port = group.addresses[0]
+        for user, agent in zip(users, agents):
+            async with connect(f'ws://{host}:{port}/ws?user_id={user}', proxy=None, open_timeout=5) as ws:
+                assert json.loads(await asyncio.wait_for(ws.recv(), 5))['event'] == 'connection.ack'
+                result = await rpc(ws, f'create-{user}', 'cron.job.create', job_params(user, '0 9 * * *'))
+                assert result['ok'], result
+                agent.cron_push_for[f'chat-{user}'] = (user, 'shared-command')
+                await chat(ws, f'chat-{user}', 'list my tasks', session_id=f'session-{user}')
+                async with asyncio.timeout(10):
+                    while not agent.requests_for('cron.command.ack'):
+                        await asyncio.sleep(0.02)
+                (ack,) = agent.requests_for('cron.command.ack')
+                assert ack['params']['command_id'] == 'ack-shared-command'
+                assert ack['user_id'] == user
+                assert [job['id'] for job in ack['params']['data']] == [result['payload']['job']['id']]
+    finally:
+        await group.stop()
+        await asyncio.gather(*(asyncio.to_thread(agent.stop) for agent in agents))
     assert all(process.returncode == 0 for process in group.pool.processes)
 
 

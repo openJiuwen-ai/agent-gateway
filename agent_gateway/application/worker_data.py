@@ -275,25 +275,35 @@ async def _no_refresh(_message) -> None:
 
 def _wire_cron_command_runtime(
     *, control_client, agent_client, message_handler, cron_runtime, manifest, slot_id, other_push=None,
+    identity_policy=None,
 ):
     from agent_gateway.application.worker_cron_commands import WorkerCronCommands
     from agent_gateway.cron.ownership import CronOwnership
 
-    cron_commands = WorkerCronCommands(
+    ownership = CronOwnership(manifest, identity_policy or LocalIdentityPolicy())
+    options = dict(
         client=control_client,
         message_handler=message_handler,
-        ownership=CronOwnership(manifest, LocalIdentityPolicy()),
+        ownership=ownership,
         slot_id=slot_id,
         # A delivered command is refused until the parent activated this slot.
         enabled=lambda: cron_runtime._activated.is_set(),
     )
+    if identity_policy is not None:
+        from agent_gateway.application.worker_routed_cron_commands import RoutedWorkerCronCommands
+
+        cron_commands = RoutedWorkerCronCommands(agent_client.owned_targets, **options)
+    else:
+        cron_commands = WorkerCronCommands(**options)
     message_handler.set_cron_command_runtime(cron_commands)
     message_handler.set_cron_tool_push_enabled(True)
-    release_pushes = _admit_cron_tool_pushes(agent_client, cron_commands, other_push=other_push)
+    release_pushes = _admit_cron_tool_pushes(
+        agent_client, cron_commands, other_push=other_push, static=identity_policy is not None,
+    )
     return cron_commands, release_pushes
 
 
-def _admit_cron_tool_pushes(agent_client, cron_commands, *, other_push=None):
+def _admit_cron_tool_pushes(agent_client, cron_commands, *, other_push=None, static=False):
     """Let the Cron tool result of a chat reach this shard; close the admission.
 
     The southbound client drops every AgentServer ``send_push`` frame that has
@@ -305,7 +315,7 @@ def _admit_cron_tool_pushes(agent_client, cron_commands, *, other_push=None):
     """
     from e2a.wire_codec import parse_agent_server_wire_chunk
 
-    setter = getattr(agent_client, "set_server_push_handler", None)
+    setter = getattr(agent_client, "set_cron_source_handler" if static else "set_server_push_handler", None)
     if not callable(setter):
         raise ValueError("sharded Cron requires an AgentServer client with server-push support")
     admitted = True
@@ -325,6 +335,7 @@ def _admit_cron_tool_pushes(agent_client, cron_commands, *, other_push=None):
                 channel_id=str(chunk.channel_id or ""),
                 session_id=wire.get("session_id"),
                 metadata=wire.get("metadata"),
+                **({"user_id": wire.get("user_id")} if static else {}),
             )
         elif other_push is not None:
             await other_push(wire)
@@ -389,8 +400,6 @@ async def data_worker(
         client, routed = await _build_southbound(
             cleanup, agent_server_url, southbound_routes, slot_id, personal_settings=personal_settings,
         )
-        if routed is not None and cron_enabled:
-            raise ValueError("static routes do not serve Cron in this slice")
         credentials = None
         if control_client is not None and accounts:
             from agent_gateway.auth.worker_credential_services import (
@@ -418,7 +427,7 @@ async def data_worker(
             credentials.attach_handler(handler)
         else:
             handler.set_credential_access(accounts)
-        if (personal or routed is not None) and not cron_enabled:
+        if routed is not None or (personal and not cron_enabled):
             # MessageHandler registers its AgentServer server-push handler only
             # from set_outbound_pipeline, which the single process calls while
             # assembling and no Worker does. Without it a push is dropped as it
@@ -437,18 +446,21 @@ async def data_worker(
         )
         if credentials is not None:
             preprocessor = preprocessor.with_credential_access(credentials.credentials)
+        if routed is not None:
+            await routed.activate()
         cron = None
         if cron_enabled:
             from agent_gateway.application.worker_cron import build_worker_cron
 
+            cron_options = {} if southbound_routes is None else {"identity_policy": southbound_routes.identity_policy}
             cron_runtime = await build_worker_cron(
                 manifest=cron_manifest, slot_id=cron_slot, agent_client=client,
-                message_handler=handler,
+                message_handler=handler, **cron_options,
             )
             cron_commands, release_cron_pushes = _wire_cron_command_runtime(
                 control_client=control_client, agent_client=client, message_handler=handler,
                 cron_runtime=cron_runtime, manifest=cron_manifest, slot_id=cron_slot,
-                other_push=handler._handle_agent_server_push if personal else None,
+                other_push=handler._handle_agent_server_push if personal else None, **cron_options,
             )
             cron = (cron_runtime, cron_commands)
             # Unwound after the northbound runtimes below and before the
@@ -459,8 +471,6 @@ async def data_worker(
             # First of the three: a late push must not reach a stopped runtime.
             cleanup.push_async_callback(release_cron_pushes)
 
-        if routed is not None:
-            await routed.activate()
         async with AsyncExitStack() as northbound:
             web, _ = assemble_web(
                 agent_client=client, message_handler=handler, channel_manager=manager,

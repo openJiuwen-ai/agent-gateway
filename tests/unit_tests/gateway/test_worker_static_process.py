@@ -93,10 +93,8 @@ def test_cli_refuses_directories_that_do_not_fit_the_run(tmp_path, routes):
     with pytest.raises(ValueError, match="exactly the --workers slots"):
         _from_cli(workers=1, southbound_routes_file=path)
     assert _from_cli(accounts=True, southbound_routes_file=path).accounts
-    with pytest.raises(ValueError, match="cannot be combined"):
-        _from_cli(cron=True, southbound_routes_file=path)
-    with pytest.raises(ValueError, match="cannot be combined"):
-        _from_cli(accounts=True, cron=True, southbound_routes_file=path)
+    options = _from_cli(accounts=True, cron=True, southbound_routes_file=path)
+    assert options.accounts and options.cron
 
 
 @pytest.mark.parametrize("encoded", ["", "{", "[]", "{}", "not json", '{"schema_version":2}',
@@ -190,8 +188,8 @@ async def test_group_serves_static_routes_without_the_single_server_contract(rou
         WorkerGroup("ws://127.0.0.1:18092", workers=2, southbound_routes=routes)
     with pytest.raises(ValueError, match="requires an AgentServer URL or a static route directory"):
         WorkerGroup(workers=2)
-    with pytest.raises(ValueError, match="do not serve Cron"):
-        WorkerGroup(None, workers=2, cron=True, southbound_routes=routes)
+    cron_group = WorkerGroup(None, workers=2, cron=True, southbound_routes=routes)
+    assert cron_group.pool.cron_manifest == routes.manifest
     account_group = WorkerGroup(None, workers=2, auth_service_provider=lambda: None, southbound_routes=routes)
     assert account_group.pool.southbound_routes is routes
     with pytest.raises(ValueError, match="Worker range"):

@@ -655,6 +655,7 @@ async def build_worker_cron(
     agent_client: Any,
     message_handler: Any,
     config: dict | None = None,
+    identity_policy: LocalIdentityPolicy | None = None,
 ) -> WorkerCronRuntime:
     """Prepare one owned Cron shard without starting its background loop.
 
@@ -674,7 +675,7 @@ async def build_worker_cron(
     if config is not None and not isinstance(config, dict):
         raise ValueError("Worker Cron configuration must be an object or null")
 
-    ownership = CronOwnership(manifest, LocalIdentityPolicy())
+    ownership = CronOwnership(manifest, identity_policy or LocalIdentityPolicy())
     await preflight_controlled_cron(ownership, config=config, allow_project_jobs=False)
     backend = FileCronJobStore(path=get_cron_jobs_path())
     owned_store = OwnedCronJobStore(backend, ownership, slot=slot_id)

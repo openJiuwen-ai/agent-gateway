@@ -16,7 +16,7 @@ Entry points: `agent-gateway` (gateway + channels) and `agent-gateway-acp` (ACP 
 | `--dotenv <path>` | none | Load environment variables from the given `.env` at startup (startup phase only) |
 | `--enable-cron` | off | Enable the supported file-backed personal Cron jobs in `--mode multiprocess`. Jobs that use account login or a non-default project are refused |
 | `--check-cron` | off | With `--mode multiprocess --enable-cron`: print the read-only Cron preflight report as JSON and exit |
-| `--southbound-routes-file <path>` | none | With `--mode multiprocess`: the static multi-AgentServer trial. The JSON file fixes each named user's loopback AgentServer per Worker slot. It cannot be combined with `--enable-cron` |
+| `--southbound-routes-file <path>` | none | With `--mode multiprocess`: the static multi-AgentServer trial. The JSON file fixes each named user's loopback AgentServer per Worker slot. |
 | `-h, --help` | none | Show help and exit |
 
 ### Local multiprocess trial
@@ -82,9 +82,10 @@ What a static Worker guarantees:
 
 An AgentServer owns one unsolicited push slot, which belongs to its newest non-RPC WebSocket connection. Whether an AgentServer sends a given push to the connection of this Gateway is a property of that AgentServer. This trial does not claim that a push naming no request or session reaches any user, on the same Worker or on another.
 
+- `--enable-accounts` scopes credentials to the target and Worker slot. `--enable-cron` enables per-owner file-backed jobs and returns Cron tool acknowledgements to the originating target; local preflight refuses enabled jobs without a configured route.
+
 What a static Worker does not serve in this release:
 
-- **Cron.** `--southbound-routes-file` cannot be combined with `--enable-cron`.
 - **The personal compatibility of the account-free Worker.** Its native TUI requests, personal Web settings and operations, and its heartbeat proxy are answered from the user directory of one AgentServer. A static Worker has one per named user, so it installs none of them and refuses those requests.
 - **Attachments.** `chat.send` with `files`, `media_items`, `attachments` or `documents` is refused: each user has a private AgentServer directory, so the Gateway cannot import files for the user.
 - **Other agents and configuration writes.** `agent_type` other than `jiuwenswarm`, and every Gateway configuration change.

@@ -61,6 +61,7 @@ async def inspect_cron_store(
     proactive_enabled: bool = False,
     allow_login_credentials: bool = False,
     allow_project_jobs: bool = True,
+    allowed_users: frozenset[str] | None = None,
 ) -> CronPreflightReport:
     """Inspect the complete personal file without mutation or lock-file creation.
 
@@ -81,6 +82,8 @@ async def inspect_cron_store(
             slot = ownership.owner_slot(job.user_id)
             counts[slot] += 1
         reasons = unsupported_cron_reasons(job, allow_login_credentials=allow_login_credentials)
+        if allowed_users is not None and job.user_id not in allowed_users:
+            reasons += ('no_static_target',)
         if not allow_project_jobs and job.project_id not in ("", "default", "default_code"):
             reasons += ('non_default_project',)
         issues.extend(CronPreflightIssue(job.id, slot, reason, job.enabled) for reason in reasons)

@@ -16,6 +16,7 @@ async def inspect_controlled_cron(
     store: FileCronJobStore | None = None,
     allow_login_credentials: bool = False,
     allow_project_jobs: bool = True,
+    static_routes=None,
 ) -> CronPreflightReport:
     from agent_gateway.common.config import get_config
     from agent_gateway.common.cron_settings import load_cron_store_settings
@@ -42,6 +43,9 @@ async def inspect_controlled_cron(
     return await inspect_cron_store(
         backend, ownership, proactive_enabled=enabled,
         allow_login_credentials=allow_login_credentials, allow_project_jobs=allow_project_jobs,
+        **({} if static_routes is None else {
+            'allowed_users': frozenset(target.user_id for target in static_routes.targets),
+        }),
     )
 
 
@@ -62,11 +66,12 @@ async def preflight_controlled_cron(
 
 async def require_controlled_cron(
     ownership: CronOwnership, *, config: dict[str, Any] | None = None,
-    allow_project_jobs: bool = False,
+    allow_project_jobs: bool = False, static_routes=None,
 ) -> CronPreflightReport:
     """Preflight with a message that names only blocking job identifiers and reasons."""
     report = await inspect_controlled_cron(
         ownership, config=config, allow_project_jobs=allow_project_jobs,
+        **({} if static_routes is None else {'static_routes': static_routes}),
     )
     if not report.ready:
         # ``issues`` carries operational identifiers only: never a task body,
@@ -78,7 +83,7 @@ async def require_controlled_cron(
     return report
 
 
-def check_cron_cli(worker_count: int) -> int:
+def check_cron_cli(worker_count: int, *, static_routes=None) -> int:
     """Inspect a static snapshot without preparing a runtime or touching AS."""
     import asyncio
     from dataclasses import asdict
@@ -89,10 +94,14 @@ def check_cron_cli(worker_count: int) -> int:
     from agent_gateway.common.ingress_identity import LocalIdentityPolicy
     from agent_gateway.common.worker_affinity import WorkerManifest
 
-    ownership = CronOwnership(WorkerManifest(tuple(range(worker_count))), LocalIdentityPolicy())
+    ownership = (CronOwnership(WorkerManifest(tuple(range(worker_count))), LocalIdentityPolicy())
+                 if static_routes is None else CronOwnership(static_routes.manifest, static_routes.identity_policy))
     result: dict[str, Any] = {'scope': 'static_file_only', 'agentserver_checked': False}
     try:
-        report = asyncio.run(inspect_controlled_cron(ownership, allow_project_jobs=False))
+        report = asyncio.run(inspect_controlled_cron(
+            ownership, allow_project_jobs=False,
+            **({} if static_routes is None else {'static_routes': static_routes}),
+        ))
     except (ValueError, OSError, AttributeError, TypeError, yaml.YAMLError):
         # YAML/parser and OS errors may carry paths or values; do not echo them.
         result.update(ready=False, error='invalid_or_unreadable_cron_configuration_or_snapshot')

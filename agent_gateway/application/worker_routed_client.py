@@ -129,6 +129,7 @@ class WorkerRoutedClient(SouthboundAgentClient):
         self._frame_gate: Any = None
         self._push_handler: Callable[[dict[str, Any]], Awaitable[None]] | None = None
         self._credential_lifecycle_handler = None
+        self._cron_source_handler = None
         self._activated = asyncio.Event()
         self._closing = False
         self._stop_task: asyncio.Task[None] | None = None
@@ -178,6 +179,11 @@ class WorkerRoutedClient(SouthboundAgentClient):
         if self._activated.is_set() or not callable(handler):
             raise ValueError("credential lifecycle handler must be bound before targets start")
         self._credential_lifecycle_handler = handler
+
+    def set_cron_source_handler(self, handler: Callable[..., Awaitable[None]] | None) -> None:
+        if handler is not None and not callable(handler):
+            raise ValueError("Cron source handler must be callable")
+        self._cron_source_handler = handler
 
     def _validate_credential_target(self, entry: _TargetEntry, envelope: E2AEnvelope) -> None:
         auth = envelope.params.get(E2A_MODEL_AUTH_PARAM_KEY)
@@ -421,6 +427,11 @@ class WorkerRoutedClient(SouthboundAgentClient):
         entry = self._resolve(envelope)
         self._validate_credential_target(entry, envelope)
         await self._verify_session(entry, envelope)
+        if envelope.method in {"cron.command.ack", "cron.run_now.ack"}:
+            # These internal IDs are allocated by each independent target.
+            # They never enter the request/session delivery tables shared by
+            # the Worker's northbound connections.
+            return await entry.client.send_request(envelope, timeout=timeout, on_written=on_written)
         self._remember_acp_alias(
             entry, envelope, _key(envelope.params.get("session_id") or envelope.session_id),
         )
@@ -478,6 +489,12 @@ class WorkerRoutedClient(SouthboundAgentClient):
                 ref = payload.get("credential_ref")
                 if self._credential_lifecycle_handler is not None and isinstance(ref, str) and is_credential_ref(ref):
                     await self._credential_lifecycle_handler(self.credential_server_id(entry.target), wire)
+                return
+            if isinstance(payload, dict) and payload.get("event_type") == "cron.response":
+                if self._cron_source_handler is not None:
+                    admitted = self._push_guard.admit_cron(entry.target, wire)
+                    if admitted is not None:
+                        await self._cron_source_handler(admitted)
                 return
             if self._push_handler is None:
                 return

@@ -174,6 +174,10 @@ async def _run(
                 if agent_server_url != STATIC_SOUTHBOUND:
                     raise ValueError("a static Worker takes its targets from the directory only")
                 southbound_routes.targets_for_slot(identity.slot_id)
+                if cron_manifest is not None:
+                    if cron_manifest.slots != southbound_routes.manifest.slots:
+                        raise ValueError("Cron manifest disagrees with the static directory")
+                    cron_manifest = southbound_routes.manifest
             except ValueError as error:
                 raise _WorkerFailure("SOUTHBOUND_CONFIGURATION") from error
             agent_server_url = None
@@ -195,7 +199,8 @@ async def _run(
                 nonlocal credentials
                 credentials = value
 
-            event_handlers = {"cron.command_deliver": deliver_cron_command} if cron_enabled else {}
+            event_handlers = ({"cron.command_deliver": deliver_cron_command}
+                              if cron_enabled and southbound_routes is None else {})
             if accounts:
                 event_handlers["credentials.invalidate"] = invalidate
             control = ControlServiceClient(
