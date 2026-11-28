@@ -21,6 +21,8 @@ from typing import Any, Mapping
 ENV_FORWARD_HEADERS = "JIUWENSWARM_REQUEST_EXT_FORWARD_HEADERS"
 ENV_FORWARD_HEADERS_LEGACY = "JIUWENCLAW_REQUEST_EXT_FORWARD_HEADERS"
 METADATA_KEY = "ext"
+# Agent display name verified by Gateway against the Manager user console.
+TRACE_AGENT_NAME_KEY = "_jiuwen_trace_agent_name"
 
 # Gateway -> AgentServer 的内部 REST 载体。浏览器侧仍使用配置白名单中的原始
 # header/query，不能直接把本头当作公开入口或鉴权凭据。
@@ -99,9 +101,9 @@ def build_ext_from_source(source: "Mapping[str, Any] | None") -> "dict[str, Any]
     lower_to_actual = {k.lower(): k for k in source.keys() if isinstance(k, str)}
     out: dict[str, Any] = {}
     for name in names:
-        # 内部载体只能由 Gateway 根据普通白名单字段重新生成，不能把外部同名头
-        # 当作扩展值再次封装，更不能形成“客户端自称内部调用”的歧义。
-        if name.lower() == INTERNAL_HEADER_NAME.lower():
+        # The internal carrier and the verified display name are Gateway-owned.
+        # Public headers and query parameters cannot supply either of them.
+        if name.lower() in (INTERNAL_HEADER_NAME.lower(), TRACE_AGENT_NAME_KEY):
             continue
         actual = lower_to_actual.get(name.lower())
         if actual is None:

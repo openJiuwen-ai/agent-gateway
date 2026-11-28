@@ -33,6 +33,10 @@ from agent_gateway.channel_manager.base import (
 )
 from agent_gateway.channel_manager.web.client_trust import trust_client_identity_headers
 from agent_gateway.channel_manager.web.outbound import HttpJsonOutbound
+from agent_gateway.channel_manager.web.trace_agent_name import (
+    USER_ACCESS_TOKEN_COOKIE,
+    TraceAgentNameLookup,
+)
 from agent_gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
     new_web_proxy_client_session,
 )
@@ -350,6 +354,7 @@ class WebChannel(BaseWsChannel):
         )
 
         self.delivery = WebDeliveryRegistry()
+        self.trace_agent_names = TraceAgentNameLookup()
         # 3rd-agent Web UI proxy: one northbound port per agent_type.
         self.web_proxy_enabled: bool = False
         self.web_proxy_auth_enabled: bool = True
@@ -2725,6 +2730,16 @@ class WebChannel(BaseWsChannel):
             ),
             getattr(ws, "_web_agent_identity", None),
         )
+        if method == ReqMethod.CHAT_SEND.value:
+            _meta = await self.trace_agent_names.attach(
+                params=params,
+                metadata=_meta,
+                routing=_routing,
+                cluster_id=_ws_cookie(ws, "jiuwenclaw_id"),
+                authorization=_ws_header(ws, "authorization"),
+                access_token=_ws_cookie(ws, USER_ACCESS_TOKEN_COOKIE)
+                or _ws_cookie(ws, _WS_ACCESS_TOKEN_COOKIE),
+            )
         user_message = Message(
             id=req_id,
             type="req",
