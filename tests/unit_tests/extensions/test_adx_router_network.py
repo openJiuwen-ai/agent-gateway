@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 import json
 import sys
@@ -47,16 +48,8 @@ from agent_gateway.extensions.adx.network import managed_tool_policy
 
 @pytest.fixture(scope="session")
 def network_addresses():
-    return SimpleNamespace(
-        ingress='10.88.4.1',
-        model='192.168.4.40',
-        public='1.1.1.1',
-        public_cluster_node='8.8.8.8',
-        loopback='127.0.0.1',
-        other_private='10.88.4.20',
-        metadata='169.254.169.254',
-        shared='100.64.1.1',
-    )
+    fixture = Path(__file__).resolve().parents[2] / "fixtures" / "adx_network_addresses.json"
+    return SimpleNamespace(**json.loads(fixture.read_text(encoding="utf-8")))
 
 
 def _certificate(tmp_path):

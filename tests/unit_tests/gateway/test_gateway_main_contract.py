@@ -14,7 +14,7 @@ import pytest
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-from agent_gateway.agent_client_mode import _validate_agent_client_registration
+from agent_gateway.application.services import _validate_agent_client_registration
 
 
 _LOCK_PROBE_SCRIPT = """
