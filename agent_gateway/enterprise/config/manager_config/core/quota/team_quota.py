@@ -115,6 +115,11 @@ def _is_org_policy(expr: Any) -> bool:
     return "user_id" not in blob and "bot_id" not in blob
 
 
+def _expr_mentions_bot(expr: Any) -> bool:
+    """True when the match expression references ``bot_id`` (agent-scoped)."""
+    return "bot_id" in _expr_blob(expr)
+
+
 def _org_limit_value(row: dict[str, Any]) -> int:
     raw = row.get("max_teams_per_org")
     if raw is None or raw == "":
@@ -159,7 +164,7 @@ def _select_limits(policies: list[dict[str, Any]], identity: OwnerIdentity) -> Q
         )
     hits.sort(key=_policy_rank, reverse=True)
     top = hits[0]
-    return QuotaLimits(
+    limits = QuotaLimits(
         max_teams_per_user=max(1, int(top.get("max_teams_per_user") or default_teams)),
         max_teammates_per_team=max(
             1, int(top.get("max_teammates_per_team") or default_teammates)
@@ -168,10 +173,22 @@ def _select_limits(policies: list[dict[str, Any]], identity: OwnerIdentity) -> Q
         default_teammates=default_teammates,
         policy_id=_clean(top.get("policy_id")),
     )
+    # 把命中策略的 Z 暴露给调用方，用于无组织级策略时回落。含 bot_id 的
+    # agent 级策略不参与回落，避免单 agent 约束被放大为全组织上限。
+    if not _expr_mentions_bot(top.get("match_expr")):
+        limits.max_teams_per_org = _org_limit_value(top)
+    return limits
 
 
-def _select_org_limit(policies: list[dict[str, Any]], group_id: str) -> tuple[int, int]:
-    """返回 ``(limit, default)``；0 表示不限制。"""
+def _select_org_limit(
+    policies: list[dict[str, Any]], group_id: str
+) -> tuple[int, int, bool]:
+    """返回 ``(limit, default, found)``；0 表示不限制。
+
+    ``found`` 为 False 仅当没有任何启用的组织级策略匹配本 group；调用方据
+    此决定是否回落到用户策略 Z。显式设 Z=0 的组织策略为 ``found`` 且
+    ``limit == 0``，显式"不限制"被原样保留，不会被回落反向收紧。
+    """
     default_org = 0
     for row in policies:
         if not bool(row.get("enabled", True)):
@@ -181,7 +198,7 @@ def _select_org_limit(policies: list[dict[str, Any]], group_id: str) -> tuple[in
             continue
         default_org = _org_limit_value(row)
         break
-    ident = {"user_id": "", "group_id": group_id, "bot_id": ""}
+    ident = {"user_id": "", "group_id": group_id, "bot_id": "", "agent_id": ""}
     hits: list[dict[str, Any]] = []
     for row in policies:
         if not bool(row.get("enabled", True)) or not _is_org_policy(row.get("match_expr")):
@@ -192,9 +209,9 @@ def _select_org_limit(policies: list[dict[str, Any]], group_id: str) -> tuple[in
         except Exception:  # noqa: BLE001 - 单条策略非法不应影响整体用量
             continue
     if not hits:
-        return default_org, default_org
+        return default_org, default_org, False
     hits.sort(key=_policy_rank, reverse=True)
-    return _org_limit_value(hits[0]), default_org
+    return _org_limit_value(hits[0]), default_org, True
 
 
 def _row_occupies(row: dict[str, Any], now: float) -> bool:
@@ -375,14 +392,19 @@ class TeamQuotaPolicyService:
                 by_org[gid] = by_org.get(gid, 0) + 1
         orgs = []
         for gid, used_n in sorted(by_org.items()):
-            org_limit, _default = _select_org_limit(policies, gid)
+            org_limit, _default, _found = _select_org_limit(policies, gid)
             orgs.append({"group_id": gid, "used": used_n, "limit": org_limit})
         return {"items": items, "count": len(items), "orgs": orgs}
 
     @staticmethod
     def _limits_for(policies: list[dict[str, Any]], identity: OwnerIdentity) -> QuotaLimits:
         limits = _select_limits(policies, identity)
-        org_limit, org_default = _select_org_limit(policies, identity.group_id)
+        org_limit, org_default, found = _select_org_limit(policies, identity.group_id)
+        if not found:
+            # 无组织级策略匹配本 group 时，回落到命中用户策略的 Z（由
+            # ``_select_limits`` 暴露），使单条用户/工作区策略同时设 X 与 Z
+            # 时组织上限仍生效。显式组织级 Z=0 为 ``found``，原样保留。
+            org_limit = limits.max_teams_per_org
         limits.max_teams_per_org = org_limit
         limits.default_org_teams = org_default
         return limits

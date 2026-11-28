@@ -179,13 +179,20 @@ def _select_limits(policies: list[dict[str, Any]], identity: OwnerIdentity) -> Q
         )
     hits.sort(key=_policy_rank, reverse=True)
     top = hits[0]
-    return QuotaLimits(
+    limits = QuotaLimits(
         max_teams_per_user=max(1, int(top.get("max_teams_per_user") or default_teams)),
         max_teammates_per_team=max(1, int(top.get("max_teammates_per_team") or default_teammates)),
         default_teams=default_teams,
         default_teammates=default_teammates,
         policy_id=_clean(top.get("policy_id")),
     )
+    # Surface the matched policy's Z so callers can fall back to it when no
+    # org-scoped policy exists. A policy that names a bot (agent-scoped) is
+    # not a user/workspace policy, so its Z must not be widened into an org
+    # cap; only policies without bot_id participate in the fallback.
+    if not _expr_mentions_bot(top.get("match_expr")):
+        limits.max_teams_per_org = _org_limit_value(top)
+    return limits
 
 def _expr_blob(expr: Any) -> str:
     canon = coerce_match_expr(expr)
@@ -200,6 +207,10 @@ def _is_org_policy(expr: Any) -> bool:
     blob = _expr_blob(expr)
     return "user_id" not in blob and "bot_id" not in blob
 
+def _expr_mentions_bot(expr: Any) -> bool:
+    """True when the match expression references ``bot_id`` (agent-scoped)."""
+    return "bot_id" in _expr_blob(expr)
+
 def _org_limit_value(row: dict[str, Any]) -> int:
     raw = row.get("max_teams_per_org")
     if raw is None or raw == "":
@@ -212,8 +223,16 @@ def _org_limit_value(row: dict[str, Any]) -> int:
         return 0
     return min(value, 1000)
 
-def _select_org_limit(policies: list[dict[str, Any]], group_id: str) -> tuple[int, int]:
-    """Return ``(limit, default)``. 0 means unlimited.
+def _select_org_limit(
+    policies: list[dict[str, Any]], group_id: str
+) -> tuple[int, int, bool]:
+    """Return ``(limit, default, found)``. 0 means unlimited.
+
+    ``found`` is False only when no enabled org-scoped policy matched this
+    group; callers use it to decide whether to fall back to a user-policy Z.
+    A policy that explicitly sets Z=0 is ``found`` with ``limit == 0``, so an
+    explicit "no org cap" is honored instead of being tightened by the
+    fallback.
 
     Only unconditional policies and policies that do not mention ``user_id`` or
     ``bot_id`` participate. Highest priority among those that match this org wins.
@@ -241,9 +260,9 @@ def _select_org_limit(policies: list[dict[str, Any]], group_id: str) -> tuple[in
         except Exception:  # noqa: BLE001
             logger.debug("[TeamQuota] skip invalid org match_expr policy=%s", row.get("policy_id"))
     if not hits:
-        return default_org, default_org
+        return default_org, default_org, False
     hits.sort(key=_policy_rank, reverse=True)
-    return _org_limit_value(hits[0]), default_org
+    return _org_limit_value(hits[0]), default_org, True
 
 def _coerce_org_limit(body: dict[str, Any]) -> int:
     if "max_teams_per_org" not in body or body.get("max_teams_per_org") is None:
@@ -393,7 +412,17 @@ class TeamQuotaPolicyStore:
                 default_teams=DEFAULT_MAX_TEAMS_PER_USER,
                 default_teammates=DEFAULT_MAX_TEAMMATES_PER_TEAM,
             )
-        org_limit, org_default = _select_org_limit(rows, identity.group_id)
+        org_limit, org_default, found = _select_org_limit(rows, identity.group_id)
+        if not found:
+            # No org-scoped policy matched this group. Fall back to the Z of
+            # the policy that matched this user (surfaced by _select_limits) so
+            # a single user/workspace policy that sets both X and Z still
+            # enforces the organization team cap. An explicit org-scoped Z=0
+            # ("no org cap") is ``found`` and is honored as-is. The fallback Z
+            # applies per request because a user-scoped policy cannot constrain
+            # the whole group; the correct way to cap the org is an org-scoped
+            # policy.
+            org_limit = limits.max_teams_per_org
         limits.max_teams_per_org = org_limit
         limits.default_org_teams = org_default
         return limits
