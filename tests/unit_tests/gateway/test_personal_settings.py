@@ -328,31 +328,33 @@ def test_personal_web_listener_admits_only_its_methods():
         return json.dumps({"type": "req", "id": "1", "method": method, "params": params})
 
     for method in sorted(admitted):
-        assert is_data_frame(frame(method), web=True, personal=True), method
-        assert is_data_frame(frame(method, session_id="s"), web=True, personal=True), method
+        assert is_data_frame(frame(method), web=True, personal=True, compat=True), method
+        assert is_data_frame(frame(method, session_id="s"), web=True, personal=True, compat=True), method
     for method in ("cron.job.list", "project.delete", "project.remove", "project.restore", "skills.install",
                    "path.set", "designer.graph.list", "session.create", "models.replace_all", "models.validate",
                    "permissions.tools.set", "openai_account.auth.status", "external_cli.install", "webui.dispatch"):
-        assert not is_data_frame(frame(method), web=True, personal=True), method
+        assert not is_data_frame(frame(method), web=True, personal=True, compat=True), method
     # The additions belong to the personal Worker's Web listener alone.
     assert not any(is_data_frame(frame(method), web=True) for method in admitted)
     assert not any(is_data_frame(frame(method), personal=True) for method in admitted)
+    assert not any(is_data_frame(frame(method), personal=True, compat=True) for method in admitted)
     assert not any(is_data_frame(frame(method), tui=True, personal=True) for method in PERSONAL_SETTINGS_METHODS - {
         "config.get", "models.list"})
     assert not any(is_data_frame(frame(method), tui=True, personal=True) for method in PERSONAL_WEB_OPERATIONS)
-    assert not any(is_data_frame(frame(method), web=True, personal=True, acp=True) for method in admitted)
+    assert not any(is_data_frame(frame(method), web=True, personal=True, compat=True, acp=True) for method in admitted)
     assert is_data_frame(frame("history.get", session_id="s"), web=True, personal=True)
-    assert is_data_frame(frame("config.get"), tui=True, personal=True)
+    assert is_data_frame(frame("config.get"), tui=True, personal=True, compat=True)
     # The public gate still drops requests that carry private authority.
     for key in ("_model_auth", "credential_ref", "_jiuwen_auth_session"):
-        assert not is_data_frame(frame("config.get", **{key: "x"}), web=True, personal=True)
-    assert not is_data_frame(frame("config.get", source="huawei-maas-login"), web=True, personal=True)
+        assert not is_data_frame(frame("config.get", **{key: "x"}), web=True, personal=True, compat=True)
+    assert not is_data_frame(frame("config.get", source="huawei-maas-login"), web=True, personal=True, compat=True)
     for raw in ("not json", "[]", "null", '{"type": "req", "method": "config.get",',
                 json.dumps({"type": "req", "method": 1})):
         assert not is_data_frame(raw, web=True, personal=True)
     # A non-object params value has always passed the adapter; the settings
     # guard is what answers it, as BAD_REQUEST.
-    assert is_data_frame(json.dumps({"type": "req", "method": "config.get", "params": []}), web=True, personal=True)
+    assert is_data_frame(json.dumps({"type": "req", "method": "config.get", "params": []}), web=True,
+                         personal=True, compat=True)
     with pytest.raises(ValueError):
         validate_settings_params("config.get", [])
 

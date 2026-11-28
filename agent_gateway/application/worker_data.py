@@ -7,8 +7,9 @@ here but only started when the parent sends ``CRON_ACTIVATE``.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextlib import AsyncExitStack, asynccontextmanager
-from functools import partial
+from functools import lru_cache, partial
 import json
 import logging
 
@@ -82,23 +83,65 @@ class _DisabledAccounts:
         return None
 
 
-def personal_web_methods() -> frozenset[str]:
-    """What the personal Worker's Web listener admits beyond the data plane."""
+@lru_cache(maxsize=1)
+def guarded_web_methods() -> frozenset[str]:
+    """The personal Web methods that are registered behind their guard."""
     from agent_gateway.application.personal_settings import PERSONAL_SETTINGS_METHODS
     from agent_gateway.application.personal_web_operations import PERSONAL_WEB_OPERATIONS
 
-    return PERSONAL_WEB_WORKER_METHODS | PERSONAL_SETTINGS_METHODS | PERSONAL_WEB_OPERATIONS
+    return PERSONAL_SETTINGS_METHODS | PERSONAL_WEB_OPERATIONS
+
+
+def personal_web_methods() -> frozenset[str]:
+    """What the personal Worker's Web listener admits beyond the data plane."""
+    return PERSONAL_WEB_WORKER_METHODS | guarded_web_methods()
+
+
+def personal_compatibility(agent_server_url: str, *, personal: bool) -> tuple[bool, bool]:
+    """Which personal compatibilities a Worker installs: ``(TUI, Web)``.
+
+    Both are local contracts: the requests are answered from the user
+    directory of one loopback AgentServer, without a Gateway-side Session
+    binding. Elsewhere they are not installed, and their requests stay closed.
+    """
+    if not personal:
+        return False, False
+    from agent_gateway.application.personal_settings import is_local_settings_target
+    from agent_gateway.application.personal_tui import enable_personal_tui
+
+    return enable_personal_tui(agent_server_url), is_local_settings_target(agent_server_url)
+
+
+def listener_frame_gates(
+    agent_server_url: str, *, personal: bool, cron: bool = False,
+) -> tuple[Callable[[str | bytes], bool], Callable[[str | bytes], bool]]:
+    """The ``(protocol, Web)`` frame gates of a Worker.
+
+    Each listener admits only the personal compatibility that is installed
+    for it. Assembling a Worker and admitting its requests read the same two
+    flags, so a guard can never be missing behind an admitted request.
+    """
+    compat_tui, compat_web = personal_compatibility(agent_server_url, personal=personal)
+    shared = {"accounts": not personal, "personal": personal, "cron": cron}
+    return (
+        partial(is_data_frame, **shared, compat=compat_tui),
+        partial(is_data_frame, **shared, compat=compat_web, web=True),
+    )
 
 
 def is_data_frame(
     raw: str | bytes, *, acp: bool = False, accounts: bool = False, cron: bool = False,
-    tui: bool = False, web: bool = False, personal: bool = False,
+    tui: bool = False, web: bool = False, personal: bool = False, compat: bool = False,
 ) -> bool:
     """Keep unadapted login, configuration and Cron out of this Worker host.
 
-    ``cron=True`` admits only the owned Cron panel methods; a frame that still
-    carries a credential selector is refused like every other Worker frame.
-    Native TUI compatibility is limited to the account-free personal profile.
+    ``tui`` marks a frame read from the /tui route and ``web`` one read from
+    the Web listener. ``personal`` marks the account-free personal Worker, whose
+    listeners admit their regular reads. ``compat`` marks a listener with its
+    personal compatibility installed: the native TUI requests on /tui, answered
+    by the route's hook and never forwarded, and the settings and Web
+    operations on the Web listener, registered behind their guard. A request
+    of either family never passes without the code that checks it.
     """
     from agent_gateway.application.worker_cron_ingress import CRON_PANEL_METHODS
 
@@ -113,12 +156,14 @@ def is_data_frame(
     if cron and not acp:
         methods = methods | CRON_PANEL_METHODS
     if personal and not acp:
-        if tui:
+        if tui and compat:
             from agent_gateway.application.personal_tui import PERSONAL_TUI_METHODS
 
             methods = methods | PERSONAL_TUI_METHODS
         if web:
-            methods = methods | personal_web_methods()
+            methods = methods | PERSONAL_WEB_WORKER_METHODS
+            if compat:
+                methods = methods | guarded_web_methods()
     if not isinstance(method, str) or method not in methods:
         return False
     params = frame.get("params")
@@ -223,16 +268,19 @@ async def data_worker(
 
     async with AsyncExitStack() as cleanup:
         from agent_gateway.application.personal_settings import (
-            PERSONAL_SETTINGS_METHODS, is_local_settings_target, settings_transport_logger,
+            PERSONAL_SETTINGS_METHODS, settings_transport_logger,
         )
-        from agent_gateway.application.personal_tui import enable_personal_tui
 
         registry = ExtensionRegistry.create_instance(
             callback_framework=None, callback_framework_factory=callback_framework, config={}, logger=logger,
         )
         cleanup.callback(ExtensionRegistry.reset_instance)
+        # The account-free profile is the personal Worker. It alone offers the
+        # native TUI compatibility requests and the Web settings and operations,
+        # and only to a loopback AgentServer: personal_compatibility decides
+        # that once, for assembling the handlers and for admitting the requests.
         personal = not (control_client is not None and accounts)
-        personal_settings = personal and is_local_settings_target(agent_server_url)
+        personal_tui, personal_settings = personal_compatibility(agent_server_url, personal=personal)
         wire_options = {}
         if personal_settings:
             wire_options = {
@@ -252,9 +300,7 @@ async def data_worker(
             if on_credentials is not None:
                 on_credentials(credentials)
         accounts = credentials.bindings if credentials is not None else _DisabledAccounts()
-        # The account-free profile is the personal Worker: it alone offers the
-        # native TUI compatibility requests, and only to a loopback AgentServer.
-        personal_tui = personal and enable_personal_tui(agent_server_url)
+        # Heartbeat jobs live in the AgentServer; the Worker only relays.
         heartbeat = None
         if personal:
             from agent_gateway.heartbeat import HeartbeatControllerProxy
@@ -321,16 +367,16 @@ async def data_worker(
 
                 bind_owned_cron_handlers(web, tui.protocol_runtime)
             await tui.tui_channel.start()
-            frame_allowed = partial(
-                is_data_frame, accounts=credentials is not None, cron=cron is not None, personal=personal,
+            protocol_allowed, web_allowed = listener_frame_gates(
+                agent_server_url, personal=personal, cron=cron is not None,
             )
-            web_app = _build_web_app(web, frame_allowed=partial(frame_allowed, web=True))
+            web_app = _build_web_app(web, frame_allowed=web_allowed)
             web_runtime = WebProtocolRuntime(
                 web_app, ws_per_message_deflate=False, single_request_http=True,
             )
             northbound.push_async_callback(web_runtime.stop)
             await web_runtime.start()
-            protocol = ProtocolConnectionRuntime(tui.protocol_runtime, frame_allowed=frame_allowed)
+            protocol = ProtocolConnectionRuntime(tui.protocol_runtime, frame_allowed=protocol_allowed)
             northbound.push_async_callback(protocol.stop)
             await protocol.start()
             runtimes = {

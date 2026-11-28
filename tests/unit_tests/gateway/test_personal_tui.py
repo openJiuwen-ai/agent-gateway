@@ -138,11 +138,13 @@ def test_worker_admits_compatibility_frames_only_for_the_personal_tui_route():
         assert is_data_frame(frame(method)) is False
         assert is_data_frame(frame(method), personal=True) is False
         assert is_data_frame(frame(method), tui=True) is False
-        assert is_data_frame(frame(method), tui=True, personal=True) is True
+        assert is_data_frame(frame(method), compat=True) is False
+        # Only the /tui route, and only with the personal Worker's compatibility installed.
+        assert is_data_frame(frame(method), tui=True, personal=True) is False
+        assert is_data_frame(frame(method), tui=True, personal=True, compat=True) is True
     assert is_data_frame(frame('chat.send'), tui=True, personal=True) is True
-    assert is_data_frame(frame('session.create'), tui=True, personal=True) is False
-    assert is_data_frame(frame('cron.job.list'), tui=True, personal=True) is False
-    assert is_data_frame(frame('config.set'), tui=True, personal=True) is False
+    for method in ('session.create', 'cron.job.list', 'config.set'):
+        assert is_data_frame(frame(method), tui=True, personal=True, compat=True) is False
 
 
 def test_personal_tui_gate_requires_a_personal_loopback_agent_server(monkeypatch):
