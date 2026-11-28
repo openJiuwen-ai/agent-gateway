@@ -197,7 +197,7 @@ def test_organization_stop_uses_payload_session_and_preserves_uncancelled_reques
         "cancelled_requests": [{"team_id": "expert", "request_id": "first"}],
     })
     channel._track_session_busy(response)
-    assert channel._session_busy["session"] is not success
+    assert channel._session_busy.get("session", False) is not success
     requests = channel._expert_processing_requests["session"]
     assert (("expert", "first") in requests) is not success
     assert ("expert", "second") in requests
@@ -208,6 +208,39 @@ def test_organization_stop_uses_payload_session_and_preserves_uncancelled_reques
         channel._track_session_busy(response)
         assert channel.is_session_busy("session") is False
         assert "session" not in channel._expert_processing_requests
+        assert "session" not in channel._session_busy
+
+
+def test_idle_sessions_are_dropped_from_busy_map():
+    """Idle Sessions must not leave an entry behind; absence already reads idle."""
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    channel._track_session_busy(status("owner", True))
+    assert channel._session_busy == {"session": True}
+    channel._track_session_busy(status("owner", False))
+    assert "session" not in channel._session_busy
+    assert channel.is_session_busy("session") is False
+
+    for index in range(50):
+        frame = status("owner", True)
+        frame.session_id = f"session-{index}"
+        channel._track_session_busy(frame)
+    assert len(channel._session_busy) == 50
+    for index in range(50):
+        frame = status("owner", False)
+        frame.session_id = f"session-{index}"
+        channel._track_session_busy(frame)
+    assert not channel._session_busy
+
+
+def test_interrupt_cancel_drops_the_busy_entry():
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    channel._track_session_busy(status("owner", True))
+    response = status("cancel", False)
+    response.event_type = EventType.CHAT_INTERRUPT_RESULT
+    response.payload.update({"event_type": "chat.interrupt_result", "intent": "cancel"})
+    channel._track_session_busy(response)
+    assert "session" not in channel._session_busy
+    assert channel.is_session_busy("session") is False
 
 
 def test_organization_stop_without_session_does_not_create_busy_entry():
