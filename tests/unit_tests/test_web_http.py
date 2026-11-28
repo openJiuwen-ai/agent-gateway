@@ -193,6 +193,24 @@ def test_bind_http_session_sessionless_reads_share_one_route():
     assert "session_id" not in created_params
 
 
+def test_bind_http_session_sessionless_default_reads_share_one_route():
+    user = {"user_id": "user1"}
+    sessions, sessions_params = outbound_mod.bind_http_session("session.list", user)
+    archived, archived_params = outbound_mod.bind_http_session("session.archived.list", user)
+    info, info_params = outbound_mod.bind_http_session("project.info", {**user, "project_id": "p1"})
+    config, config_params = outbound_mod.bind_http_session("config.get", user)
+    models, models_params = outbound_mod.bind_http_session("models.list", user)
+    assert sessions == archived == info == config == models == "shared_user_user1"
+    for params in (sessions_params, archived_params, info_params, config_params, models_params):
+        assert "session_id" not in params
+    # A read carrying an explicit client session still routes to that session.
+    explicit, explicit_params = outbound_mod.bind_http_session(
+        "session.list", {**user, "session_id": "web_sess"},
+    )
+    assert explicit == "web_sess"
+    assert explicit_params["session_id"] == "web_sess"
+
+
 def test_bind_http_session_bind_param_false_keeps_client_session_id():
     sid, params = outbound_mod.bind_http_session(
         "skills.list",
@@ -691,6 +709,27 @@ def test_sessions_list_create_delete(app_with_mock):
     r = client.delete("/api/v1/sessions/s_x")
     assert r.status_code == 200
     assert r.json()["ok"] is True
+
+
+def test_sessions_list_merges_identity_headers_for_route_affinity(app_with_mock):
+    """GET /sessions must carry the caller identity so bind_http_session can pick
+    the per-user shared route session instead of the cross-user default key."""
+    app, dispatch = app_with_mock
+
+    async def _disp(*args, **kwargs):
+        peer = _FakePeer([
+            {"type": "res", "id": "r", "ok": True, "payload": {"sessions": []}},
+        ])
+        return peer, kwargs.get("request_id") or "r", "shared_user_user1"
+
+    dispatch.side_effect = _disp
+    response = TestClient(app).get(
+        "/api/v1/sessions",
+        headers={"X-User-Id": "user1", "X-Request-Id": "r"},
+    )
+    assert response.status_code == 200
+    params = dispatch.await_args.kwargs["params"]
+    assert params["user_id"] == "user1"
 
 
 @pytest.mark.parametrize("path", [

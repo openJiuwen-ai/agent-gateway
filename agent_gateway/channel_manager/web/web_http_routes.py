@@ -316,6 +316,7 @@ def register_web_http_api_routes(
             params["limit"] = limit
         if offset is not None:
             params["offset"] = offset
+        params = _merge_header_params(request, params)
         return await _unary(request, channel, "session.list", params)
 
     @app.post(
