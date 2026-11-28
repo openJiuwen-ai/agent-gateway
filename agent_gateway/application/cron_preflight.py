@@ -48,9 +48,12 @@ async def inspect_controlled_cron(
 async def preflight_controlled_cron(
     ownership: CronOwnership, *, config: dict[str, Any] | None = None,
     store: FileCronJobStore | None = None, allow_login_credentials: bool = False,
+    allow_project_jobs: bool = True,
 ) -> CronPreflightReport:
+    """Refuse to activate Cron while an enabled record uses an unsupported capability."""
     report = await inspect_controlled_cron(
         ownership, config=config, store=store, allow_login_credentials=allow_login_credentials,
+        allow_project_jobs=allow_project_jobs,
     )
     if not report.ready:
         raise ValueError('Cron preflight rejected unsupported enabled capabilities')
