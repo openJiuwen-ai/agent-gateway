@@ -12,6 +12,7 @@ import socket
 import sys
 import uuid
 
+from agent_gateway.common.southbound_routes import StaticRouteDirectory
 from agent_gateway.common.worker_affinity import WorkerManifest
 from agent_gateway.processes.capabilities import management_preflight
 from agent_gateway.processes.channel import ManagementChannel
@@ -27,6 +28,9 @@ from agent_gateway.transport.handoff_protocol import HandoffIdentity
 logger = logging.getLogger("gateway")
 
 RUNTIME_IDS = ("web-http", "web-ws", "protocol")
+# The Worker positional that names one AgentServer carries this marker when a
+# static route directory follows as an option instead.
+STATIC_SOUTHBOUND = "static"
 
 
 class _WorkerFrameError(RuntimeError):
@@ -55,13 +59,29 @@ class _Worker:
 
 
 class WorkerPool:
-    def __init__(self, agent_server_url: str, count: int, *, startup_timeout: float = 30,
-                 control_services: ControlServices | None = None,
-                 cron_manifest: WorkerManifest | None = None,
-                 account_services: bool = False) -> None:
+    def __init__(
+        self, agent_server_url: str | None, count: int, *, startup_timeout: float = 30,
+        control_services: ControlServices | None = None, cron_manifest: WorkerManifest | None = None,
+        account_services: bool = False, southbound_routes: StaticRouteDirectory | None = None,
+    ) -> None:
+        """Spawn ``count`` Workers over one AgentServer or over ``southbound_routes``.
+
+        A static pool hands every Worker the same directory. Each Worker keeps
+        the whole manifest and serves the targets of its own slot.
+        """
         if type(count) is not int or not 1 <= count <= 32:
             raise ValueError("number of Workers must be between 1 and 32")
         self.slots = tuple(range(count))
+        if southbound_routes is not None:
+            if type(southbound_routes) is not StaticRouteDirectory:
+                raise ValueError("static routes must be an explicit static route directory")
+            if southbound_routes.manifest.slots != self.slots:
+                raise ValueError("the static route manifest must cover the complete Worker range")
+            if agent_server_url is not None:
+                raise ValueError("a static Worker pool takes its targets from the directory only")
+        elif agent_server_url is None:
+            raise ValueError("a Worker pool requires an AgentServer URL or a static route directory")
+        self.southbound_routes = southbound_routes
         if cron_manifest is not None:
             if type(cron_manifest) is not WorkerManifest or cron_manifest.slots != self.slots:
                 raise ValueError("Worker Cron manifest must cover the complete Worker range")
@@ -131,7 +151,10 @@ class WorkerPool:
 
             manager, manager_fd = pair()
             transfer, transfer_fd = pair()
-            args = [str(manager_fd), str(transfer_fd), self._agent_server_url]
+            args = [
+                str(manager_fd), str(transfer_fd),
+                STATIC_SOUTHBOUND if self.southbound_routes is not None else self._agent_server_url,
+            ]
             pass_fds = [manager_fd, transfer_fd]
             control = None
             if self._control_services is not None:
@@ -142,6 +165,9 @@ class WorkerPool:
                 args.append("--accounts")
             if self.cron_manifest is not None:
                 args += ["--cron-slot", str(slot), "--cron-slots", ",".join(map(str, self.slots))]
+            if self.southbound_routes is not None:
+                # A bounded, non-secret snapshot: at most 16 KiB per Worker.
+                args += ["--southbound-routes-json", self.southbound_routes.to_json()]
 
             # Keep the spawn task owned if start is cancelled during fork/exec.
             spawn = asyncio.create_task(asyncio.create_subprocess_exec(

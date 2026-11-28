@@ -15,6 +15,7 @@ from agent_gateway.application.cron_preflight import require_controlled_cron
 from agent_gateway.application.worker_group import WorkerGroup
 from agent_gateway.common.agentos_runtime import is_agentos_runtime
 from agent_gateway.common.ingress_identity import LocalIdentityPolicy
+from agent_gateway.common.southbound_routes import MAX_ROUTE_DIRECTORY_BYTES, StaticRouteDirectory
 from agent_gateway.common.worker_affinity import WorkerManifest
 from agent_gateway.cron.ownership import CronOwnership
 from agent_gateway.enterprise import is_enterprise
@@ -32,15 +33,23 @@ class MultiprocessOptions:
     protocol_port: int
     accounts: bool = False
     cron: bool = False
+    # Opt-in static multi-AgentServer trial: one non-secret route snapshot.
+    southbound_routes: StaticRouteDirectory | None = None
 
     @classmethod
     def from_cli(cls, *, workers: int | None, web_host: str, web_port: int,
                  web_path: str, web_ws_deflate: bool,
                  required_client_type: str | tuple[str, ...] | None,
-                 accounts: bool = False, cron: bool = False) -> MultiprocessOptions:
+                 accounts: bool = False, cron: bool = False,
+                 southbound_routes_file: str | None = None) -> MultiprocessOptions:
         count = DEFAULT_WORKERS if workers is None else workers
         if not 1 <= count <= MAX_WORKERS:
             raise ValueError(f"--workers must be between 1 and {MAX_WORKERS}")
+        southbound_routes = None
+        if southbound_routes_file is not None:
+            southbound_routes = load_static_routes(southbound_routes_file, workers=count)
+            if accounts or cron:
+                raise ValueError("--southbound-routes-file cannot be combined with --enable-accounts or --enable-cron")
         if type(accounts) is not bool or type(cron) is not bool:
             raise ValueError("--enable-accounts and --enable-cron must be explicit flags")
         if is_enterprise() or is_agentos_runtime() or required_client_type is not None:
@@ -63,7 +72,30 @@ class MultiprocessOptions:
             raise ValueError("listen ports must be between 0 and 65535")
         if web_port == protocol_port != 0:
             raise ValueError("Web and TUI/ACP must use distinct ports")
-        return cls(count, web_port, protocol_port, accounts, cron)
+        return cls(count, web_port, protocol_port, accounts, cron, southbound_routes)
+
+
+def load_static_routes(path: str, *, workers: int) -> StaticRouteDirectory:
+    """Read the static route directory of the Worker group; no other side effect.
+
+    The file is a local, non-secret snapshot. Its manifest must list exactly
+    the slots of this run, so every Worker owns the targets fixed for it.
+    """
+    if type(path) is not str or not path.strip() or type(workers) is not int:
+        raise ValueError("--southbound-routes-file requires a path")
+    try:
+        with open(path.strip(), "rb") as source:
+            encoded = source.read(MAX_ROUTE_DIRECTORY_BYTES + 1)
+        if len(encoded) > MAX_ROUTE_DIRECTORY_BYTES:
+            raise ValueError("static route file exceeds the supported size")
+        directory = StaticRouteDirectory.from_json(encoded.decode("utf-8"))
+    except (OSError, UnicodeError) as error:
+        raise ValueError(f"cannot read --southbound-routes-file: {type(error).__name__}") from error
+    except ValueError as error:
+        raise ValueError(f"invalid --southbound-routes-file: {error}") from error
+    if directory.manifest.slots != tuple(range(workers)):
+        raise ValueError("the static route manifest must list exactly the --workers slots")
+    return directory
 
 
 def _channel_enabled(config: object) -> bool:
@@ -142,9 +174,12 @@ async def run_multiprocess(options: MultiprocessOptions, agent_server_url: str,
         from agent_gateway.auth.service import get_auth_service
 
         auth_service_provider = get_auth_service
-    group = WorkerGroup(agent_server_url, workers=options.workers, web_port=options.web_port,
-                        protocol_port=options.protocol_port, auth_service_provider=auth_service_provider,
-                        cron=options.cron)
+    group = WorkerGroup(
+        None if options.southbound_routes is not None else agent_server_url,
+        workers=options.workers, web_port=options.web_port, protocol_port=options.protocol_port,
+        auth_service_provider=auth_service_provider, cron=options.cron,
+        southbound_routes=options.southbound_routes,
+    )
     shutdown = asyncio.create_task(shutdown_event.wait())
     startup = asyncio.create_task(group.start())
     tasks = [shutdown, startup]
@@ -154,9 +189,11 @@ async def run_multiprocess(options: MultiprocessOptions, agent_server_url: str,
             await startup
         if shutdown.done():
             return
-        logger.info("[App] multiprocess_ready workers=%d web_port=%d protocol_port=%d worker_pids=%s",
+        logger.info("[App] multiprocess_ready workers=%d web_port=%d protocol_port=%d worker_pids=%s%s",
                     options.workers, group.addresses[0][1], group.addresses[1][1],
-                    ",".join(str(process.pid) for process in group.pool.processes))
+                    ",".join(str(process.pid) for process in group.pool.processes),
+                    f" static_targets={len(options.southbound_routes.targets)}"
+                    if options.southbound_routes is not None else "")
         closed = asyncio.create_task(group.wait())
         tasks.append(closed)
         done, _ = await asyncio.wait((closed, shutdown), return_when=asyncio.FIRST_COMPLETED)

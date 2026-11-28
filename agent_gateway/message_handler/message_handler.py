@@ -433,6 +433,10 @@ class MessageHandler(ABC):
         # AgentServer server_push frames only carry request_id. Keep the
         # authenticated owner so cron mutations and reverse E2A stay routed.
         self._stream_user_ids: dict[str, str] = {}
+        # Static multi-AgentServer: every response names the user of the
+        # request it answers, and stream work is cancelled by that user only.
+        self._owner_delivery = False
+        self._request_owner_lookup: Callable[[str], str | None] | None = None
         self._stream_modes: dict[str, str] = {}  # request_id -> mode
         self._stream_emits_processing_status: dict[str, bool] = {}  # request_id -> emits chat.processing_status
         # request_id -> req_method value（如 chat.send / command.goal / history.get）。
@@ -930,6 +934,42 @@ class MessageHandler(ABC):
         修复后后续可将 msg.bot_id 逐步迁移为 msg.app_id。
         """
         return getattr(msg, "app_id", None) or getattr(msg, "bot_id", None) or "default"
+
+    def set_owner_delivery(self, enabled: bool, *, request_owner: Callable[[str], str | None]) -> None:
+        """Bind named-owner responses; single-AgentServer mode keeps its fan-out.
+
+        ``request_owner`` names the user a request id was admitted for, from
+        the Worker route tables that outlive the per-request stream state.
+        """
+        if type(enabled) is not bool or not callable(request_owner):
+            raise ValueError("owner delivery requires a boolean and a request owner lookup")
+        self._owner_delivery = enabled
+        self._request_owner_lookup = request_owner
+
+    def request_owner(self, request_id: str | None) -> str | None:
+        """The user a request belongs to, while it runs and for its late pushes."""
+        rid = str(request_id or "").strip()
+        if not rid:
+            return None
+        user = getattr(self, "_stream_user_ids", {}).get(rid)
+        lookup = getattr(self, "_request_owner_lookup", None)
+        if not user and lookup is not None:
+            user = lookup(rid) or ""
+        return str(user or "").strip() or None
+
+    def _bind_response_owner(self, msg: "Message") -> "Message":
+        """Name the user a response belongs to before any channel sees it.
+
+        The user recorded with the request wins over a declared one. A response
+        whose request is unknown keeps what it declares, or names nobody; a
+        static Worker then refuses to deliver it.
+        """
+        if not getattr(self, "_owner_delivery", False):
+            return msg
+        owner = self.request_owner(getattr(msg, "id", None))
+        if not owner:
+            return msg
+        return msg if owner == getattr(msg, "user_id", None) else replace(msg, user_id=owner)
 
     async def handle_message(self, msg: "Message") -> None:
         """Channel 同步回调：将消息放入 user_messages 队列，由转发循环发给 AgentServer."""
@@ -1637,9 +1677,13 @@ class MessageHandler(ABC):
         if not channel_id:
             return 0
 
+        sender = str(getattr(msg, "user_id", None) or "").strip()
         candidates: list[tuple[str, asyncio.Task, str | None, str | None]] = []
         for rid, task in list(self._stream_tasks.items()):
             if self._stream_channels.get(rid) != channel_id:
+                continue
+            if getattr(self, "_owner_delivery", False) and self._stream_user_ids.get(rid) != sender:
+                # A static Worker shares the channel tables between users.
                 continue
             if task.done():
                 continue
@@ -3412,6 +3456,7 @@ class MessageHandler(ABC):
                 await self._outbound_pipeline.apply(msg)
             except Exception:
                 logger.exception("Outbound pipeline error, message queued without routing")
+        msg = self._bind_response_owner(msg)
         self._attach_derived_response_owner(msg)
         msg = queue_response_trace(msg)
         if getattr(self, "_trace_dispatch_stopped", False):
@@ -3424,6 +3469,7 @@ class MessageHandler(ABC):
 
     def publish_robot_messages_nowait(self, msg: "Message") -> None:
         """将 Agent 响应放入 robot_messages 队列（同步）."""
+        msg = self._bind_response_owner(msg)
         self._attach_derived_response_owner(msg)
         msg = queue_response_trace(msg)
         if getattr(self, "_trace_dispatch_stopped", False):
@@ -3459,7 +3505,7 @@ class MessageHandler(ABC):
         except asyncio.TimeoutError:
             return None
 
-    async def _ensure_acp_agent_session(self) -> str:
+    async def _ensure_acp_agent_session(self, user_id: str | None = None) -> str:
         from e2a.gateway_normalize import e2a_from_agent_fields
         from e2a.message import ReqMethod
 
@@ -3474,6 +3520,7 @@ class MessageHandler(ABC):
             },
             is_stream=False,
             timestamp=time.time(),
+            user_id=(str(user_id).strip() or None) if user_id is not None else None,
         )
         resp = await self._send_non_stream_agent_request(env)
         if not resp.ok:
@@ -3489,6 +3536,7 @@ class MessageHandler(ABC):
     async def _resolve_acp_internal_session_id(
         self,
         external_session_id: str | None,
+        user_id: str | None = None,
     ) -> tuple[str | None, bool]:
         external = str(external_session_id or "").strip()
         if not external:
@@ -3503,7 +3551,7 @@ class MessageHandler(ABC):
             if cached:
                 return cached, cached != external
 
-            ensured = await self._ensure_acp_agent_session()
+            ensured = await self._ensure_acp_agent_session(user_id)
             self._acp_session_aliases[external] = ensured
             return ensured, ensured != external
 
@@ -3520,7 +3568,9 @@ class MessageHandler(ABC):
         if msg.req_method in (ReqMethod.INITIALIZE, ReqMethod.SESSION_CREATE):
             return msg
 
-        internal_session_id, aliased = await self._resolve_acp_internal_session_id(msg.session_id)
+        internal_session_id, aliased = await self._resolve_acp_internal_session_id(
+            msg.session_id, msg.user_id,
+        )
         if not internal_session_id:
             return msg
 

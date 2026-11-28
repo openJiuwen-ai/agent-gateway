@@ -97,6 +97,18 @@ def is_agentos_routing_client(agent_client: Any) -> bool:
     return getattr(agent_client, "managed_routing", False) is True
 
 
+def is_user_routing_client(agent_client: Any) -> bool:
+    """Whether the client routes each request to its named user's own target.
+
+    A static multi-AgentServer Worker serves several named users through one
+    set of downstream consumers. Handlers use this to keep cancel and delivery
+    scoped to the user a request or push belongs to. It is a resource
+    capability only: AgentOS wire projection stays governed by
+    ``is_agentos_routing_client``.
+    """
+    return getattr(agent_client, "user_routing", False) is True
+
+
 def is_legacy_shared_directory_client(agent_client: Any) -> bool:
     """Whether the deployment explicitly shares its user directory with Gateway.
 

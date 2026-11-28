@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import AsyncExitStack
 import logging
 import os
 import socket
@@ -11,13 +12,14 @@ import sys
 from typing import Any
 
 from agent_gateway.processes.channel import ManagementChannel
+from agent_gateway.common.southbound_routes import StaticRouteDirectory
 from agent_gateway.common.worker_affinity import WorkerManifest
 from agent_gateway.processes.control_channel import ControlServiceChannel
 from agent_gateway.processes.control_service import (
     ControlServiceBusy, ControlServiceClient, ControlServiceIdentity,
 )
 from agent_gateway.processes.management_protocol import validate_message
-from agent_gateway.processes.pool import management_frame
+from agent_gateway.processes.pool import STATIC_SOUTHBOUND, management_frame
 from agent_gateway.transport.handoff import HandoffReceiver
 from agent_gateway.transport.handoff_channel import HandoffChannel
 from agent_gateway.transport.handoff_protocol import HandoffIdentity
@@ -84,7 +86,12 @@ def _parse_role_arguments(arguments: list[str]):
     With Cron flags the Control client is Cron-only unless ``--accounts`` is
     explicit, so a Cron slot never inherits account services by accident.
     """
-    control_fd = accounts = cron_slot = cron_manifest = None
+    return _parse_worker_role(arguments)[:4]
+
+
+def _parse_worker_role(arguments: list[str]):
+    """Return the role of this slot and its optional static route directory."""
+    control_fd = accounts = cron_slot = cron_manifest = southbound_routes = None
     positionals: list[str] = []
     index = 0
     while index < len(arguments):
@@ -104,6 +111,11 @@ def _parse_role_arguments(arguments: list[str]):
                 cron_manifest = WorkerManifest(tuple(int(item) for item in arguments[index].split(",")))
             except ValueError as error:
                 raise ValueError("--cron-slots requires a slot list") from error
+        elif argument == "--southbound-routes-json":
+            index += 1
+            if index >= len(arguments) or southbound_routes is not None:
+                raise ValueError("--southbound-routes-json requires one directory")
+            southbound_routes = StaticRouteDirectory.from_json(arguments[index])
         elif argument.startswith("--"):
             raise ValueError(f"unknown Worker argument: {argument}")
         else:
@@ -124,14 +136,16 @@ def _parse_role_arguments(arguments: list[str]):
     if cron_slot is None:
         # The original contract: a Control fd alone serves the account services.
         accounts = control_fd is not None
-    return control_fd, bool(accounts), cron_slot, cron_manifest
+    return control_fd, bool(accounts), cron_slot, cron_manifest, southbound_routes
 
 
 async def _run(
     management_fd: int, transfer_fd: int, agent_server_url: str, control_fd: int | None = None, *,
     accounts: bool = True, cron_slot: int | None = None, cron_manifest: WorkerManifest | None = None,
+    southbound_routes: StaticRouteDirectory | None = None,
 ) -> None:
     from agent_gateway.application.worker_data import data_worker
+    from agent_gateway.application.worker_routed_client import RoutedTargetsUnreachable
 
     management = ManagementChannel(socket.socket(fileno=management_fd))
     transfer = HandoffChannel(socket.socket(fileno=transfer_fd))
@@ -151,6 +165,18 @@ async def _run(
         identity = HandoffIdentity(init["group_id"], init["slot_id"], init["generation"])
         if cron_enabled and identity.slot_id != cron_slot:
             raise RuntimeError("Worker Cron slot does not match the Worker identity")
+        if southbound_routes is not None or agent_server_url == STATIC_SOUTHBOUND:
+            # A directory or role this Worker cannot serve is a configuration
+            # failure, before anything is built or any target is contacted.
+            try:
+                if southbound_routes is None:
+                    raise ValueError("the static Worker marker requires a route directory")
+                if agent_server_url != STATIC_SOUTHBOUND:
+                    raise ValueError("a static Worker takes its targets from the directory only")
+                southbound_routes.targets_for_slot(identity.slot_id)
+            except ValueError as error:
+                raise _WorkerFailure("SOUTHBOUND_CONFIGURATION") from error
+            agent_server_url = None
         await management.send(management_frame("READY", identity, pid=os.getpid(), stage="management_ready"))
         receive.append(asyncio.create_task(management.receive(), name="gateway-worker-stop-frame"))
         if control_channel is not None:
@@ -179,11 +205,23 @@ async def _run(
                 event_handlers=event_handlers,
             )
             await control.start()
-        async with data_worker(agent_server_url, control_client=control, accounts=accounts,
-                               on_credentials=attach_credentials if control is not None and accounts
-                               else None, cron_slot=cron_slot, cron_manifest=cron_manifest) as (
-            runtimes, web_runtime, cron,
-        ):
+        async with AsyncExitStack() as worker_scope:
+            # A single-AgentServer Worker keeps its original keyword contract.
+            static = ({"southbound_routes": southbound_routes, "slot_id": identity.slot_id}
+                      if southbound_routes is not None else {})
+            try:
+                runtimes, web_runtime, cron = await worker_scope.enter_async_context(data_worker(
+                    agent_server_url, control_client=control, accounts=accounts,
+                    on_credentials=attach_credentials if control is not None and accounts else None,
+                    cron_slot=cron_slot, cron_manifest=cron_manifest, **static,
+                ))
+            except RoutedTargetsUnreachable as error:
+                raise _WorkerFailure("SOUTHBOUND_UNREACHABLE") from error
+            except ValueError as error:
+                if southbound_routes is None:
+                    raise
+                # A directory, slot or role the static Worker cannot serve.
+                raise _WorkerFailure("SOUTHBOUND_CONFIGURATION") from error
             owned["cron"] = cron
             await management.send(management_frame("RUNTIME_READY", identity, pid=os.getpid(),
                                                    runtime_ids=list(runtimes)))
@@ -259,6 +297,6 @@ async def _report_failure(management: ManagementChannel, identity, error_code: s
 
 if __name__ == "__main__":
     # Positional arguments keep the original contract; role options follow them.
-    control_fd, accounts, cron_slot, cron_manifest = _parse_role_arguments(sys.argv[4:])
+    control_fd, accounts, cron_slot, cron_manifest, southbound_routes = _parse_worker_role(sys.argv[4:])
     asyncio.run(_run(int(sys.argv[1]), int(sys.argv[2]), sys.argv[3], control_fd, accounts=accounts,
-                     cron_slot=cron_slot, cron_manifest=cron_manifest))
+                     cron_slot=cron_slot, cron_manifest=cron_manifest, southbound_routes=southbound_routes))

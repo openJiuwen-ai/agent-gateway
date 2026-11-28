@@ -361,6 +361,10 @@ def main() -> None:
                         help="Enable sharded personal Cron in multiprocess mode.")
     parser.add_argument("--check-cron", action="store_true",
                         help="Print the read-only Cron file preflight and exit.")
+    parser.add_argument("--southbound-routes-file", metavar="<path>",
+                        help="Multiprocess static multi-AgentServer trial: a local JSON route directory "
+                             "that fixes each named user's loopback AgentServer per Worker slot. "
+                             "It cannot be combined with --enable-accounts or --enable-cron.")
     parser.add_argument(
         "--require-adx-router",
         # Accept previously generated service units; validation itself is generic.
@@ -376,6 +380,8 @@ def main() -> None:
         parser.error("--enable-cron requires --mode multiprocess")
     if args.check_cron and (args.mode != "multiprocess" or not args.enable_cron):
         parser.error("--check-cron requires --mode multiprocess --enable-cron")
+    if args.southbound_routes_file is not None and args.mode != "multiprocess":
+        parser.error("--southbound-routes-file requires --mode multiprocess")
 
     if args.check_cron:
         _check_cron(args, parser)
@@ -432,7 +438,7 @@ def main() -> None:
                 workers=args.workers, web_host=web_host, web_port=web_port,
                 web_path=web_path, web_ws_deflate=web_ws_deflate,
                 required_client_type=args.required_client_type, accounts=args.enable_accounts,
-                cron=args.enable_cron,
+                cron=args.enable_cron, southbound_routes_file=args.southbound_routes_file,
             )
 
             async def run_multiprocess_until_shutdown(shutdown_event: asyncio.Event) -> None:

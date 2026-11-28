@@ -180,6 +180,8 @@ class AcpGatewayBridge:
         self._pending_client_rpc_count_by_session: dict[str, int] = {}
         # value: (session_id, ws, created_at)
         self._pending_client_rpc_session_by_id: dict[str, tuple[str, Any, float]] = {}
+        # A static Worker routes a prompt by the user its connection declared.
+        self.bind_request_user = False
 
     @property
     def request_contexts(self) -> list[AcpGatewayRequestContext]:
@@ -311,6 +313,10 @@ class AcpGatewayBridge:
 
                 request_id = f"acp_{uuid.uuid4().hex[:12]}"
                 self._bind_session(ws, session_id)
+                user_id = (
+                    str(getattr(ws, "_gateway_user_id", "") or "").strip() or None
+                    if self.bind_request_user else None
+                )
                 self._request_ctx_by_request_id[request_id] = AcpGatewayRequestContext(
                     jsonrpc_id=rpc_id,
                     session_id=session_id,
@@ -335,6 +341,7 @@ class AcpGatewayBridge:
                         req_method=ReqMethod.CHAT_SEND,
                         mode=Mode.AGENT,
                         metadata={"acp": {"jsonrpc_id": rpc_id, "method": method}},
+                        user_id=user_id,
                     )
                 )
                 return True

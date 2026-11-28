@@ -3,6 +3,9 @@
 
 With an explicit slot this host also owns one Cron shard. The shard is prepared
 here but only started when the parent sends ``CRON_ACTIVATE``.
+
+A static Worker (``southbound_routes`` with its ``slot_id``) runs the same
+handlers over the fixed local AgentServer targets its slot owns.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ from agent_gateway.application.inbound import (
 )
 from agent_gateway.auth.passthrough import MODEL_AUTH_PARAM_KEY
 from agent_gateway.common.ingress_identity import LocalIdentityPolicy, resolve_local_identity
+from agent_gateway.common.southbound_routes import StaticRouteDirectory
 from agent_gateway.transport.protocol_connection_runtime import ProtocolConnectionRuntime
 from agent_gateway.transport.web_protocol_runtime import WebProtocolRuntime
 
@@ -176,12 +180,16 @@ def is_data_frame(
     )
 
 
-def _build_web_app(channel, *, frame_allowed=is_data_frame):
+def _build_web_app(
+    channel, *, frame_allowed=is_data_frame, frame_gate=None, identity_policy: LocalIdentityPolicy | None = None,
+):
     from agent_gateway.channel_manager.web import web_channel_app
     from agent_gateway.common.ingress_identity import IngressIdentityError
 
+    if frame_gate is not None and not callable(frame_gate):
+        raise ValueError("the Web frame gate must be callable")
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=False)
-    policy = LocalIdentityPolicy()
+    policy = LocalIdentityPolicy() if identity_policy is None else identity_policy
 
     @app.middleware("http")
     async def bind_http_identity(request: Request, call_next):
@@ -205,12 +213,57 @@ def _build_web_app(channel, *, frame_allowed=is_data_frame):
         except IngressIdentityError:
             await websocket.close(code=1008)
             return
+        if frame_gate is None:
+            allowed = frame_allowed
+        else:
+            # A static Worker fixes the user of a connection at the handshake
+            # and admits every later frame for that user only.
+            allowed = frame_gate.for_user(identity.business_user_id or "")
         await web_channel_app._serve_channel_websocket(
             channel, websocket, local_user_id=identity.business_user_id or "",
-            frame_allowed=frame_allowed,
+            frame_allowed=allowed,
         )
 
     return app
+
+
+async def _build_southbound(
+    cleanup: AsyncExitStack, agent_server_url: str | None, southbound_routes: StaticRouteDirectory | None,
+    slot_id: int | None, *, personal_settings: bool,
+):
+    """Connect the single AgentServer, or build the connected static facade.
+
+    Returns ``(client, routed)``: ``routed`` is ``None`` for the single
+    AgentServer and the facade itself for a static Worker, which owns a live
+    socket to each of its targets before any handler registers.
+    """
+    from agent_gateway.application.personal_settings import PERSONAL_SETTINGS_METHODS, settings_transport_logger
+    from agent_gateway.application.worker_routed_client import WorkerRoutedClient
+    from agent_gateway.southbound.orchestration.client import assemble_client
+
+    if southbound_routes is None:
+        if agent_server_url is None:
+            raise ValueError("a Worker requires an AgentServer URL or a static route directory")
+        wire_options = {}
+        if personal_settings:
+            wire_options = {
+                "wire_logger": settings_transport_logger(), "private_methods": PERSONAL_SETTINGS_METHODS,
+                # The AgentServer delivers the Designer pushes of a canvas to its
+                # connections of this role, never to whichever gateway socket
+                # connected last.
+                "headers": (PERSONAL_WORKER_CONNECTION_ROLE,),
+            }
+        client = assemble_client(None, mode="websocket", enterprise=False, uri=agent_server_url, **wire_options)
+        cleanup.push_async_callback(client.disconnect)
+        # The Worker stops the group when its AgentServer is unavailable.
+        await client.connect(agent_server_url)
+        return client, None
+    if agent_server_url is not None:
+        raise ValueError("a static Worker takes its targets from the directory only")
+    routed = WorkerRoutedClient(southbound_routes, slot_id=slot_id)
+    cleanup.push_async_callback(routed.disconnect)
+    await routed.activate()
+    return routed, routed
 
 
 async def _reject_config(*args, **kwargs) -> None:
@@ -288,13 +341,18 @@ def _admit_cron_tool_pushes(agent_client, cron_commands, *, other_push=None):
 
 @asynccontextmanager
 async def data_worker(
-    agent_server_url: str, *, control_client=None, on_credentials=None, accounts: bool = True,
-    cron_slot: int | None = None, cron_manifest=None,
+    agent_server_url: str | None = None, *, control_client=None, on_credentials=None, accounts: bool = True,
+    cron_slot: int | None = None, cron_manifest=None, southbound_routes: StaticRouteDirectory | None = None,
+    slot_id: int | None = None,
 ):
     """Yield ``(runtimes, web_runtime, cron)``.
 
     ``cron`` is ``None``, or ``(runtime, commands)`` for the owned Cron shard.
     ``accounts`` must be false when the Control client exists only for Cron.
+
+    ``southbound_routes`` with ``slot_id`` selects the static multi-AgentServer
+    trial for that slot of the directory manifest; ``agent_server_url`` is then
+    ``None``. The Worker serves the named users of the slot's targets only.
     """
     from agent_gateway.common.worker_affinity import WorkerManifest
 
@@ -304,6 +362,9 @@ async def data_worker(
         raise ValueError("sharded Cron requires an explicit Worker manifest and slot")
     if cron_enabled and control_client is None:
         raise ValueError("Worker Cron requires its process Control client")
+    if southbound_routes is not None and (type(southbound_routes) is not StaticRouteDirectory
+                                          or type(slot_id) is not int):
+        raise ValueError("static routes require an explicit directory and a Worker slot")
     from agent_gateway.application.preparation import callback_framework
     from agent_gateway.application.tui_acp import assemble_tui_acp
     from agent_gateway.application.web import assemble_web
@@ -314,32 +375,28 @@ async def data_worker(
     from agent_gateway.southbound.orchestration.client import assemble_client
 
     async with AsyncExitStack() as cleanup:
-        from agent_gateway.application.personal_settings import (
-            PERSONAL_SETTINGS_METHODS, settings_transport_logger,
-        )
-
         registry = ExtensionRegistry.create_instance(
             callback_framework=None, callback_framework_factory=callback_framework, config={}, logger=logger,
         )
         cleanup.callback(ExtensionRegistry.reset_instance)
-        # The account-free profile is the personal Worker. It alone offers the
-        # native TUI compatibility requests and the Web settings and operations,
-        # and only to a loopback AgentServer: personal_compatibility decides
-        # that once, for assembling the handlers and for admitting the requests.
-        personal = not (control_client is not None and accounts)
+        # The account-free profile of one AgentServer is the personal Worker.
+        # It alone offers the native TUI compatibility requests and the Web
+        # settings and operations, and only to a loopback AgentServer:
+        # personal_compatibility decides that once, for assembling the handlers
+        # and for admitting the requests. A static Worker has one target per
+        # named user and no single user directory, so it offers none of them.
+        personal = southbound_routes is None and not (control_client is not None and accounts)
         personal_tui, personal_settings = personal_compatibility(agent_server_url, personal=personal)
-        wire_options = {}
-        if personal_settings:
-            wire_options = {
-                "wire_logger": settings_transport_logger(), "private_methods": PERSONAL_SETTINGS_METHODS,
-                # The AgentServer delivers the Designer pushes of a canvas to its
-                # connections of this role, never to whichever gateway socket
-                # connected last.
-                "headers": (PERSONAL_WORKER_CONNECTION_ROLE,),
-            }
-        client = assemble_client(None, mode="websocket", enterprise=False, uri=agent_server_url, **wire_options)
-        cleanup.push_async_callback(client.disconnect)
-        await client.connect(agent_server_url)
+        client, routed = await _build_southbound(
+            cleanup, agent_server_url, southbound_routes, slot_id, personal_settings=personal_settings,
+        )
+        if routed is not None:
+            # The Control contract of accounts and Cron names one AgentServer.
+            # A static Worker refuses both until its per-target contract exists.
+            if accounts and control_client is not None:
+                raise ValueError("static routes do not serve accounts in this slice")
+            if cron_enabled:
+                raise ValueError("static routes do not serve Cron in this slice")
         credentials = None
         if control_client is not None and accounts:
             from agent_gateway.auth.worker_credential_services import WorkerCredentialServices
@@ -362,12 +419,13 @@ async def data_worker(
             credentials.attach_handler(handler)
         else:
             handler.set_credential_access(accounts)
-        if personal and not cron_enabled:
+        if (personal or routed is not None) and not cron_enabled:
             # MessageHandler registers its AgentServer server-push handler only
             # from set_outbound_pipeline, which the single process calls while
             # assembling and no Worker does. Without it a push is dropped as it
             # arrives: a Designer canvas event, or the sentinel that ends a
-            # stream the AgentServer cancelled.
+            # stream the AgentServer cancelled. A static Worker needs it for
+            # the pushes of the requests and Sessions that own a route.
             handler._register_agent_server_push_handler()
         manager = ChannelManager(handler, config={})
         handler.set_channel_manager(manager)
@@ -428,16 +486,39 @@ async def data_worker(
 
                 bind_owned_cron_handlers(web, tui.protocol_runtime)
             await tui.tui_channel.start()
-            protocol_allowed, web_allowed = listener_frame_gates(
-                agent_server_url, personal=personal, cron=cron is not None,
-            )
-            web_app = _build_web_app(web, frame_allowed=web_allowed)
+            if routed is None:
+                protocol_allowed, web_allowed = listener_frame_gates(
+                    agent_server_url, personal=personal, cron=cron is not None,
+                )
+                web_app = _build_web_app(web, frame_allowed=web_allowed)
+            else:
+                from agent_gateway.application.worker_routed_northbound import bind_routed_delivery
+
+                # Before a listener opens: every outbound layer learns to
+                # deliver to the named user of a frame only.
+                bind_routed_delivery(routed, handler=handler, web=web, tui=tui)
+                # The data plane only. A static Worker offers no personal
+                # compatibility: those requests are answered from the user
+                # directory of one AgentServer, and it has one per named user.
+                shared = dict(accounts=credentials is not None, personal=False, cron=cron is not None)
+                protocol_allowed = partial(is_data_frame, **shared)
+                web_allowed = partial(is_data_frame, **shared, web=True)
+                web_app = _build_web_app(
+                    web, frame_allowed=web_allowed,
+                    frame_gate=routed.frame_gate.with_policy(web_allowed),
+                    identity_policy=routed.identity_policy,
+                )
             web_runtime = WebProtocolRuntime(
                 web_app, ws_per_message_deflate=False, single_request_http=True,
             )
             northbound.push_async_callback(web_runtime.stop)
             await web_runtime.start()
-            protocol = ProtocolConnectionRuntime(tui.protocol_runtime, frame_allowed=protocol_allowed)
+            protocol = ProtocolConnectionRuntime(
+                tui.protocol_runtime, frame_allowed=protocol_allowed,
+                frame_gate_factory=(
+                    routed.frame_gate.with_policy(protocol_allowed).for_protocol if routed is not None else None
+                ),
+            )
             northbound.push_async_callback(protocol.stop)
             await protocol.start()
             runtimes = {

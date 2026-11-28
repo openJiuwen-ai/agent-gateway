@@ -20,7 +20,7 @@ import sys
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -2321,6 +2321,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         # robot_messages 队列异步派发：扩展在连接钩子里直接向 ws 写
         # client.declarations，队列中的 ack 会晚于声明到达。channel.send
         # 直接入本连接的发送队列，保证 ack 先于后续连接钩子产生的帧。
+        if getattr(channel, "owner_delivery", None) is not None:
+            # A static Worker delivers to a named user only: the handshake
+            # frame belongs to the user of the connection it answers.
+            ack_msg = replace(ack_msg, user_id=channel.connection_user_id(ws))
         await channel.send(ack_msg)
 
     channel.on_connect(_on_connect)

@@ -42,10 +42,25 @@ class _NoSocketServer:
 
 class ProtocolConnectionRuntime:
     def __init__(
-        self, runtime: ProtocolRuntime, *, frame_allowed: Callable[..., bool], stop_timeout: float = 10.0,
+        self,
+        runtime: ProtocolRuntime,
+        *,
+        frame_allowed: Callable[..., bool],
+        stop_timeout: float = 10.0,
+        frame_gate_factory: Callable[[Any], Callable[..., bool]] | None = None,
     ) -> None:
+        """Serve ``runtime`` over adopted sockets.
+
+        ``frame_gate_factory`` builds one frame gate per connection from its
+        protocol. A gate that has to read the connection (its declared user,
+        for example) is bound to the socket it admits, instead of guessing
+        from frame fields.
+        """
+        if frame_gate_factory is not None and not callable(frame_gate_factory):
+            raise ValueError("the protocol frame gate factory must be callable")
         self._runtime = runtime
         self._frame_allowed = frame_allowed
+        self._frame_gate_factory = frame_gate_factory
         self._stop_timeout = stop_timeout
         self._ready = asyncio.Event()
         self._closed = asyncio.Event()
@@ -292,15 +307,19 @@ class ProtocolConnectionRuntime:
         frame_allowed = self._frame_allowed
 
         class DataProtocol(WebSocketServerProtocol):
+            # A connection-bound gate replaces the host policy when set.
+            frame_gate: Callable[..., bool] | None = None
+
             async def recv(self) -> str | bytes:
                 raw = await super().recv()
                 route = self.path.partition("?")[0]
-                if not frame_allowed(raw, acp=route == "/acp", tui=route == "/tui"):
+                gate = self.frame_gate if self.frame_gate is not None else frame_allowed
+                if not gate(raw, acp=route == "/acp", tui=route == "/tui"):
                     await self.close(code=1008, reason="unsupported Worker request")
                     await self.ensure_open()  # Raise the normal ConnectionClosed error.
                 return raw
 
-        return DataProtocol(
+        protocol = DataProtocol(
             self._runtime._connection_handler,
             self._server,
             extensions=self._extensions,
@@ -309,6 +328,9 @@ class ProtocolConnectionRuntime:
             ping_timeout=600,
             max_size=8 * 2**20,
         )
+        if self._frame_gate_factory is not None:
+            protocol.frame_gate = self._frame_gate_factory(protocol)
+        return protocol
 
 
 def _close_socket_quietly(sock: object) -> None:

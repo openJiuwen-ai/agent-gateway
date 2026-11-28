@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 
 from agent_gateway.application.cron_preflight import require_controlled_cron
 from agent_gateway.common.ingress_identity import LocalIdentityPolicy
+from agent_gateway.common.southbound_routes import StaticRouteDirectory
 from agent_gateway.common.worker_affinity import FixedUserHash, WorkerManifest
 from agent_gateway.enterprise import is_enterprise
 from agent_gateway.processes.pool import WorkerPool
@@ -29,21 +30,41 @@ class WorkerGroup:
     """The parent owns admission and supervises one fixed generation."""
 
     def __init__(
-        self, agent_server_url: str, *, workers: int, web_port: int = 19000,
+        self, agent_server_url: str | None = None, *, workers: int, web_port: int = 19000,
         protocol_port: int = 19001, handoff_timeout: float = 2,
         auth_service_provider: Callable | None = None,
-        cron: bool = False,
+        cron: bool = False, southbound_routes: StaticRouteDirectory | None = None,
     ) -> None:
-        url = urlsplit(agent_server_url)
-        if (is_enterprise() or url.scheme != "ws" or not url.port
-                or url.netloc != f"127.0.0.1:{url.port}" or url.query or url.fragment):
-            raise ValueError("the Worker group only supports personal loopback with a single local AgentServer")
+        """Supervise Workers over one AgentServer or over ``southbound_routes``.
+
+        A static group keeps every fixed Worker slot and loopback listener; the
+        Worker of a slot talks to that slot's local targets only.
+        """
         if not math.isfinite(handoff_timeout) or handoff_timeout <= 0:
             raise ValueError("handoff timeout must be finite and positive")
         if type(cron) is not bool:
             raise ValueError("cron must be an explicit boolean")
         if type(workers) is not int or not 1 <= workers <= 32:
             raise ValueError("number of Workers must be between 1 and 32")
+        if southbound_routes is not None:
+            if type(southbound_routes) is not StaticRouteDirectory:
+                raise ValueError("static routes must be an explicit static route directory")
+            if southbound_routes.manifest.slots != tuple(range(workers)):
+                raise ValueError("the static route manifest must cover the Worker range")
+            if agent_server_url is not None:
+                raise ValueError("a static Worker group takes its targets from the directory only")
+            if is_enterprise():
+                raise ValueError("the Worker group only supports a personal deployment")
+            if cron or auth_service_provider is not None:
+                # Control names one AgentServer; the static contract is separate.
+                raise ValueError("static routes do not serve accounts or Cron in this slice")
+        elif agent_server_url is None:
+            raise ValueError("the Worker group requires an AgentServer URL or a static route directory")
+        else:
+            url = urlsplit(agent_server_url)
+            if (is_enterprise() or url.scheme != "ws" or not url.port
+                    or url.netloc != f"127.0.0.1:{url.port}" or url.query or url.fragment):
+                raise ValueError("the Worker group only supports personal loopback with a single local AgentServer")
         self._credential_authority = self._control_web = None
         self._cron_ownership = self._cron_commands = None
         if cron:
@@ -95,7 +116,7 @@ class WorkerGroup:
         self.pool = WorkerPool(
             agent_server_url, workers, control_services=control_services,
             cron_manifest=self._cron_ownership.manifest if self._cron_ownership is not None else None,
-            account_services=auth_service_provider is not None,
+            account_services=auth_service_provider is not None, southbound_routes=southbound_routes,
         )
         self._ports = (web_port, protocol_port)
         self._handoff_timeout = handoff_timeout
