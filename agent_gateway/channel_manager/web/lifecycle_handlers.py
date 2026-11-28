@@ -71,8 +71,14 @@ def _lifecycle_entry(entry) -> tuple | None:
     result = entry.get("result")
     if not isinstance(result, dict):
         result = {}
+    # kind 非 str（如 list/dict）时，成员判断 kind in {...} 与 {..}.get(kind)
+    # 会抛 TypeError: unhashable type——同样打穿整批轮询；归一为 None 走
+    # "未知 kind" 兜底路径
+    kind = entry.get("kind")
+    if not isinstance(kind, str):
+        kind = None
     completed = bool(entry.get("completed")) and not _lifecycle_item_pending(result)
-    return event, payload, resource_id, revision, entry.get("kind"), completed, result
+    return event, payload, resource_id, revision, kind, completed, result
 
 
 def register_lifecycle_handlers(
@@ -146,14 +152,22 @@ def register_lifecycle_handlers(
                     # Session can retain its last known project binding. Only a new
                     # project revision or a window new to this watcher forces a
                     # lookup; otherwise the hook may answer from its cache.
+                    parsed_events = []
+                    for item in response.get("events", []):
+                        fields = _lifecycle_entry(item)
+                        if fields is None:
+                            # 只记字段摘要，不落全量 payload（可能含用户数据）
+                            logging.getLogger(__name__).warning(
+                                "lifecycle polling skipped malformed event entry: "
+                                "event=%r kind=%r payload_type=%s",
+                                item.get("event") if isinstance(item, dict) else None,
+                                item.get("kind") if isinstance(item, dict) else None,
+                                type(item.get("payload")).__name__ if isinstance(item, dict) else type(item).__name__,
+                            )
+                            continue
+                        parsed_events.append(fields)
                     client_projects = None
                     if project_ids_for_client is not None:
-                        parsed_events = [
-                            fields for fields in (
-                                _lifecycle_entry(item) for item in response.get("events", [])
-                            )
-                            if fields is not None
-                        ]
                         changed = any(
                             fields[0].startswith("project.")
                             and fields[3] > revisions.get((fields[0], fields[2]), -1)
@@ -166,13 +180,6 @@ def register_lifecycle_handlers(
                             for ws in clients
                         ))))
                         polled = clients
-                    else:
-                        parsed_events = [
-                            fields for fields in (
-                                _lifecycle_entry(item) for item in response.get("events", [])
-                            )
-                            if fields is not None
-                        ]
                     for event, payload, resource_id, revision, kind, completed, result in parsed_events:
                         key = (event, resource_id)
                         previous = revisions.get(key, -1)
@@ -192,11 +199,36 @@ def register_lifecycle_handlers(
                         if first and not recipient_scoped:
                             continue
                         if scoped_project:
-                            recipients = [ws for ws, ids in client_projects if payload.get("project_id") in ids]
+                            # project_id 为 list/dict 时 in ids（集合）抛 TypeError
+                            project_id = payload.get("project_id")
+                            recipients = [
+                                ws for ws, ids in client_projects
+                                if isinstance(project_id, str) and project_id in ids
+                            ]
                         elif session_event_clients is not None and event.startswith("session."):
                             recipients = session_event_clients(user_id, resource_id)
                         else:
                             recipients = clients
+                        # completion notice 的 kind 映射在收件人循环外算一次：
+                        # 未知 kind 只跳过 completion notice 本身，绝不能
+                        # break/continue 打断循环——尾部 delivered 记账缺失会让
+                        # 收件级路径每 2s 重复投递同一事件、后续收件人永久漏投
+                        completion_suffix = None
+                        if completed and not (
+                            kind == "delete"
+                            and event.startswith("project.")
+                            and not result.get("deleted")
+                        ):
+                            completion_suffix = {
+                                "archive": "archived",
+                                "unarchive": "unarchived",
+                                "delete": "deleted",
+                            }.get(kind)
+                            if completion_suffix is None:
+                                logging.getLogger(__name__).warning(
+                                    "lifecycle polling: unknown completed kind %r, skip completion notice",
+                                    kind,
+                                )
                         for ws in recipients:
                             if scope_key(user_id, ws) != scope or getattr(ws, "closed", False):
                                 continue
@@ -211,26 +243,10 @@ def register_lifecycle_handlers(
                             # A rebind during the send voids this delivery; it retries next poll.
                             if recipient_scoped and getattr(ws, "_lifecycle_binding_generation", 0) != generation:
                                 continue
-                            if completed and not (
-                                kind == "delete"
-                                and event.startswith("project.")
-                                and not result.get("deleted")
-                            ):
-                                suffix = {
-                                    "archive": "archived",
-                                    "unarchive": "unarchived",
-                                    "delete": "deleted",
-                                }.get(kind)
-                                if suffix is None:
-                                    # 服务端新增 completed 事件类型时不能 KeyError 打穿整批轮询
-                                    logging.getLogger(__name__).warning(
-                                        "lifecycle polling: unknown completed kind %r, skip completion notice",
-                                        kind,
-                                    )
-                                    break
+                            if completion_suffix is not None:
                                 await channel.send_event(
                                     ws,
-                                    event.split(".")[0] + "." + suffix,
+                                    event.split(".")[0] + "." + completion_suffix,
                                     {
                                         **result,
                                         "project_id": payload.get("project_id"),
