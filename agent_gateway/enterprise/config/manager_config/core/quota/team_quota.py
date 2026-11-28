@@ -31,7 +31,7 @@ from agent_gateway.enterprise.db.team_store_actor import (
     use_shared_team_store,
 )
 
-from ...schemas.quota_schemas import INT32_MAX, TeamQuotaPolicyUpsertRequest
+from ...schemas.quota_schemas import INT32_MAX, INT32_MIN, TeamQuotaPolicyUpsertRequest
 
 KIND_TEAM_CREATE = "team_create"
 KIND_TEAMMATE_SPAWN = "teammate_spawn"
@@ -286,10 +286,11 @@ class TeamQuotaPolicyService:
 
         try:
             actor.call(_op)
-        except (DataError, OverflowError) as exc:
+        except DataError as exc:
             # 兜底：Schema 校验被绕过时落库的 MySQL 1264 也要转成可读 4xx（issue #200）。
+            # 不外泄原始 SQL/绑定参数：仅给出字段范围提示。
             raise ValueError(
-                f"priority out of effective range (0~{INT32_MAX}): {exc}"
+                f"field out of MySQL INT range ({INT32_MIN}~{INT32_MAX}): {type(exc).__name__}"
             ) from exc
         return {**row, "match_expr": expr, "enabled": bool(req.enabled)}
 

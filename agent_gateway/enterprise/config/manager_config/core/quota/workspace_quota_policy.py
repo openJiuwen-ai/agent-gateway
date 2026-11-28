@@ -16,7 +16,7 @@ from agent_gateway.config.enterprise.tables.quota_models import (
 
 from ...infrastructure.repository_access import require_enterprise_repository
 from ...infrastructure.utils import parse_iso_datetime, utc_now
-from ...schemas.quota_schemas import INT32_MAX, PolicyUpsertRequest
+from ...schemas.quota_schemas import INT32_MAX, INT32_MIN, PolicyUpsertRequest
 
 _TABLE = WORKSPACE_QUOTA_POLICY_TABLE_DEF.table_name
 _PAGE = 500
@@ -137,11 +137,12 @@ class WorkspaceQuotaPolicyService:
             )
             if updated is None:
                 raise ValueError(f"failed to upsert workspace quota policy id={pid!r}")
-        except (DataError, OverflowError) as exc:
+        except DataError as exc:
             # 兜底：即便 Schema 校验被绕过（如直调 Gateway），落库时的 MySQL 1264
             # 也要转成可读的 4xx，不再以 500 Internal Server Error 暴露（issue #200）。
+            # 不外泄原始 SQL/绑定参数：仅给出字段范围提示。
             raise ValueError(
-                f"priority out of effective range (0~{INT32_MAX}): {exc}"
+                f"field out of MySQL INT range ({INT32_MIN}~{INT32_MAX}): {type(exc).__name__}"
             ) from exc
 
     async def delete(self, policy_id: str) -> None:
