@@ -16,7 +16,7 @@
 | `--dotenv <path>` | 无 | 启动时从指定 `.env` 加载环境变量（仅启动阶段生效） |
 | `--enable-cron` | 关闭 | 在 `--mode multiprocess` 中启用受支持的文件模式个人版 Cron 任务；使用账号登录或非默认项目的任务会被拒绝 |
 | `--check-cron` | 关闭 | 配合 `--mode multiprocess --enable-cron` 使用：以 JSON 输出只读的 Cron 预检报告并退出 |
-| `--southbound-routes-file <path>` | 无 | 配合 `--mode multiprocess` 使用：静态多 AgentServer 试点。该 JSON 文件为每个具名用户固定其回环 AgentServer 及所属 Worker 槽位；不能与 `--enable-accounts` 或 `--enable-cron` 同时使用 |
+| `--southbound-routes-file <path>` | 无 | 配合 `--mode multiprocess` 使用：静态多 AgentServer 试点。该 JSON 文件为每个具名用户固定其回环 AgentServer 及所属 Worker 槽位；不能与 `--enable-cron` 同时使用 |
 | `-h, --help` | 无 | 显示帮助并退出 |
 
 ### 本地多进程试点
@@ -84,7 +84,7 @@ def owner_slot(user_id: str, workers: int) -> int:
 
 本版本中静态 Worker 不提供的内容：
 
-- **账号与 Cron。** `--southbound-routes-file` 不能与 `--enable-accounts` 或 `--enable-cron` 同时使用。
+- **Cron。** `--southbound-routes-file` 不能与 `--enable-cron` 同时使用。
 - **免账号 Worker 的个人版兼容能力。** 其原生 TUI 请求、个人版 Web 设置与操作，以及心跳代理，都是读取单个 AgentServer 的用户目录来应答的。静态 Worker 的每个具名用户各有一个 AgentServer，因此不安装这些能力，并拒绝相应请求。
 - **附件。** 带 `files`、`media_items`、`attachments` 或 `documents` 的 `chat.send` 会被拒绝：每个用户都有私有的 AgentServer 目录，Gateway 无法代用户导入文件。
 - **其他智能体与配置写入。** `jiuwenswarm` 以外的 `agent_type`，以及所有 Gateway 配置变更。

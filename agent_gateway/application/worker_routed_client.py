@@ -26,6 +26,8 @@ from collections import OrderedDict
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import aclosing
 from dataclasses import dataclass, field
+import hashlib
+import json
 import logging
 import math
 import time
@@ -34,6 +36,8 @@ import uuid
 
 from e2a.agent_models import AgentResponse, AgentResponseChunk
 from e2a.gateway_normalize import e2a_from_agent_fields
+from e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
+from e2a.wire_codec import parse_agent_server_wire_chunk
 from e2a.message import ReqMethod
 from e2a.models import E2AEnvelope
 
@@ -77,6 +81,20 @@ class _TargetEntry:
     failed_at_activation: BaseException | None = field(default=None, repr=False)
 
 
+class _CredentialOperationPort:
+    """Send lifecycle operations to one configured physical connection."""
+
+    def __init__(self, entry: _TargetEntry) -> None:
+        self._entry = entry
+
+    async def send_request(self, envelope: E2AEnvelope, *, on_written=None) -> AgentResponse:
+        if envelope.method != "auth.credentials.update":
+            raise ValueError("credential operation requires its dedicated method")
+        if envelope.user_id not in (None, "", self._entry.target.user_id):
+            raise ValueError("credential operation has a foreign owner")
+        return await self._entry.client.send_request(envelope, on_written=on_written)
+
+
 class WorkerRoutedClient(SouthboundAgentClient):
     """Route bound named users to the static targets owned by this Worker."""
 
@@ -110,6 +128,7 @@ class WorkerRoutedClient(SouthboundAgentClient):
         self._entries: dict[str, _TargetEntry] = {}
         self._frame_gate: Any = None
         self._push_handler: Callable[[dict[str, Any]], Awaitable[None]] | None = None
+        self._credential_lifecycle_handler = None
         self._activated = asyncio.Event()
         self._closing = False
         self._stop_task: asyncio.Task[None] | None = None
@@ -136,6 +155,35 @@ class WorkerRoutedClient(SouthboundAgentClient):
     @property
     def slot_id(self) -> int:
         return self._provider._slot_id
+
+    @staticmethod
+    def credential_server_id(target: SouthboundTarget) -> str:
+        physical_generation = json.dumps([target.physical_id, target.generation], separators=(",", ":"))
+        return "as-" + hashlib.sha256(physical_generation.encode("utf-8")).hexdigest()
+
+    def server_id_for_user(self, user_id: str) -> str:
+        return self.credential_server_id(self.validate_bound_user(user_id))
+
+    def credential_operation_clients(self) -> dict[str, _CredentialOperationPort]:
+        return {self.credential_server_id(entry.target): _CredentialOperationPort(entry)
+                for entry in self._entries.values()}
+
+    def set_credential_runtime(self, runtime: Any) -> None:
+        if self._activated.is_set():
+            raise RuntimeError("credential runtime must be bound before targets start")
+        for entry in self._entries.values():
+            entry.client.set_credential_runtime(runtime.runtime_for(self.credential_server_id(entry.target)))
+
+    def set_credential_lifecycle_handler(self, handler: Callable[..., Awaitable[None]]) -> None:
+        if self._activated.is_set() or not callable(handler):
+            raise ValueError("credential lifecycle handler must be bound before targets start")
+        self._credential_lifecycle_handler = handler
+
+    def _validate_credential_target(self, entry: _TargetEntry, envelope: E2AEnvelope) -> None:
+        auth = envelope.params.get(E2A_MODEL_AUTH_PARAM_KEY)
+        lease = getattr(auth, "credential_lease", None)
+        if lease is not None and lease.server_id != self.credential_server_id(entry.target):
+            raise ValueError("credential lease belongs to another physical target")
 
     def validate_bound_user(self, user_id: str | None, *, agent_type: str | None = None) -> SouthboundTarget:
         """Resolve a named local user to its target without opening a connection."""
@@ -371,6 +419,7 @@ class WorkerRoutedClient(SouthboundAgentClient):
         on_written: Callable[[], None] | None = None,
     ) -> AgentResponse:
         entry = self._resolve(envelope)
+        self._validate_credential_target(entry, envelope)
         await self._verify_session(entry, envelope)
         self._remember_acp_alias(
             entry, envelope, _key(envelope.params.get("session_id") or envelope.session_id),
@@ -390,6 +439,7 @@ class WorkerRoutedClient(SouthboundAgentClient):
 
     async def send_request_stream(self, envelope: E2AEnvelope) -> AsyncIterator[AgentResponseChunk]:
         entry = self._resolve(envelope)
+        self._validate_credential_target(entry, envelope)
         await self._verify_session(entry, envelope)
         self._remember_acp_alias(
             entry, envelope, _key(envelope.params.get("session_id") or envelope.session_id),
@@ -416,7 +466,20 @@ class WorkerRoutedClient(SouthboundAgentClient):
             # A frame that arrives while sibling targets are still connecting
             # waits for activation; a failed activation releases and drops it.
             await self._activated.wait()
-            if self._closing or self._push_handler is None:
+            if self._closing:
+                return
+            try:
+                payload = parse_agent_server_wire_chunk(wire).payload
+            except Exception:
+                payload = wire.get("payload")
+            if isinstance(payload, dict) and payload.get("event_type") == "auth.credential.refresh":
+                from agent_gateway.auth.login_credentials import is_credential_ref
+
+                ref = payload.get("credential_ref")
+                if self._credential_lifecycle_handler is not None and isinstance(ref, str) and is_credential_ref(ref):
+                    await self._credential_lifecycle_handler(self.credential_server_id(entry.target), wire)
+                return
+            if self._push_handler is None:
                 return
             admitted = self._push_guard.admit(entry.target, wire)
             if admitted is None:

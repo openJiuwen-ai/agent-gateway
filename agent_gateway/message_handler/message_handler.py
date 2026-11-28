@@ -5689,7 +5689,14 @@ class MessageHandler(ABC):
         if isinstance(auth, dict):
             # 凭据是 Gateway 按登录会话挂的：记下会话主人
             try:
-                await self._session_login_bindings.remember(
+                bindings = self._session_login_bindings
+                selector = getattr(bindings, "for_user", None)
+                if selector is not None:
+                    user_id = getattr(env, "user_id", None)
+                    if not user_id:
+                        return
+                    bindings = selector(user_id)
+                await bindings.remember(
                     session_id,
                     str(auth.get("credential_ref") or ""),
                     str(params.get("model_name") or ""),
@@ -5702,10 +5709,18 @@ class MessageHandler(ABC):
         if str(getattr(env, "channel", None) or "") == "web":
             return
 
+        access = self._session_login_bindings
         try:
             from agent_gateway.auth.login_credentials import bare_model_name
 
-            owner = await self._session_login_bindings.lookup(session_id)
+            selector = getattr(access, "for_user", None)
+            if selector is not None:
+                user_id = getattr(env, "user_id", None)
+                if not user_id:
+                    params[E2A_LOGIN_REQUIRED_HINT_PARAM_KEY] = _LOGIN_HINT_NO_OWNER
+                    return
+                access = selector(user_id)
+            owner = await access.lookup(session_id)
             effective_model = await self._effective_session_model(
                 session_id, params, user_id=str(getattr(env, "user_id", "") or "").strip() or None,
             )
@@ -5717,7 +5732,6 @@ class MessageHandler(ABC):
             ):
                 params[E2A_LOGIN_REQUIRED_HINT_PARAM_KEY] = _LOGIN_HINT_NO_OWNER
                 return
-            access = self._session_login_bindings
             if isinstance(access, OwnsResolveDeadline):
                 async with asyncio.timeout(access.resolve_deadline_s):
                     value = await access.model_auth_for_binding(owner)
@@ -5728,7 +5742,7 @@ class MessageHandler(ABC):
         except CredentialAccessError:
             raise
         except asyncio.TimeoutError:
-            if isinstance(self._session_login_bindings, OwnsResolveDeadline):
+            if isinstance(access, OwnsResolveDeadline):
                 raise CredentialAccessError("unavailable") from None
             logger.warning("[MessageHandler] 取会话主人的登录凭据超时 session=%s", session_id)
             params[E2A_LOGIN_REQUIRED_HINT_PARAM_KEY] = _LOGIN_HINT_RETRY

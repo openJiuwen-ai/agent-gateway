@@ -42,6 +42,7 @@ class _RemoteSessionLoginBinding(SessionLoginBinding):
     """A binding with the session identity needed for remote resolution."""
 
     session_id: str
+    server_id: str | None = None
 
 
 def _validated_input(
@@ -174,7 +175,9 @@ def _model_auth_response(
     )
 
 
-def _binding_response(response: dict[str, Any], session_id: str) -> _RemoteSessionLoginBinding:
+def _binding_response(
+    response: dict[str, Any], session_id: str, *, server_id: str | None = None,
+) -> _RemoteSessionLoginBinding:
     if not isinstance(response, dict):
         raise CredentialAccessError("protocol")
     status = response.get("status")
@@ -199,6 +202,7 @@ def _binding_response(response: dict[str, Any], session_id: str) -> _RemoteSessi
         credential_ref=credential_ref,
         model_name=model_name,
         session_id=session_id,
+        server_id=server_id,
     )
 
 
@@ -207,9 +211,19 @@ class RemoteCredentialAccess:
 
     def __init__(
         self, client: ControlServiceClient, *, runtime: WorkerCredentialRuntime | None = None,
+        server_id: str | None = None,
     ) -> None:
         self._client = client
         self._runtime = runtime
+        self._server_id = server_id
+
+    @property
+    def server_id(self) -> str | None:
+        return self._server_id
+
+    @property
+    def runtime(self) -> WorkerCredentialRuntime | None:
+        return self._runtime
 
     def release_request(self, envelope: Any) -> None:
         """Release an acquired lease if preprocessing aborts before MH owns it."""
@@ -227,10 +241,13 @@ class RemoteCredentialAccess:
         )
         if normalized_model is None:
             raise CredentialAccessError("invalid")
+        arguments = {"auth_session": normalized_session, "model_name": normalized_model}
+        if self._server_id is not None:
+            arguments["server_id"] = self._server_id
         response = await _call_control(
             self._client,
             "credentials.request_model_auth",
-            {"auth_session": normalized_session, "model_name": normalized_model},
+            arguments,
             timeout=_REQUEST_TIMEOUT_S,
         )
         return _model_auth_response(response, allow_not_required=True,
@@ -244,6 +261,8 @@ class RemoteCredentialAccess:
     ) -> CredentialRefresh | None:
         if self._runtime is None:
             raise CredentialAccessError("not_enabled")
+        if self._server_id is not None and server_id != self._server_id:
+            raise CredentialAccessError("invalid")
         if not _is_remote_credential_ref(credential_ref) or server_id != self._runtime.server_id:
             raise CredentialAccessError("invalid")
         response = await _call_control(
@@ -292,9 +311,15 @@ class RemoteSessionLoginBindings(OwnsResolveDeadline):
 
     def __init__(
         self, client: ControlServiceClient, *, runtime: WorkerCredentialRuntime | None = None,
+        server_id: str | None = None,
     ) -> None:
         self._client = client
         self._runtime = runtime
+        self._server_id = server_id
+
+    @property
+    def server_id(self) -> str | None:
+        return self._server_id
 
     async def remember(
         self, session_id: str, credential_ref: str, model_name: str
@@ -316,14 +341,17 @@ class RemoteSessionLoginBindings(OwnsResolveDeadline):
             or not _is_remote_credential_ref(credential_ref)
         ):
             raise CredentialAccessError("invalid")
+        arguments = {
+            "session_id": normalized_session,
+            "credential_ref": credential_ref,
+            "model_name": normalized_model,
+        }
+        if self._server_id is not None:
+            arguments["server_id"] = self._server_id
         response = await _call_control(
             self._client,
             "bindings.remember",
-            {
-                "session_id": normalized_session,
-                "credential_ref": credential_ref,
-                "model_name": normalized_model,
-            },
+            arguments,
             timeout=_BINDING_TIMEOUT_S,
         )
         if response != {"status": "ok"}:
@@ -337,14 +365,17 @@ class RemoteSessionLoginBindings(OwnsResolveDeadline):
         )
         if normalized_session is None:
             raise CredentialAccessError("invalid")
+        arguments = {"session_id": normalized_session}
+        if self._server_id is not None:
+            arguments["server_id"] = self._server_id
         response = await _call_control(
             self._client,
             "bindings.lookup",
-            {"session_id": normalized_session},
+            arguments,
             timeout=_BINDING_TIMEOUT_S,
         )
         try:
-            return _binding_response(response, normalized_session)
+            return _binding_response(response, normalized_session, server_id=self._server_id)
         except _BindingNotFound:
             return None
 
@@ -366,17 +397,21 @@ class RemoteSessionLoginBindings(OwnsResolveDeadline):
         if (
             session_id is None
             or model_name is None
+            or getattr(binding, "server_id", None) != self._server_id
             or not _is_remote_credential_ref(binding.credential_ref)
         ):
             raise CredentialAccessError("invalid")
+        arguments = {
+            "session_id": session_id,
+            "credential_ref": binding.credential_ref,
+            "model_name": model_name,
+        }
+        if self._server_id is not None:
+            arguments["server_id"] = self._server_id
         response = await _call_control(
             self._client,
             "bindings.resolve_model_auth",
-            {
-                "session_id": session_id,
-                "credential_ref": binding.credential_ref,
-                "model_name": model_name,
-            },
+            arguments,
             timeout=_BINDING_AUTH_TIMEOUT_S,
         )
         return _model_auth_response(response, allow_not_required=False,

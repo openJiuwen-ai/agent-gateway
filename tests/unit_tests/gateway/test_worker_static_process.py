@@ -92,8 +92,7 @@ def test_cli_refuses_directories_that_do_not_fit_the_run(tmp_path, routes):
         load_static_routes(path, workers=3)
     with pytest.raises(ValueError, match="exactly the --workers slots"):
         _from_cli(workers=1, southbound_routes_file=path)
-    with pytest.raises(ValueError, match="cannot be combined"):
-        _from_cli(accounts=True, southbound_routes_file=path)
+    assert _from_cli(accounts=True, southbound_routes_file=path).accounts
     with pytest.raises(ValueError, match="cannot be combined"):
         _from_cli(cron=True, southbound_routes_file=path)
     with pytest.raises(ValueError, match="cannot be combined"):
@@ -191,10 +190,10 @@ async def test_group_serves_static_routes_without_the_single_server_contract(rou
         WorkerGroup("ws://127.0.0.1:18092", workers=2, southbound_routes=routes)
     with pytest.raises(ValueError, match="requires an AgentServer URL or a static route directory"):
         WorkerGroup(workers=2)
-    with pytest.raises(ValueError, match="accounts or Cron"):
+    with pytest.raises(ValueError, match="do not serve Cron"):
         WorkerGroup(None, workers=2, cron=True, southbound_routes=routes)
-    with pytest.raises(ValueError, match="accounts or Cron"):
-        WorkerGroup(None, workers=2, auth_service_provider=lambda: None, southbound_routes=routes)
+    account_group = WorkerGroup(None, workers=2, auth_service_provider=lambda: None, southbound_routes=routes)
+    assert account_group.pool.southbound_routes is routes
     with pytest.raises(ValueError, match="Worker range"):
         WorkerGroup(None, workers=1, southbound_routes=routes)
     with pytest.raises(ValueError, match="between 1 and 32"):

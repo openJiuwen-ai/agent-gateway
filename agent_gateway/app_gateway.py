@@ -364,7 +364,7 @@ def main() -> None:
     parser.add_argument("--southbound-routes-file", metavar="<path>",
                         help="Multiprocess static multi-AgentServer trial: a local JSON route directory "
                              "that fixes each named user's loopback AgentServer per Worker slot. "
-                             "It cannot be combined with --enable-accounts or --enable-cron.")
+                             "It cannot be combined with --enable-cron.")
     parser.add_argument(
         "--require-adx-router",
         # Accept previously generated service units; validation itself is generic.

@@ -48,8 +48,8 @@ class MultiprocessOptions:
         southbound_routes = None
         if southbound_routes_file is not None:
             southbound_routes = load_static_routes(southbound_routes_file, workers=count)
-            if accounts or cron:
-                raise ValueError("--southbound-routes-file cannot be combined with --enable-accounts or --enable-cron")
+            if cron:
+                raise ValueError("--southbound-routes-file cannot be combined with --enable-cron")
         if type(accounts) is not bool or type(cron) is not bool:
             raise ValueError("--enable-accounts and --enable-cron must be explicit flags")
         if is_enterprise() or is_agentos_runtime() or required_client_type is not None:

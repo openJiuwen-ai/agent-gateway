@@ -262,7 +262,6 @@ async def _build_southbound(
         raise ValueError("a static Worker takes its targets from the directory only")
     routed = WorkerRoutedClient(southbound_routes, slot_id=slot_id)
     cleanup.push_async_callback(routed.disconnect)
-    await routed.activate()
     return routed, routed
 
 
@@ -390,19 +389,19 @@ async def data_worker(
         client, routed = await _build_southbound(
             cleanup, agent_server_url, southbound_routes, slot_id, personal_settings=personal_settings,
         )
-        if routed is not None:
-            # The Control contract of accounts and Cron names one AgentServer.
-            # A static Worker refuses both until its per-target contract exists.
-            if accounts and control_client is not None:
-                raise ValueError("static routes do not serve accounts in this slice")
-            if cron_enabled:
-                raise ValueError("static routes do not serve Cron in this slice")
+        if routed is not None and cron_enabled:
+            raise ValueError("static routes do not serve Cron in this slice")
         credentials = None
         if control_client is not None and accounts:
-            from agent_gateway.auth.worker_credential_services import WorkerCredentialServices
+            from agent_gateway.auth.worker_credential_services import (
+                RoutedWorkerCredentialServices, WorkerCredentialServices,
+            )
 
-            credentials = WorkerCredentialServices.from_client(
-                control_client, server_id=agent_server_url, agent_client=client,
+            credentials = (
+                RoutedWorkerCredentialServices.from_client(control_client, agent_client=client)
+                if routed is not None else WorkerCredentialServices.from_client(
+                    control_client, server_id=agent_server_url, agent_client=client,
+                )
             )
             cleanup.push_async_callback(credentials.stop)
             if on_credentials is not None:
@@ -460,6 +459,8 @@ async def data_worker(
             # First of the three: a late push must not reach a stopped runtime.
             cleanup.push_async_callback(release_cron_pushes)
 
+        if routed is not None:
+            await routed.activate()
         async with AsyncExitStack() as northbound:
             web, _ = assemble_web(
                 agent_client=client, message_handler=handler, channel_manager=manager,

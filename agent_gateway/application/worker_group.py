@@ -55,9 +55,8 @@ class WorkerGroup:
                 raise ValueError("a static Worker group takes its targets from the directory only")
             if is_enterprise():
                 raise ValueError("the Worker group only supports a personal deployment")
-            if cron or auth_service_provider is not None:
-                # Control names one AgentServer; the static contract is separate.
-                raise ValueError("static routes do not serve accounts or Cron in this slice")
+            if cron:
+                raise ValueError("static routes do not serve Cron in this slice")
         elif agent_server_url is None:
             raise ValueError("the Worker group requires an AgentServer URL or a static route directory")
         else:
@@ -82,8 +81,17 @@ class WorkerGroup:
             if auth_service_provider is not None:
                 from agent_gateway.auth.control_credentials import ControlCredentialServices
 
+                target_options = {"server_id": agent_server_url}
+                if southbound_routes is not None:
+                    from agent_gateway.application.worker_routed_client import WorkerRoutedClient
+
+                    target_options = {"slot_server_ids": {
+                        slot: tuple(WorkerRoutedClient.credential_server_id(target)
+                                    for target in southbound_routes.targets_for_slot(slot))
+                        for slot in southbound_routes.manifest.slots
+                    }}
                 authority = self._credential_authority = ControlCredentialServices(
-                    auth_service_provider, server_id=agent_server_url, enable_public_catalog=True,
+                    auth_service_provider, enable_public_catalog=True, **target_options,
                 )
                 factories.append(authority.handlers_for)
                 connects.append(authority.endpoint_connected)

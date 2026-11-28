@@ -108,16 +108,26 @@ class ControlCredentialServices:
     def __init__(
         self, auth_service_provider: Callable[[], AuthService], *, max_blocking_work: int = 4,
         server_id: str | None = None,
+        server_ids: tuple[str, ...] | None = None,
+        slot_server_ids: Mapping[int, tuple[str, ...]] | None = None,
         enable_public_catalog: bool = False,
     ) -> None:
         if not callable(auth_service_provider):
             raise ValueError('auth service provider must be callable')
+        if sum(value is not None for value in (server_id, server_ids, slot_server_ids)) > 1:
+            raise ValueError('specify only one credential target policy')
+        if slot_server_ids is not None:
+            server_ids = tuple(value for values in slot_server_ids.values() for value in values)
+        self._slot_server_ids = None if slot_server_ids is None else {
+            slot: frozenset(values) for slot, values in slot_server_ids.items()
+        }
         self._provider = auth_service_provider
         self._prepared_service: AuthService | None = None
         self._blocking_work = ControlBlockingWork(limit=max_blocking_work)
         self._credentials = LocalCredentialAccess(self._service, blocking_work=self._blocking_work)
         self._bindings = LocalSessionLoginBindings(self._service, blocking_work=self._blocking_work)
         self._server_id = None if server_id is None else _text(server_id, 256)
+        self._server_ids = None if server_ids is None else self._normalize_server_ids(server_ids)
         self.registry = CredentialIssuanceRegistry()
         self._epoch_key = secrets.token_bytes(32)
         self._endpoints: dict[ControlServiceIdentity, Any] = {}
@@ -140,6 +150,22 @@ class ControlCredentialServices:
             handlers['catalog.list_login_models'] = self._public_catalog.list_login_models
             handlers['catalog.get_login_model_snapshot'] = self._public_catalog.get_login_model_snapshot
         self.handlers: Mapping[str, Handler] = MappingProxyType(handlers)
+
+    @staticmethod
+    def _normalize_server_ids(server_ids: tuple[str, ...]) -> tuple[str, ...]:
+        if not isinstance(server_ids, tuple):
+            raise TypeError('server_ids must be a tuple')
+        normalized = tuple(_text(value, 256) for value in server_ids)
+        if not normalized or len(normalized) > 32 or len(normalized) != len(set(normalized)):
+            raise ValueError('server_ids must contain 1-32 unique AgentServer targets')
+        return normalized
+
+    def _target_allowed(self, identity: ControlServiceIdentity, server_id: str) -> bool:
+        if self._slot_server_ids is not None:
+            return server_id in self._slot_server_ids.get(identity.slot_id, ())
+        if self._server_ids is not None:
+            return server_id in self._server_ids
+        return server_id == self._server_id
 
     @property
     def pending_work_count(self) -> int:
@@ -177,7 +203,7 @@ class ControlCredentialServices:
 
     def handlers_for(self, identity: ControlServiceIdentity) -> Mapping[str, Handler]:
         """Bind authority to an authenticated socket, not Worker-supplied identity."""
-        if self._server_id is None:
+        if self._server_id is None and self._server_ids is None:
             raise ValueError('credential lifecycle requires an explicit AgentServer target')
         if self._group_id is None:
             self._group_id = identity.group_id
@@ -197,6 +223,12 @@ class ControlCredentialServices:
         async def resolve(arguments: dict[str, Any]) -> dict[str, Any]:
             return await self._issued_binding(identity, arguments)
 
+        async def remember(arguments: dict[str, Any]) -> dict[str, Any]:
+            return await self._remember_for_target(identity, arguments)
+
+        async def lookup(arguments: dict[str, Any]) -> dict[str, Any]:
+            return await self._lookup_for_target(identity, arguments)
+
         async def refresh(arguments: dict[str, Any]) -> dict[str, Any]:
             return await self._refresh_for_ref(identity, arguments)
 
@@ -204,7 +236,13 @@ class ControlCredentialServices:
             self.registry.result(identity, arguments)
             return {'status': 'ok'}
 
-        return MappingProxyType({**self.handlers,
+        selected_handlers = dict(self.handlers)
+        if self._server_ids is not None:
+            selected_handlers.update({
+                'bindings.remember': remember,
+                'bindings.lookup': lookup,
+            })
+        return MappingProxyType({**selected_handlers,
             'credentials.request_model_auth': request,
             'bindings.resolve_model_auth': resolve,
             'credentials.refresh_for_ref': refresh,
@@ -281,9 +319,10 @@ class ControlCredentialServices:
         return await self._blocking_work.run(find_session)
 
     def _commit_issuance(self, identity: ControlServiceIdentity, before: _SessionSnapshot | None,
-                         response: dict[str, Any]) -> dict[str, Any]:
+                         response: dict[str, Any], server_id: str) -> dict[str, Any]:
         """Postcheck, version and register synchronously before returning a secret."""
-        if self._callers.get(identity.slot_id) != identity:
+        if (self._callers.get(identity.slot_id) != identity
+                or not self._target_allowed(identity, server_id)):
             return {'status': 'invalid'}
         if before is None or response.get('status') != 'ok':
             return {'status': 'invalid'} if response.get('status') == 'ok' else response
@@ -298,18 +337,24 @@ class ControlCredentialServices:
         if (live is not True or credential['credential_ref'] != snapshot.credential_ref
                 or not self.registry.active(credential['credential_ref'], snapshot.epoch)):
             return {'status': 'invalid'}
-        assert self._server_id is not None
-        revision = self.registry.issue(identity, self._server_id,
+        revision = self.registry.issue(identity, server_id,
                                        credential['credential_ref'], snapshot.epoch)
         return {'status': 'ok', 'credential': {**credential,
             'api_key': _text(credential['api_key'], 4096)}, 'lease': {
             'group_id': identity.group_id, 'slot_id': identity.slot_id,
-            'generation': identity.generation, 'server_id': self._server_id,
+            'generation': identity.generation, 'server_id': server_id,
             'credential_ref': credential['credential_ref'], 'ref_revision': revision}}
 
     async def _issued_request(self, identity: ControlServiceIdentity,
                               arguments: dict[str, Any]) -> dict[str, Any]:
-        _fields(arguments, {'auth_session', 'model_name'})
+        if self._server_ids is None:
+            _fields(arguments, {'auth_session', 'model_name'})
+            server_id = self._server_id
+        else:
+            _fields(arguments, {'auth_session', 'model_name', 'server_id'})
+            server_id = _text(arguments['server_id'], 256)
+            if not self._target_allowed(identity, server_id):
+                return {'status': 'invalid'}
         raw = arguments['auth_session']
         session_id = None if raw is None else _text(raw, 256, empty=True).strip() or None
         model_name = _text(arguments['model_name'], 256, empty=True).strip()
@@ -324,22 +369,44 @@ class ControlCredentialServices:
             return {'status': 'invalid'}
         response = _credential(result.credential)
         before = self._snapshot_from_local(result.snapshot)
-        return self._commit_issuance(identity, before, response)
+        return self._commit_issuance(identity, before, response, server_id)
 
     async def _issued_binding(self, identity: ControlServiceIdentity,
                               arguments: dict[str, Any]) -> dict[str, Any]:
+        if self._server_ids is not None:
+            _fields(arguments, {'session_id', 'credential_ref', 'model_name', 'server_id'})
+            server_id = _text(arguments['server_id'], 256)
+            if (self._callers.get(identity.slot_id) != identity
+                    or not self._target_allowed(identity, server_id)):
+                return {'status': 'invalid'}
+            session_id = _text(arguments['session_id'], 256)
+            credential_ref = _ref(arguments['credential_ref'])
+            model_name = _text(arguments['model_name'], 256)
+            before = await self._session_for_ref(credential_ref)
+            binding = await self._lookup_binding(session_id, server_id)
+            if binding is None or (
+                binding.credential_ref, binding.model_name,
+            ) != (credential_ref, model_name):
+                return {'status': 'invalid'}
+            response = _credential(await self._bindings.model_auth_for_binding(binding))
+            return self._commit_issuance(
+                identity, None if before is None else before.snapshot, response, server_id,
+            )
+
         _fields(arguments, {'session_id', 'credential_ref', 'model_name'})
         credential_ref = _ref(arguments['credential_ref'])
         before = await self._session_for_ref(credential_ref)
         response = await self.resolve_model_auth(arguments)
-        return self._commit_issuance(identity, None if before is None else before.snapshot, response)
+        return self._commit_issuance(
+            identity, None if before is None else before.snapshot, response, self._server_id,
+        )
 
     async def _refresh_for_ref(self, identity: ControlServiceIdentity,
                                arguments: dict[str, Any]) -> dict[str, Any]:
         _fields(arguments, {'server_id', 'credential_ref'})
         server_id = _text(arguments['server_id'], 256)
         credential_ref = _ref(arguments['credential_ref'])
-        if (self._callers.get(identity.slot_id) != identity or server_id != self._server_id
+        if (self._callers.get(identity.slot_id) != identity or not self._target_allowed(identity, server_id)
             or not self.registry.registered(identity, server_id, credential_ref)):
             return {'status': 'invalid'}
         preawait_revision = self.registry.latest_revision(credential_ref)
@@ -426,6 +493,47 @@ class ControlCredentialServices:
         revision = self.registry.operations[operation_id].cutoff_revision
         return {'status': 'ok', 'operation_id': operation_id, 'server_id': server_id,
                 'ref_revision': revision, 'update': update}
+
+    @staticmethod
+    def _namespaced_session_id(session_id: str, server_id: str) -> str:
+        value = f'{server_id}\0{session_id}'.encode('utf-8')
+        return hashlib.sha256(value).hexdigest()
+
+    def _lookup_binding(self, session_id: str, server_id: str):
+        if self._server_ids is None:
+            return self._bindings.lookup(session_id)
+        return self._bindings.lookup(self._namespaced_session_id(session_id, server_id))
+
+    async def _remember_for_target(
+        self, identity: ControlServiceIdentity, arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        _fields(arguments, {'session_id', 'credential_ref', 'model_name', 'server_id'})
+        server_id = _text(arguments['server_id'], 256)
+        if self._callers.get(identity.slot_id) != identity or not self._target_allowed(identity, server_id):
+            return {'status': 'invalid'}
+        session_id = _text(arguments['session_id'], 256)
+        credential_ref = _ref(arguments['credential_ref'])
+        model_name = _text(arguments['model_name'], 256)
+        await self._bindings.remember(
+            self._namespaced_session_id(session_id, server_id), credential_ref, model_name,
+        )
+        return {'status': 'ok'}
+
+    async def _lookup_for_target(
+        self, identity: ControlServiceIdentity, arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        _fields(arguments, {'session_id', 'server_id'})
+        server_id = _text(arguments['server_id'], 256)
+        if self._callers.get(identity.slot_id) != identity or not self._target_allowed(identity, server_id):
+            return {'status': 'invalid'}
+        binding = await self._lookup_binding(
+            _text(arguments['session_id'], 256), server_id,
+        )
+        if binding is None:
+            return {'status': 'not_found'}
+        return {'status': 'ok', 'binding': {
+            'credential_ref': _ref(binding.credential_ref), 'model_name': _text(binding.model_name, 256),
+        }}
 
     async def logout(self, auth_session: str | None) -> None:
         """Delete locally first; wait only for bounded local invalidation ACKs."""

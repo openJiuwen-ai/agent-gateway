@@ -266,9 +266,19 @@ class MessagePreprocessor:
                 )
         normalized = _normalize_gateway_message(msg, apply_model_auth=False)
         model_name = str(normalized.params.get('model_name') or '').strip()
+        credential_access = self.credential_access
+        credential_selector = getattr(credential_access, 'for_user', None)
+        if credential_selector is not None:
+            user_id = getattr(normalized, 'user_id', None)
+            if type(user_id) is not str or not user_id:
+                return normalized
+            credential_access = credential_selector(user_id)
+
         with trace_stage("preprocess.credentials"):
             try:
-                auth = await self.credential_access.request_model_auth(_auth_session_id(msg), model_name)
+                auth = await credential_access.request_model_auth(
+                    _auth_session_id(msg), model_name,
+                )
             except CredentialAccessError:
                 raise
             except Exception:  # Login availability must not break request forwarding.
