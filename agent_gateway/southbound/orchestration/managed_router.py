@@ -1525,6 +1525,8 @@ class ManagedRouter(SouthboundAgentClient):
         self._pending_cleanups.clear()
         self._warmup_tasks.clear()
         await self._drain_background_tasks()
+        # The client is no longer routable after disconnect; release per-user hints.
+        self._current_agent_types.clear()
         await self._close_all_ws_clients()
         try:
             await self._managed_control.disconnect()
