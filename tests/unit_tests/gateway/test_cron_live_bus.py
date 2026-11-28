@@ -14,6 +14,27 @@ from starlette.responses import JSONResponse
 from agent_gateway.cron.live_bus import CronLiveBus
 
 
+def test_live_window_evicts_oldest_distinct_frame_for_all_viewers() -> None:
+    bus = CronLiveBus(replay_size=1)
+    sid = "cron_fifo"
+    viewers = [bus.subscribe(sid, replay=False) for _ in range(2)]
+    frames = [
+        {"event": "chat.delta", "payload": {"live_seq": seq, "content": "same token"}}
+        for seq in range(bus._seen_size + 1)
+    ]
+
+    for frame in frames[:-1]:
+        bus.publish(sid, frame)
+    bus.publish(sid, frames[0])  # Still in the window; a duplicate must not refresh its position.
+    bus.publish(sid, frames[-1])
+    bus.publish(sid, frames[1])  # Still remembered.
+    bus.publish(sid, frames[0])  # Evicted; deliver again.
+
+    for queue in viewers:
+        assert [queue.get_nowait() for _ in range(queue.qsize())] == [*frames, frames[0]]
+        bus.unsubscribe(sid, queue)
+
+
 def test_late_subscriber_replays_cron_final() -> None:
     async def _run() -> None:
         bus = CronLiveBus()
@@ -167,21 +188,30 @@ def test_redis_replay_skips_frames_already_live_delivered(monkeypatch) -> None:
 
     async def _run() -> None:
         frame = {"event": "chat.delta", "payload": {"content": "live", "live_seq": 3}}
+        remote = {"event": "chat.final", "payload": {"content": "done", "live_seq": 4}}
+        release = asyncio.Event()
+
+        async def backlog(*args):
+            await release.wait()
+            return [_encode_wire(origin="other-pod", frame=item) for item in (frame, remote)]
+
         client = AsyncMock()
-        client.lrange.return_value = [_encode_wire(origin="other-pod", frame=frame)]
+        client.lrange.side_effect = backlog
         monkeypatch.setattr("agent_gateway.cron.live_bus._redis_client", lambda: client)
         bus = CronLiveBus()
+        monkeypatch.setattr(bus, "_ensure_redis_bridge", AsyncMock())
         sid = "cron_replay_double_delivery"
-        queue: asyncio.Queue = asyncio.Queue()
-        bus._subscribers[sid] = {queue}
-        bus.publish(sid, frame)
-        assert await asyncio.wait_for(queue.get(), timeout=1) == frame
-
-        await bus._redis_replay_into(sid, queue, set())
-
-        assert queue.empty()
-        bus.unsubscribe(sid, queue)
-        assert queue not in bus._queue_seen
+        queue = bus.subscribe(sid)
+        try:
+            bus.publish(sid, frame)
+            assert queue.get_nowait() == frame
+            release.set()
+            assert await asyncio.wait_for(queue.get(), timeout=1) == {**remote, "replay": True}
+            assert queue.empty()
+            await asyncio.sleep(0)  # Let the replay task's completion callback run.
+            assert queue not in bus._queue_seen
+        finally:
+            bus.unsubscribe(sid, queue)
 
     asyncio.run(_run())
 
