@@ -8,6 +8,10 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+# 与 Manager 侧 INT32_MAX 对齐：priority 列为 MySQL INT（4 字节，上限 2147483647），
+# 超大值落库会触发 MySQL 1264 Out of range，需在 Schema 层提前拦截（issue #200）。
+INT32_MAX = 2_147_483_647
+
 
 class PolicyUpsertRequest(BaseModel):
     """工作区配额策略按 policy_id 全量 upsert。未传的可选字段使用缺省。
@@ -21,7 +25,7 @@ class PolicyUpsertRequest(BaseModel):
     policy_name: str = Field(min_length=1, max_length=128)
     policy_desc: str | None = Field(default=None, max_length=512)
     match_expr: Any = None
-    priority: int
+    priority: int = Field(ge=0, le=INT32_MAX)
     # -1=无限制；0=零配额；>0=正常限额
     limit_bytes: int = Field(ge=-1)
     soft_percent: int = Field(ge=0, le=100, default=80)
@@ -68,7 +72,7 @@ class TeamQuotaPolicyUpsertRequest(BaseModel):
     policy_name: str = Field(default="team-quota", min_length=1, max_length=128)
     policy_desc: str | None = Field(default=None, max_length=512)
     match_expr: Any = None
-    priority: int = 0
+    priority: int = Field(default=0, ge=0, le=INT32_MAX)
     max_teams_per_user: int = Field(default=5, ge=1, le=1000)
     max_teammates_per_team: int = Field(default=5, ge=1, le=1000)
     max_teams_per_org: int = Field(default=0, ge=0, le=1000)
