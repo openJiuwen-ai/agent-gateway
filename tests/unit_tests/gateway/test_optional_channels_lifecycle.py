@@ -560,7 +560,7 @@ async def test_single_retains_optional_startup_and_shutdown_stage_boundaries(mon
     shutdown = asyncio.Event()
     services = SimpleNamespace(
         credential_access=object(), auth_service_provider=lambda: None, credential_update_sink=object(),
-        client=object(), third_agent=object(), agent_server_ext=object(), using_adx_router=True, extension_registry=object(),
+        client=object(), third_agent=object(), agent_server_ext=object(), extension_registry=object(),
         message_handler=object(), im_inbound=object(), im_outbound=object(),
         cron_scheduler=object(), cron_controller=object(), heartbeat_controller=object(),
         heartbeat_service=object(), config_updater=None, channel_manager=object(),

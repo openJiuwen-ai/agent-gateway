@@ -476,6 +476,7 @@ async def _run(
         web_path: str,
         shutdown_event: asyncio.Event,
         web_ws_deflate: bool = False,
+        required_client_type: str | tuple[str, ...] | None = None,
 ) -> None:
     """Retain the public entrypoint while delegating to the single host."""
     from agent_gateway.application.single import run_single
@@ -483,6 +484,7 @@ async def _run(
     await run_single(
         agent_server_url=agent_server_url, web_host=web_host, web_port=web_port,
         web_path=web_path, shutdown_event=shutdown_event, web_ws_deflate=web_ws_deflate,
+        required_client_type=required_client_type,
         config_saved_factory=_build_config_saved_callback,
         restart_gateway=_exec_gateway_restart,
         process_start_t0=_PROCESS_START_T0,
@@ -501,6 +503,7 @@ async def _run_with_shutdown_signals(
     web_port: int,
     web_path: str,
     web_ws_deflate: bool = False,
+    required_client_type: str | tuple[str, ...] | None = None,
 ) -> None:
     """Translate process signals into one idempotent Gateway shutdown request."""
 
@@ -514,6 +517,7 @@ async def _run_with_shutdown_signals(
             web_path=web_path,
             shutdown_event=shutdown_event,
             web_ws_deflate=web_ws_deflate,
+            required_client_type=required_client_type,
         )
 
     await run_with_shutdown_signals(run, shutdown_gateway_telemetry)
@@ -563,6 +567,12 @@ def main() -> None:
         "--dotenv",
         metavar="<path>",
         help="Load environment from .env file (processed at startup, not used here).",
+    )
+    parser.add_argument(
+        "--require-adx-router",
+        # Accept previously generated service units; validation itself is generic.
+        dest="required_client_type", action="store_const", const=("agentos_router", "adx_router"),
+        help=argparse.SUPPRESS,
     )
     args = parser.parse_args()
 
@@ -622,6 +632,7 @@ def main() -> None:
                 web_port=web_port,
                 web_path=web_path,
                 web_ws_deflate=web_ws_deflate,
+                required_client_type=args.required_client_type,
             )
         )
 
