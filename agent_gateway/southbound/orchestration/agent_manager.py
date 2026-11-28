@@ -705,6 +705,7 @@ class AgentManager:
         key: AgentKey,
         idle_timeout_seconds: float,
         *,
+        expected_agent_id: str | None = None,
         include_shared_sandbox: bool = False,
         reason: str = DELETE_REASON_IDLE,
     ) -> AgentRuntime | None:
@@ -712,15 +713,18 @@ class AgentManager:
 
         Returns a detached snapshot (status DELETED) when reclaimed so the
         caller can release the underlying sandbox, or ``None`` when the
-        runtime is missing, still held (``task_count > 0``), not READY, or
-        not idle long enough.
+        runtime is missing, replaced, still held (``task_count > 0``), not
+        READY, or not idle long enough.
         """
         timeout = float(idle_timeout_seconds)
         if timeout <= 0:
             return None
         async with self._runtimes_lock:
             runtime = self._runtimes.get(key)
-            if runtime is None:
+            if runtime is None or (
+                expected_agent_id is not None
+                and runtime.info.agent_id != expected_agent_id
+            ):
                 return None
             if include_shared_sandbox and "session_id" in self._key_fields:
                 user_index = self._key_fields.index("user_id")

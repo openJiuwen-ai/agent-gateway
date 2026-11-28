@@ -382,6 +382,24 @@ async def test_pop_if_idle_respects_holds_and_staleness() -> None:
 
 
 @pytest.mark.asyncio
+async def test_pop_if_idle_respects_expected_generation() -> None:
+    agent_manager = AgentManager()
+    first = await agent_manager.get_or_create_agent("u1", "jiuwenswarm")
+    assert await agent_manager.pop_agent(
+        "u1", "jiuwenswarm", expected_agent_id=first.info.agent_id,
+    ) is not None
+    second = await agent_manager.get_or_create_agent("u1", "jiuwenswarm")
+    await asyncio.sleep(0.05)
+
+    assert await agent_manager.pop_if_idle(
+        first.key, 0.01, expected_agent_id=first.info.agent_id,
+    ) is None
+    current = await agent_manager.get_agent("u1", "jiuwenswarm")
+    assert current is not None
+    assert current.info.agent_id == second.info.agent_id
+
+
+@pytest.mark.asyncio
 async def test_pop_if_idle_disabled_with_nonpositive_timeout() -> None:
     agent_manager = AgentManager()
     runtime = await agent_manager.get_or_create_agent("u1", "jiuwenswarm")

@@ -3773,6 +3773,7 @@ class ManagedRouter(SouthboundAgentClient):
             return await self._delete_idle_agent(
                 user_id, agent_type, key_values=dict(key_values or {}),
                 idle_timeout_seconds=float(idle_timeout_seconds),
+                expected_agent_id=expected_agent_id,
                 trace_on_pop=True, reason=reason,
             )
         with trace_operation(
@@ -3809,6 +3810,7 @@ class ManagedRouter(SouthboundAgentClient):
                 agent_type,
                 key_values=resolved_key_values,
                 idle_timeout_seconds=float(idle_timeout_seconds),
+                expected_agent_id=expected_agent_id,
                 reason=reason,
             )
 
@@ -3852,6 +3854,7 @@ class ManagedRouter(SouthboundAgentClient):
         *,
         key_values: dict[str, Any],
         idle_timeout_seconds: float,
+        expected_agent_id: str | None = None,
         trace_on_pop: bool = False,
         reason: str = DELETE_REASON_IDLE,
     ) -> bool:
@@ -3866,6 +3869,7 @@ class ManagedRouter(SouthboundAgentClient):
             runtime = await self._agent_manager.pop_if_idle(
                 key,
                 idle_timeout_seconds,
+                expected_agent_id=expected_agent_id,
                 include_shared_sandbox=True,
                 reason=reason,
             )
