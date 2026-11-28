@@ -72,33 +72,37 @@ class ConfigPollScheduler:
         self._syncer = ConfigPollSyncer()
         self._running = False
         self._task: asyncio.Task[None] | None = None
+        self._lifecycle_lock = asyncio.Lock()
 
     async def start(self) -> None:
         if not self._enabled:
             logger.info("[ConfigPoll] disabled; scheduler not started")
             return
-        if self._running:
-            return
-        self._running = True
-        self._task = asyncio.create_task(self._run_loop(), name="gateway-config-poll")
-        logger.info(
-            "[ConfigPoll] scheduler started interval=%ss tables=%s",
-            self._interval_seconds,
-            ",".join(POLL_TABLES),
-        )
+        async with self._lifecycle_lock:
+            if self._running:
+                return
+            self._running = True
+            self._task = asyncio.create_task(self._run_loop(), name="gateway-config-poll")
+            logger.info(
+                "[ConfigPoll] scheduler started interval=%ss tables=%s",
+                self._interval_seconds,
+                ",".join(POLL_TABLES),
+            )
 
     async def stop(self) -> None:
-        self._running = False
-        task = self._task
-        if task is None:
-            return
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-        self._task = None
-        logger.info("[ConfigPoll] scheduler stopped")
+        # Keep start() from replacing the task while its cancellation is draining.
+        async with self._lifecycle_lock:
+            self._running = False
+            task = self._task
+            if task is None:
+                return
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+            logger.info("[ConfigPoll] scheduler stopped")
 
     async def run_once(self) -> None:
         await self._syncer.run_once()
