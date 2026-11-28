@@ -7,7 +7,7 @@ from __future__ import annotations
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from agent_gateway.southbound.control.managed import ManagedSandboxControl
-from agent_gateway.extensions.yuanrong_frontend_client import apply_trace_header
+from agent_gateway.extensions.agentos.agentos_router.backend import apply_trace_header
 from agent_gateway.telemetry import inject_request_headers
 
 

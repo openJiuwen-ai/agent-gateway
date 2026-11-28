@@ -15,7 +15,7 @@ import urllib.parse
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, nullcontext
 from pathlib import Path
-from typing import Any, Coroutine, Mapping
+from typing import TYPE_CHECKING, Any, Coroutine, Mapping
 
 from e2a.agent_models import AgentResponse, AgentResponseChunk
 from e2a.models import E2AEnvelope
@@ -44,7 +44,6 @@ from agent_gateway.southbound.orchestration.agent_manager import (
     DELETE_REASON_IDLE,
     DELETE_REASON_INSTANCE_UNAVAILABLE,
     DELETE_REASON_NETWORK_FAILURE,
-    DELETE_REASON_WARMUP_FAILURE,
     is_third_party_agent_type,
 )
 from agent_gateway.extensions.agentos.agentos_router.agentos_authenticator import (
@@ -88,7 +87,7 @@ from agent_gateway.extensions.agentos.agentos_router.ssh_relay import (
     DEFAULT_CLIENT_KEYS_DIR,
     DEFAULT_SSH_PORT,
     SshSouthConnectError,
-    YuanrongSshRelay,
+    SshRelay,
     _is_ssh_connect_retryable,
     resolve_client_keys_dir,
 )
@@ -104,7 +103,7 @@ from agent_gateway.extensions.auth.common import (
 )
 from agent_gateway.extensions.auth.credential_authenticator import AuthContext, AuthResult
 from agent_gateway.extensions.auth.ssh_key_issuer import SshKeyIssuer
-from agent_gateway.extensions.yuanrong_frontend_client import (
+from agent_gateway.extensions.agentos.agentos_router.backend import (
     AGENT_GENERATION_ENV,
     DEFAULT_RUNTIME_PROBE_SETTINGS,
     DEFAULT_THIRD_AGENT_PROBE_SETTINGS,
@@ -112,23 +111,21 @@ from agent_gateway.extensions.yuanrong_frontend_client import (
     AgentRuntimeSpec,
     RuntimeProbeSettings,
     SandboxInfo,
-    YuanrongAgentApiError,
-    YuanrongAgentCreateUncertainError,
-    YuanrongAgentDeleteRejectedError,
-    YuanrongAgentFailedError,
-    YuanrongAgentFileError,
-    YuanrongAgentGenerationMismatchError,
-    YuanrongAgentNotFoundError,
-    YuanrongAgentNotVisibleError,
-    YuanrongAgentRequestNotSentError,
-    YuanrongAgentTimeoutError,
-    YuanrongFrontendAgentClient,
+    AgentApiError,
+    AgentFileError,
+    AgentCreateUncertainError,
+    AgentDeleteRejectedError,
+    AgentFailedError,
+    AgentGenerationMismatchError,
+    AgentNotFoundError,
+    AgentNotVisibleError,
+    AgentRequestNotSentError,
+    AgentTimeoutError,
     bind_southbound_trace_id,
     deterministic_agent_instance_id,
     extract_trace_id,
 )
 from agent_gateway.routing.agent_client import WebSocketAgentServerClient
-from agent_gateway.extensions.agentos.agentos_router.control_adapter import YuanRongControl
 from agent_gateway.southbound.control.managed import ManagedSandboxControl, SandboxCreateRequest
 from agent_gateway.southbound.data.managed_websocket import ManagedWebSocketPool
 from agent_gateway.telemetry import (
@@ -141,6 +138,10 @@ from agent_gateway.routing.container_files import (
     normalize_agent_file_download_path,
     normalize_agent_file_upload_path,
 )
+
+if TYPE_CHECKING:
+    from agent_gateway.extensions.adx.control_client import AdxControlClient
+
 
 logger = logging.getLogger("agent_gateway.extensions.agentos.agentos_router.router_client")
 _CHANNEL_SYNC_FAILURE_LIMIT = 3
@@ -222,7 +223,7 @@ class _SandboxLifecycle:
     shared_sandbox_owner: str = ""
 
 
-def _sandbox_name(user_id: str, agent_type: str) -> str:
+def sandbox_name(user_id: str, agent_type: str) -> str:
     return f"{user_id.strip()}+{AgentRuntime.normalize_agent_type(agent_type)}"
 
 
@@ -307,6 +308,7 @@ _AGENT_NETWORK_ERROR_TEXT_TOKENS = (
     "connection reset",
 )
 
+
 # 断连清理的有限重试：断连后先等 disconnect_cleanup_timeout_seconds，再按固定
 # 间隔最多重试几次，覆盖「chat 尾部 release / 延迟 cancel 的 interrupt 与
 # 「断连+timeout」同秒到期」等短暂竞态；超限后交回 600s idle reaper 兜底。
@@ -372,10 +374,10 @@ def _pick_keys(source: Mapping[str, Any], keys: tuple[str, ...]) -> dict[str, An
 
 
 def _extract_placement_ips(instance_info: Mapping[str, Any] | None) -> tuple[str, str]:
-    """Read node / sandbox IP from YuanRong GET, including jiuwenbox aliases.
+    """Read node / sandbox IP from Environment GET, including jiuwenbox aliases.
 
     Register leaves ``address`` and ``node`` empty. Placement must be
-    PATCHed once the actual IPs exist. YuanRong may use ``node_ip`` /
+    PATCHed once the actual IPs exist. Environment may use ``node_ip`` /
     ``sandbox_ip`` or pass through jiuwenbox ``ip_address``.
     """
     if not isinstance(instance_info, Mapping):
@@ -402,7 +404,7 @@ class EphemeralKeyIssueError(RuntimeError):
 
 
 def build_auth_headers_from_mapping(headers: Mapping[str, str] | None) -> dict[str, str]:
-    """Build Authorization header for YuanRong file APIs from WS/auth headers."""
+    """Build Authorization header for Environment file APIs from WS/auth headers."""
     if not headers:
         return {}
     lowered = {str(k).lower(): str(v) for k, v in headers.items() if v is not None}
@@ -425,7 +427,7 @@ def build_auth_headers_from_token(token: str | None) -> dict[str, str]:
 
 
 def build_inline_runtime_spec(image_info: ImageInfo) -> AgentRuntimeSpec:
-    """Take registry ``metadata.runtime_spec`` (YuanRong ``RuntimeSpec`` shape)."""
+    """Take registry ``metadata.runtime_spec`` (Environment ``RuntimeSpec`` shape)."""
     meta = image_info.metadata if isinstance(image_info.metadata, dict) else {}
     raw_spec = meta.get("runtime_spec")
     if not isinstance(raw_spec, Mapping) or not raw_spec:
@@ -480,8 +482,8 @@ def _web_port_from_runtime(runtime: AgentRuntime) -> int | None:
     return http_web_port_from_access_mode(_access_mode_from_image_metadata(meta))
 
 
-def _third_agent_ssh_probe_port(ssh_relay: YuanrongSshRelay | None) -> int:
-    """YuanRong SSH 南向端口（默认 2222），无 web access_mode 时用作探针。"""
+def _third_agent_ssh_probe_port(ssh_relay: SshRelay | None) -> int:
+    """Environment SSH 南向端口（默认 2222），无 web access_mode 时用作探针。"""
     if ssh_relay is not None:
         try:
             port = int(getattr(ssh_relay, "backend_port", 0) or 0)
@@ -493,11 +495,11 @@ def _third_agent_ssh_probe_port(ssh_relay: YuanrongSshRelay | None) -> int:
 
 
 def _third_agent_probe_port(
-    ssh_relay: YuanrongSshRelay | None,
+    ssh_relay: SshRelay | None,
     *,
     image_metadata: Mapping[str, Any] | None = None,
 ) -> int:
-    """3rdagent YuanRong TCP 探针端口：有 ``access_mode.web`` 用 web port，否则 SSH。"""
+    """3rdagent Environment TCP 探针端口：有 ``access_mode.web`` 用 web port，否则 SSH。"""
     web_port = _resolve_agent_web_port(image_metadata=image_metadata)
     if web_port:
         return web_port
@@ -562,7 +564,7 @@ def _with_web_access_cmds(
 ) -> dict[str, Any]:
     """Prepend ``access_mode`` ``name=web`` command to ``runtime_spec.cmds``.
 
-    YuanRong bootstrap reads ``cmds`` as a list of argv arrays. The web start
+    Environment bootstrap reads ``cmds`` as a list of argv arrays. The web start
     command is always placed first; existing registry cmds follow it.
     """
     spec = dict(runtime_spec)
@@ -630,7 +632,7 @@ class ManagedRouter(SouthboundAgentClient):
         managed_control: ManagedSandboxControl,
         registry: RegistryClient,
         agent_manager: AgentManager,
-        ssh_relay: YuanrongSshRelay | None = None,
+        ssh_relay: SshRelay | None = None,
         ssh_channel_endpoint: SshChannelEndpoint | None = None,
         key_issuer: SshKeyIssuer | None = None,
         ephemeral_key_ttl_sec: float = 300.0,
@@ -650,7 +652,7 @@ class ManagedRouter(SouthboundAgentClient):
         strict_ws_headers: bool = False,
     ) -> None:
         self._managed_control = managed_control
-        self._yuanrong = managed_control.backend
+        self._backend = managed_control.backend
         self._strict_ws_headers = strict_ws_headers
         self._registry = registry
         self._agent_manager = agent_manager
@@ -698,7 +700,7 @@ class ManagedRouter(SouthboundAgentClient):
         self._pending_cleanups: dict[str, asyncio.Task[None]] = {}
         # Web/TUI 连接预热：user_id → in-flight warmup task（同用户合并）
         self._warmup_tasks: dict[str, asyncio.Task[None]] = {}
-        # create 后走 YuanRong frontend 的 WS 代理直连 instance（不走 invoke 链路）：
+        # create 后走 Environment frontend 的 WS 代理直连 instance（不走 invoke 链路）：
         # instance_id(sandbox_id) → 已连接的 WebSocketAgentServerClient
         self._ws_pool = ManagedWebSocketPool(ws_client_factory or WebSocketAgentServerClient)
         self._preparation_traces: dict[str, _PreparationTrace] = {}
@@ -1212,7 +1214,7 @@ class ManagedRouter(SouthboundAgentClient):
         except Exception as exc:
             operation = current_request_trace()
             if operation is not None and operation.method == "gw.connect.warmup":
-                outcome = "timeout" if isinstance(exc, (TimeoutError, YuanrongAgentTimeoutError)) else "failed"
+                outcome = "timeout" if isinstance(exc, (TimeoutError, AgentTimeoutError)) else "failed"
                 operation.record_outcome(outcome, reason=type(exc).__name__)
             logger.warning(
                 "[AgentOSRouter] connect warmup failed: user=%s agent_type=%s",
@@ -1223,9 +1225,8 @@ class ManagedRouter(SouthboundAgentClient):
             try:
                 existing = await self._agent_manager.get_agent(user_id, agent_type)
                 if existing is not None and existing.is_failed():
-                    await self._agent_manager.pop_agent(
+                    await self._agent_manager.discard_failed(
                         user_id, agent_type, expected_agent_id=existing.info.agent_id,
-                        reason=DELETE_REASON_WARMUP_FAILURE,
                     )
             except Exception:
                 logger.debug(
@@ -1257,7 +1258,7 @@ class ManagedRouter(SouthboundAgentClient):
         session_id: str = "",
         instance_id: str | None = None,
     ) -> str:
-        """Resolve YuanRong instance id for container file upload/download."""
+        """Resolve Environment instance id for container file upload/download."""
         resolved, _ = await self._resolve_file_runtime(
             user_id=user_id,
             agent_type=agent_type,
@@ -1297,7 +1298,7 @@ class ManagedRouter(SouthboundAgentClient):
             key_values = {"session_id": session_id}
 
         # Builtin jiuwenswarm: same as chat.send — create sandbox then use instance files API.
-        if self._uses_direct_yuanrong(normalized_type):
+        if self._uses_websocket(normalized_type):
             try:
                 runtime = await self._agent_manager.get_or_create_agent(
                     uid,
@@ -1329,10 +1330,14 @@ class ManagedRouter(SouthboundAgentClient):
             if acquire:
                 await self._agent_manager.release(runtime.key, expected_agent_id=runtime.info.agent_id)
             raise AgentOSFileTransferError(
-                "agent has no yuanrong instance_id",
+                "agent has no environment instance_id",
                 code="instance_not_found",
             )
         return resolved, runtime if acquire else None
+
+
+
+
 
     async def upload_container_file(
         self,
@@ -1348,8 +1353,9 @@ class ManagedRouter(SouthboundAgentClient):
     ) -> dict[str, Any]:
         """Upload bytes into the user's agent container workspace.
 
-        Gateway does not enforce a file-size cap. Oversized payloads are
-        rejected by YuanRong (HTTP 413 / ``file_too_large``).
+        This client forwards bytes without a size cap. Gateway HTTP routes
+        apply business upload admission; backend HTTP 413 is preserved as
+        ``file_too_large``.
         """
         normalized_path = normalize_agent_file_upload_path(
             path, dir_prefix=dir_prefix, user_id=user_id
@@ -1362,17 +1368,18 @@ class ManagedRouter(SouthboundAgentClient):
             acquire=True,
         )
         try:
-            return await self._yuanrong.upload_agent_file(
+            return await self._backend.upload_agent_file(
                 resolved_instance_id,
                 normalized_path,
                 content,
                 auth_headers=build_auth_headers_from_mapping(auth_headers),
             )
-        except YuanrongAgentFileError as exc:
+        except AgentFileError as exc:
             raise AgentOSFileTransferError(str(exc), code=exc.error_code) from exc
         finally:
             if held_runtime is not None:
                 await self._agent_manager.release(held_runtime.key, expected_agent_id=held_runtime.info.agent_id)
+
 
     async def download_container_file(
         self,
@@ -1396,18 +1403,19 @@ class ManagedRouter(SouthboundAgentClient):
             acquire=True,
         )
         try:
-            return await self._yuanrong.download_agent_file(
+            return await self._backend.download_agent_file(
                 resolved_instance_id,
                 normalized_path,
                 offset=max(int(offset), 0),
                 limit=max(int(limit), 1),
                 auth_headers=build_auth_headers_from_mapping(auth_headers),
             )
-        except YuanrongAgentFileError as exc:
+        except AgentFileError as exc:
             raise AgentOSFileTransferError(str(exc), code=exc.error_code) from exc
         finally:
             if held_runtime is not None:
                 await self._agent_manager.release(held_runtime.key, expected_agent_id=held_runtime.info.agent_id)
+
 
     async def list_container_files(
         self,
@@ -1433,18 +1441,19 @@ class ManagedRouter(SouthboundAgentClient):
             acquire=True,
         )
         try:
-            return await self._yuanrong.list_agent_files(
+            return await self._backend.list_agent_files(
                 resolved_instance_id,
                 normalized_dir,
                 recursive=bool(recursive),
                 max_depth=int(max_depth),
                 auth_headers=build_auth_headers_from_mapping(auth_headers),
             )
-        except YuanrongAgentFileError as exc:
+        except AgentFileError as exc:
             raise AgentOSFileTransferError(str(exc), code=exc.error_code) from exc
         finally:
             if held_runtime is not None:
                 await self._agent_manager.release(held_runtime.key, expected_agent_id=held_runtime.info.agent_id)
+
 
     async def mkdir_container_dir(
         self,
@@ -1470,22 +1479,23 @@ class ManagedRouter(SouthboundAgentClient):
             acquire=True,
         )
         try:
-            return await self._yuanrong.mkdir_agent_dir(
+            return await self._backend.mkdir_agent_dir(
                 resolved_instance_id,
                 normalized_path,
                 mode=mode,
                 recursive=bool(recursive),
                 auth_headers=build_auth_headers_from_mapping(auth_headers),
             )
-        except YuanrongAgentFileError as exc:
+        except AgentFileError as exc:
             raise AgentOSFileTransferError(str(exc), code=exc.error_code) from exc
         finally:
             if held_runtime is not None:
                 await self._agent_manager.release(held_runtime.key, expected_agent_id=held_runtime.info.agent_id)
 
+
     @staticmethod
-    def _uses_direct_yuanrong(agent_type: str) -> bool:
-        """Builtin swarm uses URN invoke (same as ``agent_client.type=yuanrong``)."""
+    def _uses_websocket(agent_type: str) -> bool:
+        """Builtin swarm requests use the AgentServer WebSocket connection."""
         return str(agent_type or "").strip().lower() == BUILTIN_AGENT_TYPE
 
     @property
@@ -1554,7 +1564,7 @@ class ManagedRouter(SouthboundAgentClient):
         acquire: bool = False,
         return_hold: bool = False,
     ) -> str | tuple[str, Callable[[], Awaitable[None]]] | None:
-        """Resolve the YuanRong frontend URL for an agent's Web UI.
+        """Resolve the Environment frontend URL for an agent's Web UI.
 
         Reuses cached ``metadata.web_port`` and ``sandbox_id``. Missing READY
         runtime for a 3rd-agent creates the sandbox (single-flight). In-flight
@@ -1577,7 +1587,7 @@ class ManagedRouter(SouthboundAgentClient):
         # 仅当返回 endpoint 时，才把活动计数交给调用方；其余退出路径本次自行释放。
         held = bool(acquire and runtime is not None and runtime.is_ready())
         if runtime is None or not runtime.is_ready():
-            if self._uses_direct_yuanrong(normalized):
+            if self._uses_websocket(normalized):
                 return None
             try:
                 runtime = await self._agent_manager.get_or_create_agent(
@@ -1596,7 +1606,7 @@ class ManagedRouter(SouthboundAgentClient):
                 AgentCreateFailed,
                 AgentDeleted,
                 AgentPreCreateError,
-                YuanrongAgentApiError,
+                AgentApiError,
                 RegistryError,
             ):
                 return None
@@ -1612,17 +1622,17 @@ class ManagedRouter(SouthboundAgentClient):
         # 沙箱的请求都等到 running；确认后记入缓存，后续请求直接跳过。
         readiness_key = (sandbox_id, runtime.info.agent_id)
         if (
-            not self._uses_direct_yuanrong(normalized)
+            not self._uses_websocket(normalized)
             and readiness_key not in self._web_ready_sandboxes
         ):
             try:
-                await self._wait_yuanrong_running(
+                await self._wait_environment_running(
                     sandbox_id,
                     user_id=uid,
                     session_id=str(runtime.info.metadata.get("session_id") or ""),
                     agent_type=normalized,
                 )
-            except YuanrongAgentApiError as exc:
+            except AgentApiError as exc:
                 await self._cleanup_agent_on_instance_unavailable(runtime, exc=exc)
                 await self._release_web_hold(runtime, held)
                 return None
@@ -1671,28 +1681,12 @@ class ManagedRouter(SouthboundAgentClient):
         await self._agent_manager.release(runtime.key)
 
     def _agent_ws_url(self, instance_id: str, agent_port: int) -> str:
-        """YuanRong frontend 的 instance WS 代理地址.
-
-        形如 ``ws://<frontend-host>:8888/serverless/v1/ws?instance=<id>&tenant_id=default&port=<port>``，
-        其中 ``instance`` 是 create 返回的 instanceID，``port`` 是 create cmds 里
-        agentserver 监听的端口。
-        """
         return self._managed_control.ws_url(instance_id, agent_port)
 
     def _agent_http_url(self, instance_id: str, agent_port: int) -> str:
-        """Frontend instance HTTP proxy URL.
-
-        ``http://<host>:8888/serverless/v1/http?instance=<id>&tenant_id=default&port=<port>``
-        """
         return self._managed_control.http_url(instance_id, agent_port)
 
     def _agent_web_ws_url(self, instance_id: str, agent_port: int) -> str:
-        """Web-app WebSocket endpoint: the HTTP tunnel path with a ws scheme.
-
-        Reuses :meth:`_agent_http_url` so the browser's subpath (e.g.
-        ``/api/remote.mux``) survives ``_append_tail``. ``/serverless/v1/ws``
-        is the control channel and rejects such subpaths.
-        """
         return self._managed_control.web_ws_url(instance_id, agent_port)
 
     async def _connect_ws_until_ready(
@@ -1721,7 +1715,7 @@ class ManagedRouter(SouthboundAgentClient):
             jitter=not self._strict_ws_headers,
         )
 
-    async def _wait_yuanrong_running(
+    async def _wait_environment_running(
         self,
         instance_id: str,
         *,
@@ -1729,7 +1723,7 @@ class ManagedRouter(SouthboundAgentClient):
         session_id: str = "",
         agent_type: str = "",
     ) -> dict[str, Any]:
-        """GET /api/agent/:id until YuanRong reports ``status=running``.
+        """GET /api/agent/:id until Environment reports ``status=running``.
 
         Create 端口探针成功后实例才 running；在此之前连 WS/SSH 会失败，
         且 node_ip / sandbox_ip 通常也尚未写入。返回最后一次 GET 的
@@ -1791,7 +1785,7 @@ class ManagedRouter(SouthboundAgentClient):
             else:
                 scope = bind_request_trace(current) if current is not None else nullcontext()
             with scope:
-                await self._wait_yuanrong_running(
+                await self._wait_environment_running(
                     instance_id,
                     user_id=str(info.user_id or ""),
                     session_id=str(info.metadata.get("session_id") or ""),
@@ -1809,7 +1803,7 @@ class ManagedRouter(SouthboundAgentClient):
         def on_failure(exc: BaseException) -> None:
             cancelled = isinstance(exc, asyncio.CancelledError)
             outcome = ("cancelled" if cancelled else
-                       "timeout" if isinstance(exc, (TimeoutError, YuanrongAgentTimeoutError)) else "failed")
+                       "timeout" if isinstance(exc, (TimeoutError, AgentTimeoutError)) else "failed")
             preparation = self._preparation_traces.get(instance_id)
             if preparation is not None and preparation.owner_task is asyncio.current_task():
                 preparation.operation.record_outcome(outcome, reason="ws_cancelled" if cancelled else type(exc).__name__)
@@ -1872,7 +1866,7 @@ class ManagedRouter(SouthboundAgentClient):
 
         清理复用北向断连的 :meth:`_delayed_cleanup`（连接数复核 → task_count 复核 → pop_if_idle
         in-flight 请求持有 task_count 时会拒绝删除），不走 ``_cleanup_agent_on_network_failure``
-        强制路径——WS开不代表沙箱有问题（YuanRong 代理抖动 / supervisor 拉起中），强制清理会误杀可恢复实例。
+        强制路径——WS开不代表沙箱有问题（Environment 代理抖动 / supervisor 拉起中），强制清理会误杀可恢复实例。
         """
         if self._closed:
             # 关停期：_close_all_ws_clients 走正常 disconnect()，不应有事件；
@@ -1938,13 +1932,13 @@ class ManagedRouter(SouthboundAgentClient):
                 return self._routing_error_response(envelope, str(exc))
         try:
             runtime.attach_to_envelope(envelope)
-            if not self._uses_direct_yuanrong(runtime.info.agent_type):
+            if not self._uses_websocket(runtime.info.agent_type):
                 return self._routing_error_response(
                     envelope,
                     f"agent_type={runtime.info.agent_type} does not use websocket; "
                     "use 3rdagent.switch / SSH",
                 )
-            # create 后通过 YuanRong frontend WS 代理直连 instance，不走 invoke。
+            # create 后通过 ADX Ingress WS 代理直连 instance，不走 invoke。
             try:
                 ws_client = await self._get_ws_client(runtime)
             except ValueError as exc:
@@ -1956,7 +1950,7 @@ class ManagedRouter(SouthboundAgentClient):
                     error=str(exc),
                 )
                 return self._routing_error_response(envelope, str(exc))
-            except YuanrongAgentApiError as exc:
+            except AgentApiError as exc:
                 # wait_until_running 确认实例不存在/停止（管理面删除沙箱、实例残留
                 # stopped 等）：不属于网络错误 token，但同为"沙箱不可用"的硬证据，
                 # 走同款删除重建流程并打独立日志，避免 runtime 永久卡在死沙箱上。
@@ -2150,14 +2144,14 @@ class ManagedRouter(SouthboundAgentClient):
             return
         try:
             runtime.attach_to_envelope(envelope)
-            if not self._uses_direct_yuanrong(runtime.info.agent_type):
+            if not self._uses_websocket(runtime.info.agent_type):
                 yield self._routing_error_chunk(
                     envelope,
                     f"agent_type={runtime.info.agent_type} does not use websocket; "
                     "use 3rdagent.switch / SSH",
                 )
                 return
-            # create 后通过 YuanRong frontend WS 代理直连 instance，不走 invoke。
+            # create 后通过 ADX Ingress WS 代理直连 instance，不走 invoke。
             try:
                 ws_client = await self._get_ws_client(runtime)
             except ValueError as exc:
@@ -2170,7 +2164,7 @@ class ManagedRouter(SouthboundAgentClient):
                 )
                 yield self._routing_error_chunk(envelope, str(exc))
                 return
-            except YuanrongAgentApiError as exc:
+            except AgentApiError as exc:
                 # wait_until_running 确认实例不存在/停止：同 send_request 分支，
                 # 走删除重建流程并打独立日志，避免 runtime 永久卡在死沙箱上。
                 error = f"agent instance unavailable: {exc}"
@@ -2413,7 +2407,7 @@ class ManagedRouter(SouthboundAgentClient):
                 "code": "SSH_KEY_ISSUE_FAILED",
             }
         # Builtin swarm: no registry / create_sandbox; mark current type only.
-        if self._uses_direct_yuanrong(normalized):
+        if self._uses_websocket(normalized):
             self._current_agent_types[uid] = normalized
             payload = {
                 "agent_id": "",
@@ -2446,19 +2440,19 @@ class ManagedRouter(SouthboundAgentClient):
             if not instance_id:
                 return {
                     "ok": False,
-                    "error": f"agent has no yuanrong instance_id: user={uid}",
+                    "error": f"agent has no environment instance_id: user={uid}",
                     "code": "INTERNAL_ERROR",
                 }
             try:
                 # create 返回不代表端口探针已成功；先等 GET status=running，
                 # 再探测南向 SSH，避免 sshd 未听端口时立刻掐连接。
-                await self._wait_yuanrong_running(
+                await self._wait_environment_running(
                     instance_id,
                     user_id=uid,
                     session_id=session_id,
                     agent_type=normalized,
                 )
-            except YuanrongAgentApiError as exc:
+            except AgentApiError as exc:
                 # wait_until_running 确认实例不存在/停止：强制清残留 runtime，
                 # 下次 switch 才能重建。sshd 未就绪仍走下面保守分支。
                 log_agentos(
@@ -2557,7 +2551,7 @@ class ManagedRouter(SouthboundAgentClient):
             if callable(close):
                 await close()
 
-    # ---------- SSH relay (northbound SshChannel -> YuanRong instance) ----------
+    # ---------- SSH relay (northbound SshChannel -> Environment instance) ----------
 
     @staticmethod
     def _is_ssh_relay_request(envelope: E2AEnvelope) -> bool:
@@ -2566,7 +2560,7 @@ class ManagedRouter(SouthboundAgentClient):
     async def _handle_ssh_relay(self, envelope: E2AEnvelope) -> AgentResponse:
         """Start the southbound SSH relay for an ``ssh.relay`` request.
 
-        Agent resolution (YuanRong instance creation) and the PTY relay run
+        Agent resolution (Environment instance creation) and the PTY relay run
         in a background task so the gateway forward loop is not blocked for
         the whole SSH session; the northbound channel waits on the relay
         session ``done`` event instead of this response.
@@ -2610,7 +2604,7 @@ class ManagedRouter(SouthboundAgentClient):
         self._apply_current_agent_type_for_ssh(envelope)
         try:
             agent_type = self._extract_agent_type(envelope)
-            if self._uses_direct_yuanrong(agent_type):
+            if self._uses_websocket(agent_type):
                 ssh_relay.fail_session(
                     relay_session,
                     "builtin agent_type has no AgentOS sandbox for SSH; run "
@@ -2660,7 +2654,7 @@ class ManagedRouter(SouthboundAgentClient):
             if not instance_id:
                 ssh_relay.fail_session(
                     relay_session,
-                    f"agent has no yuanrong instance_id: user={runtime.info.user_id}",
+                    f"agent has no environment instance_id: user={runtime.info.user_id}",
                 )
                 return
 
@@ -2719,7 +2713,7 @@ class ManagedRouter(SouthboundAgentClient):
             return
         user_id = str(envelope.user_id or "").strip()
         current = self.get_current_agent_type(user_id)
-        if self._uses_direct_yuanrong(current):
+        if self._uses_websocket(current):
             command = str(params.get("command") or "").strip()
             if not command:
                 ctx = envelope.channel_context
@@ -2754,7 +2748,7 @@ class ManagedRouter(SouthboundAgentClient):
     ) -> AgentRuntime:
         user_id = self._extract_user_id(envelope)
         agent_type = self._extract_agent_type(envelope)
-        token = _ws_readiness_required.set(ws_ready and self._uses_direct_yuanrong(agent_type))
+        token = _ws_readiness_required.set(ws_ready and self._uses_websocket(agent_type))
         try:
             return await self._agent_manager.get_or_create_agent(
                 user_id,
@@ -3050,7 +3044,7 @@ class ManagedRouter(SouthboundAgentClient):
             if not user_id or not agent_type:
                 continue
             try:
-                async with self._sandbox_lifecycle(_sandbox_name(user_id, agent_type)) as lifecycle:
+                async with self._sandbox_lifecycle(sandbox_name(user_id, agent_type)) as lifecycle:
                     current = await self._agent_manager.get_agent(
                         user_id, agent_type, key_values=values or None,
                     )
@@ -3200,7 +3194,7 @@ class ManagedRouter(SouthboundAgentClient):
             yield None
             return
         instance_id = str(record.instance_id or "").strip()
-        async with self._sandbox_lifecycle(_sandbox_name(record.user, record.framework)) as lifecycle:
+        async with self._sandbox_lifecycle(sandbox_name(record.user, record.framework)) as lifecycle:
             async def retire() -> bool:
                 if (
                     lifecycle.attempt is not None or lifecycle.retired_instance
@@ -3237,10 +3231,10 @@ class ManagedRouter(SouthboundAgentClient):
         """Return true only for an explicit absence; retry only after a positive observation."""
         try:
             await self._managed_control.query(lifecycle.retired_instance)
-        except YuanrongAgentNotFoundError:
+        except AgentNotFoundError:
             lifecycle.delete_retry_at = None
             return True
-        except YuanrongAgentApiError:
+        except AgentApiError:
             return False
         retry_at = lifecycle.delete_retry_at
         if allow_retry and retry_at is not None and asyncio.get_running_loop().time() >= retry_at:
@@ -3281,21 +3275,21 @@ class ManagedRouter(SouthboundAgentClient):
         try:
             async with asyncio.timeout_at(deadline):
                 attempt.sandbox = await attempt.create()
-        except (TimeoutError, YuanrongAgentTimeoutError, YuanrongAgentCreateUncertainError) as exc:
+        except (TimeoutError, AgentTimeoutError, AgentCreateUncertainError) as exc:
             await self._replay_or_fail_uncertain_create(lifecycle, attempt, exc)
-        except YuanrongAgentGenerationMismatchError as exc:
-            # This name is owned by a different generation; leave it alone.
+        except AgentGenerationMismatchError as exc:
+            # A replay may find a name owned by another generation.
             lifecycle.attempt = None
             raise AgentRebuildPending("AGENT_REBUILD_PENDING: the sandbox generation did not match") from exc
-        except (ValueError, YuanrongAgentApiError) as exc:
+        except (ValueError, AgentApiError) as exc:
             status = getattr(exc, "status_code", None)
-            if isinstance(exc, YuanrongAgentApiError) and status == 429:
+            if isinstance(exc, AgentApiError) and status == 429:
                 # 429 未创建新沙箱，但上一次结果不确定的 POST 可能已经建好实例。
                 # 保留 attempt 让下次请求重放，不要退役并删除这个可能存活的实例。
                 raise AgentRebuildPending(
                     "AGENT_REBUILD_PENDING: replacement creation was rate limited"
                 ) from exc
-            if isinstance(exc, YuanrongAgentApiError) and (
+            if isinstance(exc, AgentApiError) and (
                 status == 408 or (isinstance(status, int) and status >= 500)
             ):
                 # 408/5xx 的结果不确定：保留 attempt，下一次请求重放同一名称。
@@ -3314,16 +3308,16 @@ class ManagedRouter(SouthboundAgentClient):
         if not lifecycle.retired_instance and lifecycle.attempt is None:
             try:
                 return await attempt.create()
-            except YuanrongAgentRequestNotSentError as exc:
+            except AgentRequestNotSentError as exc:
                 raise AgentRebuildPending("AGENT_REBUILD_PENDING: create request was not sent") from exc
-            except (YuanrongAgentTimeoutError, YuanrongAgentCreateUncertainError) as exc:
+            except (AgentTimeoutError, AgentCreateUncertainError) as exc:
                 # Keep this attempt so later callers replay the same name
                 # instead of minting a generation that could orphan this POST.
                 await self._replay_or_fail_uncertain_create(lifecycle, attempt, exc)
             except asyncio.CancelledError:
                 lifecycle.attempt = attempt
                 raise
-            except YuanrongAgentApiError as exc:
+            except AgentApiError as exc:
                 # 429 is an explicit rejection: no sandbox was created by this
                 # attempt. Treat it as a retryable pre-create failure instead of
                 # caching a permanent FAILED runtime. Other 4xx may be
@@ -3344,7 +3338,7 @@ class ManagedRouter(SouthboundAgentClient):
         if attempt.sandbox is None:
             if lifecycle.retired_instance:
                 await self._wait_for_retired_sandbox(lifecycle, deadline)
-            # YuanRong derives the instance ID from the name and returns the existing instance
+            # Environment derives the instance ID from the name and returns the existing instance
             # on a repeated create (AGENT_REUSE_EXISTING_INSTANCE), so a replay cannot start a second one.
             await self._post_sandbox_attempt(lifecycle, attempt, deadline)
         sandbox = attempt.sandbox
@@ -3356,28 +3350,31 @@ class ManagedRouter(SouthboundAgentClient):
             await self._managed_control.verify_generation(
                 sandbox, generation=attempt.generation, deadline=deadline,
             )
-        except YuanrongAgentGenerationMismatchError as exc:
+        except AgentGenerationMismatchError as exc:
             # Each generation has its own name. A mismatch cannot establish
             # ownership of the instance or justify deleting it.
             raise AgentRebuildPending("AGENT_REBUILD_PENDING: the sandbox generation did not match") from exc
-        except YuanrongAgentFailedError as exc:
+        except AgentFailedError as exc:
             lifecycle.retired_instance = sandbox.sandbox_id
             lifecycle.attempt = None
             await self._request_sandbox_delete(lifecycle)
             raise AgentRebuildPending("AGENT_REBUILD_PENDING: replacement sandbox failed to start") from exc
-        except YuanrongAgentNotVisibleError as exc:
+        except AgentNotVisibleError as exc:
             if sandbox.sandbox_id == attempt.deterministic_id:
                 # A later caller can retry this same physical name after
                 # the acknowledged instance remains invisible.
                 attempt.sandbox = None
             raise AgentRebuildPending("AGENT_REBUILD_PENDING: replacement sandbox is not visible yet") from exc
-        except YuanrongAgentApiError as exc:
+        except AgentApiError as exc:
             # Keep the candidate so the next caller can resume polling it.
             raise AgentRebuildPending("AGENT_REBUILD_PENDING: replacement sandbox is not verified yet") from exc
         lifecycle.retired_instance = ""
         lifecycle.delete_retry_at = None
         lifecycle.attempt = None
         return sandbox
+
+    def _sandbox_physical_name(self, agent_info: AgentInfo) -> str:
+        return f"gateway-{agent_info.agent_id}"
 
     async def _create_agent(self, agent_info: AgentInfo) -> AgentInfo:
         operation = start_gateway_trace(
@@ -3394,7 +3391,7 @@ class ManagedRouter(SouthboundAgentClient):
             raise
         except BaseException as exc:
             if operation is not None:
-                outcome = "timeout" if isinstance(exc, (TimeoutError, YuanrongAgentTimeoutError)) else "failed"
+                outcome = "timeout" if isinstance(exc, (TimeoutError, AgentTimeoutError)) else "failed"
                 operation.finish(outcome, reason=type(exc).__name__)
             raise
 
@@ -3413,6 +3410,7 @@ class ManagedRouter(SouthboundAgentClient):
         # runtime_spec 获取方式因 agent_type 而异
         web_port = None
         env_vars: dict[str, str] | None = None
+        web_port: int | None = None
         if agent_info.agent_type == BUILTIN_AGENT_TYPE:
             # jiuwenswarm: 不从注册中心获取镜像信息，使用内置 runtime_spec
             port = 18092
@@ -3449,23 +3447,23 @@ class ManagedRouter(SouthboundAgentClient):
             sandbox_config = self._server_config.get("sandbox")
             if isinstance(sandbox_config, dict):
                 # Deployment defaults only: do not broadcast local host paths,
-                # file lists, credentials or YuanRong resource knobs to users.
+                # file lists, credentials or Environment resource knobs to users.
                 deployment = _pick_keys(sandbox_config, (
                     "type", "enabled", "startup_mode", "url", "template_name",
                     "user", "group",
                 ))
                 if sandbox_config.get("type") == "adx-environment":
-                    deployment.update(_pick_keys(sandbox_config, (
-                        "image", "runtime", "cpu", "cpu_limit", "memory", "mem_limit", "idle_timeout", "network",
-                    )))
-                conch = sandbox_config.get("conch")
+                    # Static tool settings are persisted by deployment. Only
+                    # select the managed dynamic-connectivity path in Runtime.
+                    deployment = {"type": "adx-environment"}
+                conch = sandbox_config.get("conch") if sandbox_config.get("type") != "adx-environment" else None
                 if isinstance(conch, dict):
                     deployment["conch"] = _pick_keys(conch, (
                         "vcpu_num", "vcpu_max", "ram_mb", "network",
                     ))
                 env_vars["JIUWENSWARM_AGENTOS_SANDBOX_CONFIG"] = json.dumps(deployment)
                 sdk_config = str(sandbox_config.get("conch_sdk_config") or "").strip()
-                if sdk_config:
+                if sdk_config and sandbox_config.get("type") != "adx-environment":
                     env_vars["CONCH_SDK_CONFIG"] = sdk_config
             # create 后 Gateway 通过 frontend WS 代理直连该端口（不走 invoke）。
             extra_metadata: dict[str, Any] = {"agent_port": port}
@@ -3510,11 +3508,11 @@ class ManagedRouter(SouthboundAgentClient):
 
         started = time.monotonic()
 
-        logical_name = _sandbox_name(agent_info.user_id, agent_info.agent_type)
+        logical_name = sandbox_name(agent_info.user_id, agent_info.agent_type)
         # The frontend resolves DELETE by ID at execution time. A new
         # generation must never reuse the ID addressed by a previous DELETE.
         generation = agent_info.agent_id
-        physical_name = f"gateway-{generation}"
+        physical_name = self._sandbox_physical_name(agent_info)
         namespace = self._managed_control.agent_namespace
 
         async def _create_sandbox_once() -> SandboxInfo:
@@ -3537,7 +3535,7 @@ class ManagedRouter(SouthboundAgentClient):
                         and not lifecycle.retired_instance and lifecycle.attempt is None):
                     runtimes = await self._agent_manager.list_user_agents(agent_info.user_id)
                     reusable = any(
-                        _sandbox_name(runtime.info.user_id, runtime.info.agent_type) == logical_name
+                        sandbox_name(runtime.info.user_id, runtime.info.agent_type) == logical_name
                         and (
                             (runtime.is_ready() and runtime.info.sandbox_id == candidate.sandbox_id)
                             or (runtime.is_creating()
@@ -3648,7 +3646,7 @@ class ManagedRouter(SouthboundAgentClient):
         expected_agent_id: str | None = None,
         reason: str = DELETE_REASON_EXPLICIT,
     ) -> bool:
-        """Delete agent mapping, release its YuanRong sandbox, unregister registry.
+        """Delete agent mapping, release its Environment sandbox, unregister registry.
 
         When ``idle_timeout_seconds`` is set, only delete a READY agent that is
         unheld (``task_count == 0``) and idle beyond the timeout. Returns whether
@@ -3666,7 +3664,7 @@ class ManagedRouter(SouthboundAgentClient):
 
         target_agent_id = expected_agent_id
         while True:
-            async with self._sandbox_lifecycle(_sandbox_name(user_id, agent_type)) as lifecycle:
+            async with self._sandbox_lifecycle(sandbox_name(user_id, agent_type)) as lifecycle:
                 current = await self._agent_manager.get_agent(
                     user_id, agent_type, key_values=resolved_key_values or None,
                 )
@@ -3714,7 +3712,7 @@ class ManagedRouter(SouthboundAgentClient):
             agent_type=agent_type,
             key_values=key_values or None,
         )
-        async with self._sandbox_lifecycle(_sandbox_name(user_id, agent_type)) as lifecycle:
+        async with self._sandbox_lifecycle(sandbox_name(user_id, agent_type)) as lifecycle:
             runtime = await self._agent_manager.pop_if_idle(
                 key,
                 idle_timeout_seconds,
@@ -3757,7 +3755,7 @@ class ManagedRouter(SouthboundAgentClient):
 
         instance 已不可达（连接重试耗尽 / 请求超时 / 连接断开）时复用
         :meth:`delete_agent` 的强制删除路径（不检查 task_count / idle）：
-        关闭 WS 直连 → 删除 YuanRong 沙箱 → 移除内存 runtime → 注销注册中心
+        关闭 WS 直连 → 删除 Environment 沙箱 → 移除内存 runtime → 注销注册中心
         instance 条目。后续请求会触发重新建沙箱，避免死沙箱与僵尸注册条目。
 
         清理在独立后台任务中执行，并用 :func:`asyncio.shield` 与调用方取消
@@ -3886,7 +3884,7 @@ class ManagedRouter(SouthboundAgentClient):
     ) -> None:
         """create 已成功但一直未 running：删沙箱并注销注册中心占位行。
 
-        登记发生在 wait 之前。探针超时 / failed 时若只打日志，YuanRong 实例和
+        登记发生在 wait 之前。探针超时 / failed 时若只打日志，Environment 实例和
         ``POST /api/instances`` 写入的条目都会留下。与请求路径
         :meth:`_cleanup_agent_on_instance_unavailable` 共用 :meth:`delete_agent`；
         runtime 若已被并发 cleanup 摘掉，仍补一次 unregister（幂等）。
@@ -3928,7 +3926,7 @@ class ManagedRouter(SouthboundAgentClient):
 
         # A delayed unregister uses the same service ID as the replacement.
         # Keep the check and unregister under the same lock as new registration.
-        async with self._sandbox_lifecycle(_sandbox_name(agent_info.user_id, agent_info.agent_type)) as lifecycle:
+        async with self._sandbox_lifecycle(sandbox_name(agent_info.user_id, agent_info.agent_type)) as lifecycle:
             if lifecycle.attempt is not None or await self._agent_manager.get_agent(
                 agent_info.user_id, agent_info.agent_type, key_values=key_values,
             ) is not None:
@@ -3977,7 +3975,7 @@ class ManagedRouter(SouthboundAgentClient):
         try:
             async with asyncio.timeout(self._probe_settings.wait_running_timeout_seconds):
                 await self._managed_control.delete(lifecycle.retired_instance)
-        except (YuanrongAgentRequestNotSentError, YuanrongAgentDeleteRejectedError):
+        except (AgentRequestNotSentError, AgentDeleteRejectedError):
             retry_delay = max(0.01, self._probe_settings.wait_running_interval_seconds)
             raise
         finally:
@@ -3991,8 +3989,8 @@ class ManagedRouter(SouthboundAgentClient):
                 _cleanup_step("frontend", "incomplete", "result_unconfirmed")
         except Exception as exc:
             _cleanup_step("frontend", "failed", type(exc).__name__)
-            logger.exception("YuanRong sandbox delete failed: instance_id=%s", lifecycle.retired_instance)
-            return isinstance(exc, (YuanrongAgentRequestNotSentError, YuanrongAgentDeleteRejectedError))
+            logger.exception("Environment sandbox delete failed: instance_id=%s", lifecycle.retired_instance)
+            return isinstance(exc, (AgentRequestNotSentError, AgentDeleteRejectedError))
         return False
 
     async def _retire_sandbox(
@@ -4091,7 +4089,7 @@ class ManagedRouter(SouthboundAgentClient):
         while True:
             attempt += 1
             try:
-                async with self._sandbox_lifecycle(_sandbox_name(user_id, agent_type)):
+                async with self._sandbox_lifecycle(sandbox_name(user_id, agent_type)):
                     live = await self._agent_manager.get_agent(
                         user_id, agent_type, key_values=key_values,
                     )
@@ -4261,15 +4259,15 @@ class ManagedRouter(SouthboundAgentClient):
             # 避免 CREATING 实例和占位 registry 行一直留着（cron 无用户断连回收）。
             sandbox_id = str(agent_info.sandbox_id or "").strip()
             try:
-                instance_info = await self._wait_yuanrong_running(
+                instance_info = await self._wait_environment_running(
                     sandbox_id,
                     user_id=str(agent_info.user_id or ""),
                     session_id=str(agent_info.metadata.get("session_id") or ""),
                     agent_type=str(agent_info.agent_type or ""),
                 )
-            except YuanrongAgentApiError as exc:
+            except AgentApiError as exc:
                 if operation is not None:
-                    outcome = "timeout" if isinstance(exc, YuanrongAgentTimeoutError) else "failed"
+                    outcome = "timeout" if isinstance(exc, AgentTimeoutError) else "failed"
                     operation.record_outcome(outcome, reason=type(exc).__name__)
                 await self._cleanup_agent_after_create_not_running(
                     agent_info, exc=exc
@@ -4399,6 +4397,8 @@ class AgentOSRouterClient(ManagedRouter):
 
     agent_client_mode = "agentos_router"
 
-    def __init__(self, yuanrong: YuanrongFrontendAgentClient, registry: RegistryClient,
+    def __init__(self, backend: AdxControlClient, registry: RegistryClient,
                  agent_manager: AgentManager, *args, **kwargs) -> None:
-        super().__init__(YuanRongControl(yuanrong), registry, agent_manager, *args, **kwargs)
+        from agent_gateway.extensions.adx.control_adapter import AdxControl
+
+        super().__init__(AdxControl(backend), registry, agent_manager, *args, **kwargs)

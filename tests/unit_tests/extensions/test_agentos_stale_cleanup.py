@@ -138,7 +138,7 @@ async def test_cleanup_does_not_unregister_service_upserted_during_delete() -> N
     stale = _record(user="u1", framework="jiuwenswarm", instance_id="sbx-old")
     other = _record(user="u2", framework="opencode", instance_id="sbx-stale")
 
-    class _YuanRongCreatesLiveOnDelete(FakeYuanRongClient):
+    class _EnvironmentCreatesLiveOnDelete(FakeYuanRongClient):
         async def delete_sandbox(self, sandbox_id: str) -> None:
             await super().delete_sandbox(sandbox_id)
             if sandbox_id != stale.instance_id:
@@ -156,7 +156,7 @@ async def test_cleanup_does_not_unregister_service_upserted_during_delete() -> N
                 metadata={},
             )
 
-    yuanrong = _YuanRongCreatesLiveOnDelete()
+    yuanrong = _EnvironmentCreatesLiveOnDelete()
     registry = _CleanupRegistry([stale, other])
     await cleanup_stale_sandboxes(
         control=ManagedSandboxControl(yuanrong),
@@ -176,7 +176,7 @@ async def test_cleanup_cas_skips_unregister_when_row_retargeted() -> None:
     other = _record(user="u2", framework="opencode", instance_id="sbx-stale")
     registry = _CleanupRegistry([stale, other])
 
-    class _YuanRongUpsertsRowOnDelete(FakeYuanRongClient):
+    class _EnvironmentUpsertsRowOnDelete(FakeYuanRongClient):
         async def delete_sandbox(self, sandbox_id: str) -> None:
             await super().delete_sandbox(sandbox_id)
             if sandbox_id != stale.instance_id:
@@ -186,7 +186,7 @@ async def test_cleanup_cas_skips_unregister_when_row_retargeted() -> None:
                 other,
             ]
 
-    yuanrong = _YuanRongUpsertsRowOnDelete()
+    yuanrong = _EnvironmentUpsertsRowOnDelete()
     await cleanup_stale_sandboxes(
         control=ManagedSandboxControl(yuanrong),
         registry=registry,  # type: ignore[arg-type]
