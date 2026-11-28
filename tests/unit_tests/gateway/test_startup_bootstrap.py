@@ -36,19 +36,24 @@ def test_early_environment_loads_selected_workspace(tmp_path: Path, monkeypatch:
     assert stages == ["dotenv_parsed"]
 
 
-@pytest.mark.parametrize("prepared", [False, True])
+@pytest.mark.parametrize(
+    "marker",
+    [None, "AGENT_GATEWAY_RUNTIME_WORKSPACE_READY", "JIUWENSWARM_RUNTIME_WORKSPACE_READY"],
+    ids=["unprepared", "new-name", "legacy-name"],
+)
 def test_workspace_preparation_respects_parent_marker(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    prepared: bool,
+    marker: str | None,
 ) -> None:
     from agent_gateway.common import paths
     from agent_gateway.startup.bootstrap import prepare_group_workspace
 
-    if prepared:
-        monkeypatch.setenv("JIUWENSWARM_RUNTIME_WORKSPACE_READY", "1")
-    else:
-        monkeypatch.delenv("JIUWENSWARM_RUNTIME_WORKSPACE_READY", raising=False)
+    for name in ("AGENT_GATEWAY_RUNTIME_WORKSPACE_READY", "JIUWENSWARM_RUNTIME_WORKSPACE_READY"):
+        monkeypatch.delenv(name, raising=False)
+    if marker is not None:
+        monkeypatch.setenv(marker, "1")
+    prepared = marker is not None
     target = tmp_path / "initialized"
     package = tmp_path / "openjiuwen"
     descriptions = package / "agent_teams" / "tools" / "locales" / "descs" / "en"

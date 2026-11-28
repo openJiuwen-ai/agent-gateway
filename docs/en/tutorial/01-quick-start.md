@@ -46,7 +46,7 @@ MOCK_READY ws://127.0.0.1:19501
 ## 4. Start the gateway (terminal B)
 
 ```bash
-export JIUWENSWARM_HOME="$PWD/.local-home"
+export AGENT_GATEWAY_HOME="$PWD/.local-home"
 export AGENT_SERVER_HOST=127.0.0.1
 export AGENT_SERVER_PORT=19501
 export WEB_HOST=127.0.0.1
@@ -63,7 +63,7 @@ The gateway is ready when the log shows:
 - `Uvicorn running on http://127.0.0.1:19500`: WebChannel is up
 - `[Cron] loaded N job(s) from ...` / `background_cleanup: started ...`: cron and background cleanup started
 
-If you see `[App] Another Gateway is already serving this workspace`, another gateway holds the workspace lock. Stop it or use a different `JIUWENSWARM_HOME`.
+If you see `[App] Another Gateway is already serving this workspace`, another gateway holds the workspace lock. Stop it or use a different `AGENT_GATEWAY_HOME`.
 
 ## 5. Send your first request (terminal C)
 

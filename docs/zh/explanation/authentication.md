@@ -39,7 +39,7 @@ Gateway 的鉴权分五层，各层独立生效、互不替代：
 
 `auth/session_store.py`（`AuthSessionStore`）：
 
-- **存储**：内存 + 加密落盘 `~/.jiuwenswarm/auth/sessions.json`（受 `JIUWENSWARM_DATA_DIR` 影响）。加密一律 AES-256-GCM，密钥为本机 `.install_key`（32 字节、权限 0600、每机一把，损坏时留档重建）。存档含 `refresh_token`，明文落盘等于交出账号额度。
+- **存储**：内存 + 加密落盘 `~/.jiuwenswarm/auth/sessions.json`（受 `AGENT_GATEWAY_DATA_DIR` 影响）。加密一律 AES-256-GCM，密钥为本机 `.install_key`（32 字节、权限 0600、每机一把，损坏时留档重建）。存档含 `refresh_token`，明文落盘等于交出账号额度。
 - **多进程共享**：Gateway 写、AgentServer 读。按存档 mtime 判断变化即重载；写操作前强制重读一次，防止用陈旧内存快照覆盖另一进程的更新。
 - **绑定**：`session_id`（随机 24 字节 urlsafe）关联 `user_id`（华为账号 openid）。**同一账号只保留一个会话**，重新登录会顶掉旧会话。
 - **生命周期**：会话 TTL 30 天；`id_token` 约 1 小时一换，剩余不足 5 分钟时后台续期（按 user_id 加锁合并并发续期）；登出即删除会话。
@@ -113,7 +113,7 @@ IM / cron 渠道的请求没有登录会话，但对话可能在用免费模型�
 
 WebChannel 的 WebSocket 升级经过两道可选闸门（`channel_manager/web/web_channel_app.py`）：
 
-- **Origin 校验**（`common/security/ws_origin.py`）：`JIUWENSWARM_ENABLE_ORIGIN_CHECK=1` 启用（默认关）。允许的 hostname 列表由 `JIUWENSWARM_WS_ALLOWED_ORIGIN_HOSTS`（逗号分隔）给出，列表含 `none` 时才放行无 Origin 请求；不匹配返回 403。轨迹 HTTP 旁路同规则，且 `Sec-Fetch-Site: cross-site` 直接 403。
+- **Origin 校验**（`common/security/ws_origin.py`）：`AGENT_GATEWAY_ENABLE_ORIGIN_CHECK=1` 启用（默认关）。允许的 hostname 列表由 `AGENT_GATEWAY_WS_ALLOWED_ORIGIN_HOSTS`（逗号分隔）给出，列表含 `none` 时才放行无 Origin 请求；不匹配返回 403。轨迹 HTTP 旁路同规则，且 `Sec-Fetch-Site: cross-site` 直接 403。
 - **IAM 握手鉴权**：南向为 AgentOS 路由时，握手请求的 token 交 agent-os IAM 校验（见下），失败返回 401。
 
 ### AgentOS IAM 鉴权
@@ -189,10 +189,10 @@ A2A 出站 Agent 的领域记录只存凭据引用 `a2a/outbound/<agent_id>.api_
 | 变量 / 配置 | 作用 | 默认 |
 | --- | --- | --- |
 | `JIUWENSWARM_CONFIG_URL` | 远端配置（登录开关、OAuth 参数、APIG 接入点、模型白 / 黑名单）；设为空或 `off` 关闭登录 | 正式环境地址 |
-| `JIUWENSWARM_DATA_DIR` | 数据根目录，决定 `auth/` 会话目录位置 | `~/.jiuwenswarm` |
-| `JIUWENSWARM_SSL_VERIFY` | 出网请求 TLS 校验开关 | 开 |
-| `JIUWENSWARM_ENABLE_ORIGIN_CHECK` | WebSocket / HTTP Origin 校验开关（`1` 启用） | 关 |
-| `JIUWENSWARM_WS_ALLOWED_ORIGIN_HOSTS` | 允许的 Origin hostname（逗号分隔；含 `none` 时放行无 Origin 请求） | 空 |
+| `AGENT_GATEWAY_DATA_DIR` | 数据根目录，决定 `auth/` 会话目录位置 | `~/.jiuwenswarm` |
+| `AGENT_GATEWAY_SSL_VERIFY` | 出网请求 TLS 校验开关 | 开 |
+| `AGENT_GATEWAY_ENABLE_ORIGIN_CHECK` | WebSocket / HTTP Origin 校验开关（`1` 启用） | 关 |
+| `AGENT_GATEWAY_WS_ALLOWED_ORIGIN_HOSTS` | 允许的 Origin hostname（逗号分隔；含 `none` 时放行无 Origin 请求） | 空 |
 | `JIUWENSWARM_FILE_DOWNLOAD_SECRET` | 文件令牌 HMAC 密钥（≥32 字符） | 自动生成 `.file_download_secret` |
 | `JIUWENSWARM_GATEWAY_INTERNAL_TOKEN` | Gateway → AgentServer 内部共享密钥头 | 未设置 |
 | `JIUWEN_SECRET_MASTER_KEY` | 企业版 SecretStore AES 主密钥 | `~/.jiuwenswarm/config/.master_key` |

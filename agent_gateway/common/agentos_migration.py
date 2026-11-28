@@ -163,15 +163,17 @@ def prepare_agentos_config(
             raise RuntimeError(
                 "AgentOS Gateway config is missing and the legacy shared config "
                 f"path resolves to the same file ({config_file}). Set "
-                "JIUWENSWARM_GATEWAY_CONFIG_DIR to a dedicated Gateway config "
-                "directory (for the appliance deploy: <workspace>/infra/config) "
-                "and re-run the deploy script before starting Gateway."
+                "AGENT_GATEWAY_CONFIG_DIR (or the legacy JIUWENSWARM_GATEWAY_CONFIG_DIR) "
+                "to a dedicated Gateway config directory (for the appliance deploy: "
+                "<workspace>/infra/config) and re-run the deploy script before "
+                "starting Gateway."
             )
         raise RuntimeError(
             "AgentOS Gateway config path resolves to the legacy shared config "
             f"({config_file}); refusing to rewrite the AgentServer config with "
-            "the Gateway template. Set JIUWENSWARM_GATEWAY_CONFIG_DIR to a "
-            "dedicated Gateway config directory and re-run the deploy script."
+            "the Gateway template. Set AGENT_GATEWAY_CONFIG_DIR (or the legacy "
+            "JIUWENSWARM_GATEWAY_CONFIG_DIR) to a dedicated Gateway config "
+            "directory and re-run the deploy script."
         )
 
     migrated = migrate_legacy_agentos_config(
