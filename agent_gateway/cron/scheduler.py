@@ -383,6 +383,10 @@ class _Event:
 class CronSchedulerService:
     """Async scheduler that wakes agent and pushes results to channels."""
 
+    # 认领记录的保留期。push_update 是对已触发任务的补发，可能比这一趟晚不少，
+    # 因此留足窗口；窗口之外这趟不可能再被推送，条目即可回收。
+    _CLAIM_RETENTION_SECONDS = 7 * 24 * 3600
+
     def __init__(
         self,
         *,
@@ -414,8 +418,10 @@ class CronSchedulerService:
         self._lifecycle_owner_store = LifecycleOwners(_cron_lifecycle_source(store))
         self._runs: dict[str, CronRunState] = {}  # run_id -> state
         self._run_tasks: dict[str, asyncio.Task] = {}
-        # 企业版库表认领成功的 run_id。推送时只放行这些，避免没抢到的机器也推结果。
-        self._claimed_run_ids: set[str] = set()
+        # 企业版库表认领成功的 run_id -> 认领时间。推送时只放行这些，避免没抢到的机器也推结果。
+        # run_id 形如 ``<job_id>:<fire_ts>``，一趟一生、不会复用；旧条目按保留期回收，
+        # 否则每个任务每次到点都在这里留一条，进程跑得越久集合越大。
+        self._claimed_run_ids: dict[str, float] = {}
         # run_id -> job_id.  A run skipped during crash recovery must stay
         # suppressed across later store reloads; otherwise a reload after the
         # boot grace period could schedule the same orphaned wake again.
@@ -1868,11 +1874,11 @@ class CronSchedulerService:
         用户点「立即执行」不抢，避免和到点那一趟互相挤掉。
         """
         if not self._use_db_schedule():
-            self._claimed_run_ids.add(run_id)
+            self._claim_run_id(run_id)
             return True
         state = self._runs.get(run_id)
         if state is not None and state.manually_triggered:
-            self._claimed_run_ids.add(run_id)
+            self._claim_run_id(run_id)
             logger.info(
                 "[Cron] db schedule claim bypassed (manual run_now) job=%s run_id=%s",
                 job.id,
@@ -1898,7 +1904,7 @@ class CronSchedulerService:
         if is_oneshot_job(job):
             ok = await claim_oneshot_run(job, fire_at)
             if ok:
-                self._claimed_run_ids.add(run_id)
+                self._claim_run_id(run_id)
                 self._jobs.pop(job.id, None)
             else:
                 logger.warning(
@@ -1910,7 +1916,7 @@ class CronSchedulerService:
             return ok
         ok = await claim_periodic_run(job, fire_at)
         if ok:
-            self._claimed_run_ids.add(run_id)
+            self._claim_run_id(run_id)
             next_push = compute_next_push_after_fire(job, fire_at)
             if next_push is not None:
                 job.next_run_at = next_push.timestamp()
@@ -1924,6 +1930,22 @@ class CronSchedulerService:
                 getattr(job, "next_run_at", None),
             )
         return ok
+
+    def _claim_run_id(self, run_id: str) -> None:
+        """记下本机认领的这一趟，并顺带回收超出保留期的旧记录。"""
+        self._prune_claimed_run_ids()
+        self._claimed_run_ids[run_id] = self._now_fn()
+
+    def _prune_claimed_run_ids(self, now: float | None = None) -> None:
+        """回收超出保留期的认领记录，避免 run_id 只进不出。"""
+        current = self._now_fn() if now is None else now
+        stale = [
+            run_id
+            for run_id, claimed_at in self._claimed_run_ids.items()
+            if current - claimed_at > self._CLAIM_RETENTION_SECONDS
+        ]
+        for run_id in stale:
+            self._claimed_run_ids.pop(run_id, None)
 
     def _push_allowed(self, run_id: str) -> bool:
         """没抢到这一趟的机器不推结果。个人版始终可以推。"""
