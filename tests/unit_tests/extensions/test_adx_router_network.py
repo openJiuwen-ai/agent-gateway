@@ -55,7 +55,7 @@ def _certificate(tmp_path):
 
 
 @asynccontextmanager
-async def _network(tmp_path, monkeypatch):
+async def _network(tmp_path, monkeypatch, *, restart_policy='default'):
     monkeypatch.setitem(sys.modules, 'adx_environment', None)
     monkeypatch.setattr(
         'agent_gateway.extensions.agentos.agentos_router.router_client._WS_CONNECT_READY_TIMEOUT_SECONDS', 5,
@@ -134,6 +134,8 @@ async def _network(tmp_path, monkeypatch):
             port = proxy.sockets[0].getsockname()[1]
             monkeypatch.setenv("ADX_TEST_PLATFORM", expected_key)
             config = _config(monkeypatch, ingress_url=f"https://localhost:{port}")
+            if restart_policy != 'default':
+                config = replace(config, restart_policy=restart_policy)
             api = EnvironmentAPI(config.tenant)
             control = AdxControlClient(config, transport=httpx.MockTransport(api.handle))
             router = AdxRouterClient(config, control_client=control)
@@ -169,19 +171,23 @@ async def test_wss_proxy_isolates_users_reuses_connections_and_multiplexes_strea
         assert len(requests) == 6
 
 
-async def test_real_stream_disconnect_is_not_replayed_and_next_call_reauthenticates(tmp_path, monkeypatch):
-    async with _network(tmp_path, monkeypatch) as (router, requests, handshakes, targets):
+@pytest.mark.parametrize('restart_policy', ['default', None])
+async def test_real_stream_disconnect_is_not_replayed_and_next_call_reauthenticates(tmp_path, monkeypatch, restart_policy):
+    async with _network(tmp_path, monkeypatch, restart_policy=restart_policy) as (router, requests, handshakes, targets):
         stream = router.send_request_stream(_request(rid="lost", action="drop"))
         assert (await anext(stream)).payload["index"] == 0
         failure = await asyncio.wait_for(anext(stream), timeout=3)
         assert failure.is_complete and failure.payload.get("error")
         await stream.aclose()
         assert [request["request_id"] for request in requests] == ["lost"]
-        assert await router._agent_manager.get_agent('alice', 'jiuwenswarm') is None
+        current = await router._agent_manager.get_agent('alice', 'jiuwenswarm')
+        assert (current is None) == (restart_policy is None)
         assert (await router.send_request(_request(rid="next"))).ok
-        assert len(router.test_api.creates) == 2
-        assert len(handshakes) == 2 and targets[0] != targets[1]
-        assert router.test_api.creates[0]['mounts'] == router.test_api.creates[1]['mounts']
+        assert len(router.test_api.creates) == (2 if restart_policy is None else 1)
+        assert len(handshakes) == 2
+        assert (targets[0] != targets[1]) == (restart_policy is None)
+        if restart_policy is None:
+            assert router.test_api.creates[0]['mounts'] == router.test_api.creates[1]['mounts']
         assert all(headers["authorization"] == "Bearer platform-secret" for _, headers in handshakes)
 
 

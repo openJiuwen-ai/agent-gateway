@@ -3706,7 +3706,7 @@ class ManagedRouter(SouthboundAgentClient):
         namespace = self._managed_control.agent_namespace
 
         async def _create_sandbox_once() -> SandboxInfo:
-            return await self._managed_control.create(SandboxCreateRequest(
+            request = SandboxCreateRequest(
                 namespace=namespace,
                 name=physical_name,
                 workspace=workspace,
@@ -3715,7 +3715,15 @@ class ManagedRouter(SouthboundAgentClient):
                 builtin=agent_info.agent_type == BUILTIN_AGENT_TYPE,
                 web_port=web_port,
                 trace_id=trace_id or None,
-            ))
+            )
+            if not lifecycle.retired_instance and lifecycle.attempt is None:
+                existing = await self._managed_control.find_reusable(
+                    request, registry=self._registry, user=agent_info.user_id,
+                    framework=agent_info.agent_type, logical_name=logical_name,
+                )
+                if existing is not None:
+                    return existing
+            return await self._managed_control.create(request)
 
         try:
             async with self._sandbox_lifecycle(logical_name) as lifecycle:
@@ -3994,6 +4002,12 @@ class ManagedRouter(SouthboundAgentClient):
     async def _run_network_failure_delete(self, runtime: AgentRuntime, *, reason: str = "network_failure") -> None:
         """Force-delete the agent; isolated so relay cancel cannot abort it."""
         info = runtime.info
+        if await self._managed_control.retain_after_disconnect(
+            info.sandbox_id, info.metadata.get("runtime_spec") or {}, builtin=info.agent_type == BUILTIN_AGENT_TYPE,
+        ):
+            if await self._agent_manager.is_current(runtime):
+                await self._close_ws_client(info.sandbox_id)
+            return
         session_id = str(info.metadata.get("session_id") or "")
         key_values: dict[str, Any] | None = None
         if "session_id" in self._agent_manager.key_fields and session_id:
