@@ -16,6 +16,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Coroutine, Mapping
+from uuid import UUID
 
 from e2a.agent_models import AgentResponse, AgentResponseChunk
 from e2a.models import E2AEnvelope
@@ -133,6 +134,7 @@ from agent_gateway.telemetry import (
     start_gateway_trace, trace_operation, bind_cleanup_trace, current_cleanup_trace,
     get_cleanup_result, record_cleanup_result,
 )
+from agent_gateway.trace_context import current_trace_id
 from agent_gateway.routing.container_files import (
     AgentOSFileTransferError,
     normalize_agent_file_download_path,
@@ -993,7 +995,10 @@ class ManagedRouter(SouthboundAgentClient):
                 task.cancel()
             channel_type = str(getattr(event, "channel_type", "") or "").strip().lower()
             if channel_type in _CONNECT_WARMUP_CHANNELS:
-                self._schedule_connect_warmup(user_id)
+                self._schedule_connect_warmup(
+                    user_id,
+                    trace_context=getattr(event, "trace_context", None),
+                )
         elif event_type == "disconnected":
             count = self._agent_manager.decrement_user_connections(user_id)
             # 配置的超时清理时长为0或者负数时，不触发清理机制
@@ -1115,7 +1120,10 @@ class ManagedRouter(SouthboundAgentClient):
             except asyncio.CancelledError:
                 return
 
-    def _schedule_connect_warmup(self, user_id: str, *, require_online: bool = False) -> None:
+    def _schedule_connect_warmup(
+        self, user_id: str, *, require_online: bool = False,
+        trace_context: dict | None = None,
+    ) -> None:
         """Fire-and-forget builtin sandbox + instance WS warmup for one user."""
         if self._closed or not self._connect_warmup_enabled:
             return
@@ -1137,7 +1145,9 @@ class ManagedRouter(SouthboundAgentClient):
             )
             return
         task = asyncio.create_task(
-            self._warmup_user_agent(user_id, require_online=require_online),
+            self._warmup_user_agent(
+                user_id, require_online=require_online, trace_context=trace_context,
+            ),
             name=f"agentos-connect-warmup-{user_id[:24]}",
         )
         self._warmup_tasks[user_id] = task
@@ -1150,7 +1160,10 @@ class ManagedRouter(SouthboundAgentClient):
 
         task.add_done_callback(_on_done)
 
-    async def _warmup_user_agent(self, user_id: str, *, require_online: bool = False) -> None:
+    async def _warmup_user_agent(
+        self, user_id: str, *, require_online: bool = False,
+        trace_context: dict | None = None,
+    ) -> None:
         if require_online and (
             self._closed
             or self._agent_manager.get_user_connection_count(user_id) <= 0
@@ -1158,14 +1171,18 @@ class ManagedRouter(SouthboundAgentClient):
             return
         with trace_operation(
             "gw.connect.warmup", root=True, attributes={"source": "connect.warmup", "user_id": user_id},
-        ):
+            trace_context=trace_context or None,
+        ) as operation:
+            resolved_trace_id = ""
+            if operation is not None and operation.trace_id:
+                resolved_trace_id = str(UUID(hex=operation.trace_id))
             token = _ws_readiness_required.set(True)
             try:
-                await self._warmup_user_agent_impl(user_id)
+                await self._warmup_user_agent_impl(user_id, trace_id=resolved_trace_id)
             finally:
                 _ws_readiness_required.reset(token)
 
-    async def _warmup_user_agent_impl(self, user_id: str) -> None:
+    async def _warmup_user_agent_impl(self, user_id: str, *, trace_id: str = "") -> None:
         """Create the builtin jiuwenswarm sandbox and open instance WS.
 
         Must not raise: handshake / connection.ack already succeeded. Chat
@@ -1199,9 +1216,10 @@ class ManagedRouter(SouthboundAgentClient):
                 agent_type,
                 creator=self._create_agent,
                 acquire=True,
+                trace_id=trace_id or None,
             )
             try:
-                client = await self._get_ws_client(runtime)
+                client = await self._get_ws_client(runtime, trace_id=trace_id or None)
                 if getattr(client, "server_ready", None) is False:
                     operation = current_request_trace()
                     if operation is not None and operation.method == "gw.connect.warmup":
@@ -1563,6 +1581,7 @@ class ManagedRouter(SouthboundAgentClient):
         *,
         acquire: bool = False,
         return_hold: bool = False,
+        trace_id: str | None = None,
     ) -> str | tuple[str, Callable[[], Awaitable[None]]] | None:
         """Resolve the Environment frontend URL for an agent's Web UI.
 
@@ -1596,6 +1615,7 @@ class ManagedRouter(SouthboundAgentClient):
                     creator=self._create_agent,
                     wait=False,
                     acquire=acquire,
+                    trace_id=trace_id,
                 )
                 held = bool(acquire)
             except AgentRebuildPending:
@@ -1631,6 +1651,7 @@ class ManagedRouter(SouthboundAgentClient):
                     user_id=uid,
                     session_id=str(runtime.info.metadata.get("session_id") or ""),
                     agent_type=normalized,
+                    trace_id=trace_id or "",
                 )
             except AgentApiError as exc:
                 await self._cleanup_agent_on_instance_unavailable(runtime, exc=exc)
@@ -1697,9 +1718,10 @@ class ManagedRouter(SouthboundAgentClient):
         user_id: str = "",
         session_id: str = "",
         agent_type: str = "",
+        trace_id: str = "",
     ) -> WebSocketAgentServerClient:
         uri = self._agent_ws_url(instance_id, agent_port)
-        headers = self._managed_control.ws_headers()
+        headers = self._managed_control.ws_headers(trace_id or None)
         return await self._ws_pool.connect_until_ready(
             uri, headers=headers,
             timeout=ws_connect_ready_timeout_seconds(),
@@ -1722,6 +1744,7 @@ class ManagedRouter(SouthboundAgentClient):
         user_id: str = "",
         session_id: str = "",
         agent_type: str = "",
+        trace_id: str = "",
     ) -> dict[str, Any]:
         """GET /api/agent/:id until Environment reports ``status=running``.
 
@@ -1730,7 +1753,9 @@ class ManagedRouter(SouthboundAgentClient):
         instance dict，供注册中心 placement PATCH 使用。
         Test doubles without ``wait_until_running`` fall back to one GET.
         """
-        poll_trace_id = bind_southbound_trace_id()
+        poll_trace_id = str(trace_id or "").strip() or current_trace_id()
+        if not poll_trace_id:
+            poll_trace_id = bind_southbound_trace_id()
         log_agentos(
             logger,
             logging.DEBUG,
@@ -1744,7 +1769,9 @@ class ManagedRouter(SouthboundAgentClient):
         )
         return await self._managed_control.wait_until_running(instance_id, trace_id=poll_trace_id)
 
-    async def _get_ws_client(self, runtime: AgentRuntime) -> WebSocketAgentServerClient:
+    async def _get_ws_client(
+        self, runtime: AgentRuntime, *, trace_id: str | None = None,
+    ) -> WebSocketAgentServerClient:
         """获取（或建立）到该 agent instance 的 WS 直连，不走 invoke 链路.
 
         create 后先 GET 等到 status=running（端口探针成功），再连 WS。
@@ -1790,6 +1817,7 @@ class ManagedRouter(SouthboundAgentClient):
                     user_id=str(info.user_id or ""),
                     session_id=str(info.metadata.get("session_id") or ""),
                     agent_type=str(info.agent_type or ""),
+                    trace_id=trace_id or "",
                 )
                 await validate_attempt()
                 return await self._connect_ws_until_ready(
@@ -1798,6 +1826,7 @@ class ManagedRouter(SouthboundAgentClient):
                     user_id=str(info.user_id or ""),
                     session_id=str(info.metadata.get("session_id") or ""),
                     agent_type=str(info.agent_type or ""),
+                    trace_id=trace_id or "",
                 )
 
         def on_failure(exc: BaseException) -> None:
@@ -2580,8 +2609,9 @@ class ManagedRouter(SouthboundAgentClient):
             relay_session.done.set()
             return self._routing_error_response(envelope, msg)
 
+        trace_id = current_trace_id()
         task = asyncio.create_task(
-            self._run_ssh_relay(envelope, relay_session),
+            self._run_ssh_relay(envelope, relay_session, trace_id=trace_id),
             name=f"agentos-ssh-relay-{session_id[:24]}",
         )
         relay_session.relay_task = task
@@ -2594,7 +2624,9 @@ class ManagedRouter(SouthboundAgentClient):
             payload={"method": ReqMethod.SSH_RELAY.value, "status": "relay_started"},
         )
 
-    async def _run_ssh_relay(self, envelope: E2AEnvelope, relay_session: Any) -> None:
+    async def _run_ssh_relay(
+        self, envelope: E2AEnvelope, relay_session: Any, *, trace_id: str = "",
+    ) -> None:
         ssh_relay = self._ssh_relay
         if ssh_relay is None:
             # _handle_ssh_relay already guards this; keep a safe fallback.
@@ -2612,7 +2644,9 @@ class ManagedRouter(SouthboundAgentClient):
                     "agent_type can be derived from its first token",
                 )
                 return
-            runtime = await self._resolve_agent(envelope, acquire=True)
+            runtime = await self._resolve_agent(
+                envelope, acquire=True, trace_id=trace_id or None,
+            )
         except (ValueError, AgentCreatingTimeout, AgentCreateFailed, AgentDeleted) as exc:
             log_agentos(
                 logger,
@@ -2745,6 +2779,7 @@ class ManagedRouter(SouthboundAgentClient):
         *,
         acquire: bool = False,
         ws_ready: bool = False,
+        trace_id: str | None = None,
     ) -> AgentRuntime:
         user_id = self._extract_user_id(envelope)
         agent_type = self._extract_agent_type(envelope)
@@ -2757,6 +2792,7 @@ class ManagedRouter(SouthboundAgentClient):
                 creator=self._create_agent,
                 metadata={"session_id": envelope.session_id},
                 acquire=acquire,
+                trace_id=trace_id,
             )
         finally:
             _ws_readiness_required.reset(token)
@@ -3377,14 +3413,17 @@ class ManagedRouter(SouthboundAgentClient):
         return f"gateway-{agent_info.agent_id}"
 
     async def _create_agent(self, agent_info: AgentInfo) -> AgentInfo:
+        trace_id = str(agent_info.metadata.get("trace_id") or "").strip()
         operation = start_gateway_trace(
-            "gw.agent.create", attributes={"agent_type": agent_info.agent_type, "user_id": agent_info.user_id},
+            "gw.agent.create",
+            attributes={"agent_type": agent_info.agent_type, "user_id": agent_info.user_id},
+            trace_context={"x-trace-id": trace_id} if trace_id else None,
         )
         if operation is None:
-            return await self._create_agent_impl(agent_info, None)
+            return await self._create_agent_impl(agent_info, None, trace_id)
         try:
             with bind_request_trace(operation):
-                return await self._create_agent_impl(agent_info, operation)
+                return await self._create_agent_impl(agent_info, operation, trace_id)
         except asyncio.CancelledError:
             if operation is not None:
                 operation.finish("cancelled", reason="create_cancelled")
@@ -3396,7 +3435,7 @@ class ManagedRouter(SouthboundAgentClient):
             raise
 
     async def _create_agent_impl(
-        self, agent_info: AgentInfo, operation: TraceOperation | None,
+        self, agent_info: AgentInfo, operation: TraceOperation | None, trace_id: str = "",
     ) -> AgentInfo:
         try:
             workspace = resolve_agent_workspace(
@@ -3524,6 +3563,7 @@ class ManagedRouter(SouthboundAgentClient):
                 env_vars={**(env_vars or {}), AGENT_GENERATION_ENV: generation},
                 builtin=agent_info.agent_type == BUILTIN_AGENT_TYPE,
                 web_port=web_port,
+                trace_id=trace_id or None,
             ))
 
         try:
@@ -4258,12 +4298,14 @@ class ManagedRouter(SouthboundAgentClient):
             # 一直到不了 running（超时 / failed）时删沙箱并注销刚才写入的登记，
             # 避免 CREATING 实例和占位 registry 行一直留着（cron 无用户断连回收）。
             sandbox_id = str(agent_info.sandbox_id or "").strip()
+            trace_id = str(agent_info.metadata.get("trace_id") or "").strip()
             try:
                 instance_info = await self._wait_environment_running(
                     sandbox_id,
                     user_id=str(agent_info.user_id or ""),
                     session_id=str(agent_info.metadata.get("session_id") or ""),
                     agent_type=str(agent_info.agent_type or ""),
+                    trace_id=trace_id,
                 )
             except AgentApiError as exc:
                 if operation is not None:

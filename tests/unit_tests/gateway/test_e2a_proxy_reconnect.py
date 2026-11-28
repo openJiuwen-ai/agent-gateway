@@ -105,6 +105,18 @@ async def drop(client, socket):
     assert not client.server_ready
 
 
+def _connection_identity(call):
+    """Ignore the request trace a reconnect is expected to add."""
+    uri, kwargs = call
+    headers = {
+        name: value
+        for name, value in dict(kwargs.get("extra_headers") or []).items()
+        if name.lower() not in {"traceparent", "tracestate", "x-trace-id"}
+    }
+    stable = {key: value for key, value in kwargs.items() if key != "extra_headers"}
+    return uri, stable, headers
+
+
 @pytest.mark.parametrize("entry", ["proxy", "fetch"])
 async def test_proxy_recovers_after_disconnect_without_replaying_requests(transport, entry):
     client = WebSocketAgentServerClient()
@@ -113,7 +125,7 @@ async def test_proxy_recovers_after_disconnect_without_replaying_requests(transp
         assert (await invoke(client, entry))[0]
         await drop(client, transport.sockets[0])
         assert (await invoke(client, entry))[0]
-        assert transport.calls[0] == transport.calls[1]
+        assert _connection_identity(transport.calls[0]) == _connection_identity(transport.calls[1])
         assert [len(ws.sent) for ws in transport.sockets] == [1, 1]
         assert client.server_ready
     finally:

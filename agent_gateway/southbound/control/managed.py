@@ -51,6 +51,7 @@ class SandboxCreateRequest:
     env_vars: dict[str, str] | None = None
     builtin: bool | None = None
     web_port: int | None = None
+    trace_id: str | None = None
 
 
 class SandboxBackend(Protocol):
@@ -72,7 +73,8 @@ class SandboxBackend(Protocol):
     async def wait_until_running(self, instance_id: str, **kwargs: Any) -> dict[str, Any]: ...
 
     async def create_sandbox(self, *, namespace: str, name: str, workspace: str,
-                             runtime_spec: Any, env_vars: dict[str, str] | None = None) -> SandboxInfo: ...
+                             runtime_spec: Any, env_vars: dict[str, str] | None = None,
+                             trace_id: str | None = None) -> SandboxInfo: ...
 
     async def get_agent_info(self, instance_id: str) -> dict[str, Any]: ...
 
@@ -85,7 +87,7 @@ class ManagedSandboxControl(ManagedControl[SandboxCreateRequest, SandboxInfo, di
     def __init__(self, backend: SandboxBackend) -> None:
         self.backend = backend
 
-    def ws_headers(self) -> dict[str, str]:
+    def ws_headers(self, trace_id: str | None = None) -> dict[str, str]:
         raise NotImplementedError
 
     def ws_url(self, instance_id: str, port: int) -> str:
@@ -98,10 +100,14 @@ class ManagedSandboxControl(ManagedControl[SandboxCreateRequest, SandboxInfo, di
         raise NotImplementedError
 
     async def create(self, request: SandboxCreateRequest) -> SandboxInfo:
-        return await self.backend.create_sandbox(
-            namespace=request.namespace, name=request.name, workspace=request.workspace,
-            runtime_spec=request.runtime_spec, env_vars=request.env_vars,
-        )
+        kwargs: dict[str, Any] = {
+            "namespace": request.namespace, "name": request.name,
+            "workspace": request.workspace, "runtime_spec": request.runtime_spec,
+            "env_vars": request.env_vars,
+        }
+        if request.trace_id:
+            kwargs["trace_id"] = request.trace_id
+        return await self.backend.create_sandbox(**kwargs)
 
     async def query(self, instance_id: str) -> dict[str, Any]:
         return await self.backend.get_agent_info(instance_id)
