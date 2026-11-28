@@ -284,6 +284,46 @@ async def resolve_quota_snapshot(
     )
 
 
+async def get_cached_used_bytes(
+    *,
+    user_id: str,
+    group_id: str,
+    bot_id: str,
+) -> int | None:
+    """读 Gateway ``workspace_quota_usage`` 缓存；无行 / 未装配 / 非法值返回 ``None``。
+
+    供企业版 ``workspace.usage`` 轮询走缓存，避免每次 forward 到 AS 触发
+    Runtime ``route``/``touch``、干扰空闲 Pod 的 ``pod_ttl`` 计时。
+    """
+    try:
+        from agent_gateway.config.enterprise.access import (
+            get_enterprise_record_repository,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    repo = get_enterprise_record_repository("workspace_quota_usage")
+    if repo is None:
+        return None
+
+    uid = str(user_id or "").strip()
+    gid = str(group_id or "").strip()
+    bid = str(bot_id or "").strip()
+    if not uid or not bid:
+        return None
+    key = {"user_id": uid, "group_id": gid, "bot_id": bid}
+    try:
+        existing = await repo.get(key)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[workspace.usage] read cache failed: %s", exc)
+        return None
+    if not isinstance(existing, dict):
+        return None
+    raw = existing.get("used_bytes")
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        return None
+    return raw
+
+
 async def upsert_usage_cache(
     *,
     user_id: str,
