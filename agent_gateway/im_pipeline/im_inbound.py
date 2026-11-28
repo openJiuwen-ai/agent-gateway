@@ -4,18 +4,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
-from openjiuwen.core.foundation.llm import Model
-from openjiuwen.core.foundation.llm.schema.config import (
-    ModelClientConfig,
-    ModelRequestConfig,
-)
 from e2a.message import Message, ReqMethod
 
 from agent_gateway.common.config import _parse_custom_headers
@@ -24,6 +20,9 @@ from agent_gateway.common.reasoning_injector import build_reasoning_model_reques
 from agent_gateway.im_pipeline.im_session_input import prepare_im_session_input
 from agent_gateway.message_handler.command_parser.slash_command import CONTROL_MESSAGE_TEXTS
 from agent_gateway.routing.interaction_context import PendingInteraction
+
+if TYPE_CHECKING:
+    from openjiuwen.core.foundation.llm import Model
 
 SYSTEM_PROMPT_TEMPLATE = """
 你是{principal_name}的数字分身，活跃在即时通讯群聊中。当群里有其他用户发送与{principal_name}相关的消息时，你的任务是改写这条消息，使其更清晰、更完整，以便后续帮助{principal_name}生成恰当的回复。
@@ -142,6 +141,18 @@ class InboundProcessResult:
     reason: str = ""
 
 
+def _load_llm_types() -> tuple[type, type, type]:
+    """按需加载 openjiuwen 的 LLM 类型。
+
+    该导入会带出 openai / mcp 等整套模型客户端依赖，而只有群聊消息改写
+    （``IMConversationProcessor._rewrite_query``）用得到，所以不在模块顶层导入。
+    """
+    from openjiuwen.core.foundation.llm import Model
+    from openjiuwen.core.foundation.llm.schema.config import ModelClientConfig, ModelRequestConfig
+
+    return Model, ModelClientConfig, ModelRequestConfig
+
+
 class IMConversationProcessor:
     def __init__(
         self,
@@ -156,6 +167,7 @@ class IMConversationProcessor:
         )
         self._model_name, self._model_client_raw, self._model_config_raw = self._load_model_config(model_name)
         self._llm: Model | None = None
+        self._llm_types: tuple[type, type, type] | None = None
 
     @staticmethod
     def _load_model_config(model_name_override: str | None = None) -> tuple[str, dict, dict]:
@@ -392,6 +404,9 @@ class IMConversationProcessor:
         if self._llm is not None:
             return self._llm
         try:
+            if self._llm_types is None:
+                self._llm_types = _load_llm_types()
+            Model, ModelClientConfig, ModelRequestConfig = self._llm_types
             mcc = self._model_client_raw
             model_config_obj = {
                 **(self._model_config_raw or {}),
@@ -444,6 +459,13 @@ class IMConversationProcessor:
         principal_name: str,
         adapter: IMPlatformAdapter,
     ) -> str | None:
+        if self._llm_types is None:
+            # 首次改写时才加载 LLM 依赖；导入放在工作线程，避免卡住事件循环。
+            try:
+                self._llm_types = await asyncio.to_thread(_load_llm_types)
+            except Exception as exc:
+                logger.warning("[IMConversationProcessor] 加载 LLM 依赖失败，将回退原始消息: %s", exc)
+                return None
         llm = self._ensure_llm()
         if llm is None:
             return None
