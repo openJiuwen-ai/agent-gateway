@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import ssl
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -17,19 +18,19 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
+from tests.unit_tests.extensions.test_adx_router import EnvironmentAPI, _config
 from websockets.exceptions import ConnectionClosed, InvalidHandshake
 from websockets.legacy.client import connect
 from websockets.legacy.server import serve
+
+from agent_gateway.extensions.adx.control_client import AdxControlClient
+from agent_gateway.extensions.adx.router_client import AdxRouterClient
 from e2a.models import E2AEnvelope
 from e2a.wire_codec import (
     encode_agent_chunk_for_wire,
     encode_agent_response_for_wire,
 )
 from e2a.agent_models import AgentResponse, AgentResponseChunk
-
-from tests.unit_tests.extensions.test_adx_router import EnvironmentAPI, _config
-from agent_gateway.extensions.adx.control_client import AdxControlClient
-from agent_gateway.extensions.adx.router_client import AdxRouterClient
 
 
 def _certificate(tmp_path):
@@ -55,12 +56,10 @@ def _certificate(tmp_path):
 
 @asynccontextmanager
 async def _network(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, 'adx_environment', None)
     monkeypatch.setattr(
         'agent_gateway.extensions.agentos.agentos_router.router_client._WS_CONNECT_READY_TIMEOUT_SECONDS', 5,
     )
-    monkeypatch.setenv("DISCONNECT_CLEANUP_TIMEOUT_SECONDS", "0.05")
-    monkeypatch.setenv("AGENTOS_WAIT_RUNNING_TIMEOUT_SECONDS", "0.2")
-    monkeypatch.setenv("AGENTOS_WAIT_RUNNING_INTERVAL_SECONDS", "0.01")
     tls, ca_path = _certificate(tmp_path)
     monkeypatch.setenv("SSL_CERT_FILE", ca_path)
     requests, handshakes, targets = [], [], []
@@ -109,12 +108,12 @@ async def _network(tmp_path, monkeypatch):
 
         async def auth(path, headers):
             handshakes.append((path, dict(headers)))
-            if urlsplit(path).path != "/agent/ws" or headers.get("Authorization") != f"Bearer {expected_key}":
+            if not urlsplit(path).path.endswith("/18092") or headers.get("Authorization") != f"Bearer {expected_key}":
                 return 401, [], b"unauthorized"
             return None
 
         async def ingress(downstream, path):
-            target = parse_qs(urlsplit(path).query)["target"][0]
+            target = urlsplit(path).path.split("/")[1]
             async with connect(f"ws://127.0.0.1:{agent_port}/?target={target}") as upstream:
                 async def copy(source, destination):
                     try:
@@ -176,11 +175,13 @@ async def test_real_stream_disconnect_is_not_replayed_and_next_call_reauthentica
         assert (await anext(stream)).payload["index"] == 0
         failure = await asyncio.wait_for(anext(stream), timeout=3)
         assert failure.is_complete and failure.payload.get("error")
+        await stream.aclose()
         assert [request["request_id"] for request in requests] == ["lost"]
         assert await router._agent_manager.get_agent('alice', 'jiuwenswarm') is None
         assert (await router.send_request(_request(rid="next"))).ok
         assert len(router.test_api.creates) == 2
         assert len(handshakes) == 2 and targets[0] != targets[1]
+        assert router.test_api.creates[0]['mounts'] == router.test_api.creates[1]['mounts']
         assert all(headers["authorization"] == "Bearer platform-secret" for _, headers in handshakes)
 
 

@@ -44,3 +44,14 @@ Enterprise stores literal image defaults in `image_env` under `sandbox` and
 placeholders in the explicit `env` and combines it with the literal image
 defaults. Explicit `env` values take precedence. The final ADX request carries
 the combined values as `env`.
+
+## Builtin AgentServer credentials
+
+Gateway injects its configured ADX credential directly as `ADX_TOKEN` into builtin
+AgentServer launch environments. The launch metadata preserves this value while
+Swarm loads the user's dotenv. Credential injection is limited to builtin
+AgentServers; custom Agents do not receive the Gateway credential automatically.
+
+The same metadata retains the node endpoint and node-context file bindings.
+Swarm applies those bindings to its tool connection while keeping the user's
+static runtime, rootfs, resource and workspace configuration.

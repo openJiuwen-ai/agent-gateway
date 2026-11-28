@@ -1912,19 +1912,6 @@
   "reason": ""
  },
  {
-  "source_path": "tests/unit_tests/extensions/test_yuanrong_frontend_client.py",
-  "target_path": "tests/unit_tests/extensions/test_yuanrong_frontend_client.py",
-  "category": "B",
-  "owner": "gateway",
-  "enterprise": false,
-  "tier1": true,
-  "deps": [
-   "jiuwenswarm.common.e2a.models"
-  ],
-  "status": "migrated",
-  "reason": ""
- },
- {
   "source_path": "tests/unit_tests/gateway/config_routing_harness.py",
   "target_path": "tests/unit_tests/gateway/config_routing_harness.py",
   "category": "F",

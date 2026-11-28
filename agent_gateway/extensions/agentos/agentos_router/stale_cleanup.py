@@ -1,9 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 """Startup clean-slate: list registry instances and destroy leftover sandboxes.
 
-Gateway memory is empty after restart. YuanRong sandboxes and registry rows
+Gateway memory is empty after restart. Environment sandboxes and registry rows
 from the previous process are still there. This module lists every instance
-from the registry and, asynchronously, deletes the YuanRong sandbox (by
+from the registry and, asynchronously, deletes the Environment sandbox (by
 ``instance_id``) then unregisters the row.
 
 Live runtimes created after connect are skipped so a concurrent first request
