@@ -14,6 +14,7 @@ from typing import Any
 from agent_gateway.enterprise import is_enterprise
 from agent_gateway.enterprise.capabilities.workspace.quota import (
     disabled_usage_payload,
+    get_cached_used_bytes,
     resolve_quota_snapshot,
     snapshot_to_dict,
     upsert_usage_cache,
@@ -451,6 +452,18 @@ def _local_download_payload(params: dict[str, Any], relative_path: Any) -> dict[
     }
 
 
+def _force_refresh_requested(params: dict[str, Any] | None) -> bool:
+    """``force_refresh`` 是否要求绕过缓存重测用量。"""
+    if not isinstance(params, dict):
+        return False
+    raw = params.get("force_refresh")
+    if raw is True or raw == 1:
+        return True
+    if isinstance(raw, str) and raw.strip().lower() in {"1", "true", "yes", "on"}:
+        return True
+    return False
+
+
 def _local_usage_bytes(params: dict[str, Any]) -> int:
     """同步用量读取（含可能的 du）；须在 worker 线程调用。"""
     (
@@ -463,11 +476,7 @@ def _local_usage_bytes(params: dict[str, Any]) -> int:
     ) = _import_local_workspace()
     svc = _local_service(params)
     uid, gid, bid, _aid = _identity_from_params(params)
-    raw = params.get("force_refresh")
-    force = raw is True or raw == 1
-    if isinstance(raw, str) and raw.strip().lower() in {"1", "true", "yes", "on"}:
-        force = True
-    if force:
+    if _force_refresh_requested(params):
         return measure_and_cache(
             svc.tenant_root, user_id=uid, group_id=gid, bot_id=bid
         )
@@ -625,7 +634,7 @@ def register_workspace_web_methods(channel: Any, *, agent_client: Any) -> None:
     async def _usage(ws, req_id, params, session_id, user_id=None):
         p = dict(params) if isinstance(params, dict) else {}
         try:
-            uid, gid, bid, _aid = _bind_trusted_identity(ws, p, user_id=user_id)
+            uid, gid, bid, aid = _bind_trusted_identity(ws, p, user_id=user_id)
         except WorkspaceIdentityError as exc:
             await _reject_identity(channel, ws, req_id, exc)
             return
@@ -639,7 +648,31 @@ def register_workspace_web_methods(channel: Any, *, agent_client: Any) -> None:
             )
             return
         try:
+            force_refresh = _force_refresh_requested(p)
             if not _use_local_workspace():
+                # 企业版：定时横幅轮询默认读 Gateway 缓存，避免 route/touch 干扰
+                # Pod 空闲回收；仅 force_refresh 或缓存未命中时才 forward AS。
+                if not force_refresh:
+                    cached = await get_cached_used_bytes(
+                        user_id=uid, group_id=gid, bot_id=bid,
+                    )
+                    if cached is not None:
+                        snap = await resolve_quota_snapshot(
+                            cached,
+                            user_id=uid,
+                            group_id=gid,
+                            bot_id=bid,
+                            agent_id=aid,
+                        )
+                        out = snapshot_to_dict(
+                            snap,
+                            user_id=uid,
+                            group_id=gid,
+                            bot_id=bid,
+                            agent_id=aid,
+                        )
+                        await channel.send_response(ws, req_id, ok=True, payload=out)
+                        return
                 ok, payload, err, code = await _forward_to_agent(
                     _fwd(
                         ws=ws,
