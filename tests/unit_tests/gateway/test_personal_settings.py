@@ -14,6 +14,7 @@ from agent_gateway.application.personal_settings import (
     PERSONAL_SETTINGS_METHODS, allows_settings_origin, is_local_settings_target, settings_transport_logger,
     validate_settings_params,
 )
+from agent_gateway.application.personal_web_operations import PERSONAL_WEB_OPERATIONS
 from agent_gateway.application.web import _PersonalSettingsRegistration
 from agent_gateway.application.worker_data import (
     _DATA_METHODS, PERSONAL_WEB_WORKER_METHODS, is_data_frame, personal_web_methods,
@@ -121,13 +122,13 @@ def test_registration_guard_only_touches_settings_methods():
     register(guarded, agent_client=None)
 
     assert plain.methods.keys() == guarded.methods.keys() - {"session.custom", "session.custom.local"}
-    # Other methods keep their handler and routing; only settings become local-only.
+    # Other methods keep their handler and routing; only the personal methods become local-only.
     assert guarded.methods["session.custom"] is handler
     assert guarded.methods["session.custom.local"] is handler
     assert guarded.local_only == (
-        plain.local_only | PERSONAL_SETTINGS_METHODS | {'session.custom.local'}
+        plain.local_only | PERSONAL_SETTINGS_METHODS | PERSONAL_WEB_OPERATIONS | {'session.custom.local'}
     )
-    assert plain.local_only.isdisjoint(PERSONAL_SETTINGS_METHODS)
+    assert plain.local_only.isdisjoint(PERSONAL_SETTINGS_METHODS | PERSONAL_WEB_OPERATIONS)
     # Every settings method has a handler to guard, and only those are wrapped.
     assert PERSONAL_SETTINGS_METHODS <= guarded.methods.keys()
     for method, handler in guarded.methods.items():
@@ -297,7 +298,7 @@ def test_settings_accept_what_the_old_page_sends(method, params):
 
 def test_personal_web_listener_admits_only_its_methods():
     admitted = personal_web_methods()
-    assert admitted == PERSONAL_WEB_WORKER_METHODS | PERSONAL_SETTINGS_METHODS
+    assert admitted == PERSONAL_WEB_WORKER_METHODS | PERSONAL_SETTINGS_METHODS | PERSONAL_WEB_OPERATIONS
     assert admitted.isdisjoint(_DATA_METHODS)
 
     def frame(method, **params):
@@ -306,15 +307,16 @@ def test_personal_web_listener_admits_only_its_methods():
     for method in sorted(admitted):
         assert is_data_frame(frame(method), web=True, personal=True), method
         assert is_data_frame(frame(method, session_id="s"), web=True, personal=True), method
-    for method in ("cron.job.list", "project.create", "skills.install", "path.set", "designer.graph.list",
-                   "session.create", "models.replace_all", "models.validate", "permissions.tools.set",
-                   "openai_account.auth.status", "external_cli.install", "webui.dispatch"):
+    for method in ("cron.job.list", "project.delete", "project.remove", "project.restore", "skills.install",
+                   "path.set", "designer.graph.list", "session.create", "models.replace_all", "models.validate",
+                   "permissions.tools.set", "openai_account.auth.status", "external_cli.install", "webui.dispatch"):
         assert not is_data_frame(frame(method), web=True, personal=True), method
     # The additions belong to the personal Worker's Web listener alone.
     assert not any(is_data_frame(frame(method), web=True) for method in admitted)
     assert not any(is_data_frame(frame(method), personal=True) for method in admitted)
     assert not any(is_data_frame(frame(method), tui=True, personal=True) for method in PERSONAL_SETTINGS_METHODS - {
         "config.get", "models.list"})
+    assert not any(is_data_frame(frame(method), tui=True, personal=True) for method in PERSONAL_WEB_OPERATIONS)
     assert not any(is_data_frame(frame(method), web=True, personal=True, acp=True) for method in admitted)
     assert is_data_frame(frame("history.get", session_id="s"), web=True, personal=True)
     assert is_data_frame(frame("config.get"), tui=True, personal=True)

@@ -85,8 +85,9 @@ class _DisabledAccounts:
 def personal_web_methods() -> frozenset[str]:
     """What the personal Worker's Web listener admits beyond the data plane."""
     from agent_gateway.application.personal_settings import PERSONAL_SETTINGS_METHODS
+    from agent_gateway.application.personal_web_operations import PERSONAL_WEB_OPERATIONS
 
-    return PERSONAL_WEB_WORKER_METHODS | PERSONAL_SETTINGS_METHODS
+    return PERSONAL_WEB_WORKER_METHODS | PERSONAL_SETTINGS_METHODS | PERSONAL_WEB_OPERATIONS
 
 
 def is_data_frame(
@@ -254,6 +255,11 @@ async def data_worker(
         # The account-free profile is the personal Worker: it alone offers the
         # native TUI compatibility requests, and only to a loopback AgentServer.
         personal_tui = personal and enable_personal_tui(agent_server_url)
+        heartbeat = None
+        if personal:
+            from agent_gateway.heartbeat import HeartbeatControllerProxy
+
+            heartbeat = HeartbeatControllerProxy(client)
         handler = MessageHandler(client, session_login_bindings=accounts)
         if credentials is not None:
             credentials.attach_handler(handler)
@@ -294,7 +300,7 @@ async def data_worker(
                 agent_client=client, message_handler=handler, channel_manager=manager,
                 extension_registry=registry, on_config_saved=_reject_config, heartbeat_service=None,
                 cron_controller=cron_runtime.controller if cron is not None else None,
-                heartbeat_controller=None, updater_service=None,
+                heartbeat_controller=heartbeat, updater_service=None,
                 host="127.0.0.1", port=0, path="/ws", ws_permessage_deflate=False,
                 preprocessor=preprocessor, log_stage=lambda _stage: None,
                 personal_settings=personal_settings,

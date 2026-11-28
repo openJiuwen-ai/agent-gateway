@@ -305,6 +305,28 @@ def requests_sent(stub, *methods):
     ]
 
 
+async def event(ws, name, *, timeout=10):
+    """The first ``event`` frame named ``name``; a closed socket is reported as such."""
+    async with asyncio.timeout(timeout):
+        while True:
+            try:
+                frame = json.loads(await ws.recv())
+            except ConnectionClosed as error:
+                return {"event": name, "closed": error.rcvd.code if error.rcvd else None}
+            if frame.get("type") == "event" and frame.get("event") == name:
+                return frame
+
+
+async def frames_until(ws, request_id, *, timeout=10):
+    """Every frame read up to the response to ``request_id``, that response included."""
+    frames = []
+    async with asyncio.timeout(timeout):
+        while True:
+            frames.append(json.loads(await ws.recv()))
+            if frames[-1].get("id") == request_id and frames[-1].get("type") == "res":
+                return frames
+
+
 async def test_web_settings_are_forwarded_once_for_a_browser_origin(personal):
     group, stub = personal
     stub.replies["config.get"] = {"preferred_language": "zh", "model_api_key": "synthetic-settings-readback"}
@@ -395,7 +417,7 @@ async def test_personal_web_reads_use_the_regular_handlers(personal):
                 "type": "res", "id": request_id, "ok": True, "payload": stub.replies[method],
             }, method
         # Everything outside the personal Web set still closes the socket, unread methods included.
-        await web.send(request("write", "project.create", {"name": "p", "dir": "/tmp"}))
+        await web.send(request("write", "project.delete", {"project_id": "default"}))
         assert await answer(web, "write") == {"id": "write", "closed": 1008}
     # project.list also starts the regular lifecycle event poll of the Web channel.
     assert sorted(request["method"] for request in requests_sent(stub)) == [
@@ -408,7 +430,8 @@ async def test_personal_web_reads_use_the_regular_handlers(personal):
 
 
 @pytest.mark.parametrize("method", ["cron.job.list", "skills.install", "path.set", "models.replace_all",
-                                    "permissions.tools.set", "openai_account.auth.status"])
+                                    "permissions.tools.set", "openai_account.auth.status", "project.delete",
+                                    "project.remove", "project.restore", "project.sessions.archive"])
 async def test_personal_web_listener_keeps_ungated_writes_out(personal, method):
     group, stub = personal
     async with connect(web_url(group), additional_headers=ORIGIN) as web:
@@ -454,12 +477,148 @@ async def test_web_language_and_tool_permission_settings(personal):
     ]
 
 
+async def test_web_project_writes_need_a_browser_origin(personal):
+    group, stub = personal
+    for method, params in (("project.create", {"name": "p", "project_dir": "", "work_mode": "work"}),
+                           ("project.rename", {"project_id": "p", "name": "n"}),
+                           ("project.pin", {"project_id": "p", "pinned": True}),
+                           ("heartbeat.job.delete", {"session_id": "s-mine", "id": "job"})):
+        async with connect(web_url(group)) as web:
+            await web.send(request(method, method, params))
+            assert await answer(web, method) == {
+                "type": "res", "id": method, "ok": False, "payload": {}, "code": "FORBIDDEN",
+                "error": "This operation requires an allowed Web Origin",
+            }, method
+    # Refused before any handler: neither the write nor its Session ownership check is sent.
+    assert not sent(stub, "project.create", "project.rename", "project.pin", "session.get_metadata",
+                    "heartbeat.job")
+
+
+async def test_web_project_writes_are_forwarded_once_with_the_connection_identity(personal):
+    group, stub = personal
+    stub.replies["project.create"] = {"project_id": "p-new", "project_dir": "/tmp/p-new"}
+    stub.replies["project.rename"] = {"project_id": "p-new", "name": "Renamed Project"}
+    stub.replies["project.pin"] = {"project_id": "p-new", "pinned": True}
+    async with (connect(web_url(group), additional_headers=ORIGIN) as web,
+                connect(web_url(group), additional_headers=ORIGIN) as sibling,
+                connect(web_url(group, user="bob"), additional_headers=ORIGIN) as other):
+        for request_id, method, params in (
+            ("create", "project.create", {"name": "Blank Project", "project_dir": "", "work_mode": "work"}),
+            # A caller-chosen user_id never reaches the AgentServer.
+            ("rename", "project.rename", {"project_id": "p-new", "name": "Renamed Project", "user_id": "bob"}),
+            ("pin", "project.pin", {"project_id": "p-new", "pinned": True}),
+        ):
+            await web.send(request(request_id, method, params))
+            assert await answer(web, request_id) == {
+                "type": "res", "id": request_id, "ok": True, "payload": stub.replies[method],
+            }, method
+        # The AgentServer's structured refusal reaches the page as it is.
+        stub.replies["project.rename"] = {"error": "name already used", "code": "CONFLICT"}
+        await web.send(request("duplicate", "project.rename", {"project_id": "p-new", "name": "default"}))
+        duplicate = await answer(web, "duplicate")
+        assert (duplicate["ok"], duplicate["code"], duplicate["error"]) == (
+            False, "CONFLICT", "name already used",
+        ), duplicate
+        # An implicit restore notifies the owner's other tabs, and nobody else's.
+        stub.replies["project.create"] = {"project_id": "p-old", "restored": True}
+        await web.send(request("restore", "project.create", {"name": "Existing", "project_dir": "", "work_mode": "work"}))
+        restored = await answer(web, "restore")
+        assert restored["ok"] is True and restored["payload"]["restored"] is True, restored
+        assert await event(sibling, "project.restored") == {
+            "type": "event", "event": "project.restored", "payload": {"project_id": "p-old"},
+        }
+        # The broadcast finished before the write was answered, so another user's
+        # socket has nothing queued before its next response.
+        await other.send(request("status", "connection.status", {}))
+        frames = await frames_until(other, "status")
+        assert frames[-1]["ok"] is True and not [f for f in frames if f.get("event") == "project.restored"]
+    # Each write went out once, with the connection's identity, and nothing else
+    # was forwarded for the three sockets.
+    assert [(request["method"], request["params"], request["channel"], request["user_id"])
+            for request in requests_sent(stub)] == [
+        ("project.create", {"name": "Blank Project", "project_dir": "", "work_mode": "work"}, "web", USER),
+        ("project.rename", {"project_id": "p-new", "name": "Renamed Project"}, "web", USER),
+        ("project.pin", {"project_id": "p-new", "pinned": True}, "web", USER),
+        ("project.rename", {"project_id": "p-new", "name": "default"}, "web", USER),
+        ("project.create", {"name": "Existing", "project_dir": "", "work_mode": "work"}, "web", USER),
+    ]
+
+
+def heartbeat_answers(stub):
+    """AgentServer answers for heartbeat jobs: Session ownership and the job relay."""
+    relayed = []
+
+    def metadata(envelope):
+        session_id = envelope["params"]["session_id"]
+        if session_id == "s-gone":
+            return {"error": "session not found", "code": "NOT_FOUND"}
+        return {"user_id": {"s-mine": USER, "s-anon": None}.get(session_id, "bob")}
+
+    def job(envelope):
+        relayed.append(envelope)
+        action = envelope["params"]["action"]
+        return {"result": {"delete": {"deleted": True}, "list": {"jobs": []}}.get(action, {"job": {"id": "job"}})}
+
+    stub.replies["session.get_metadata"] = metadata
+    stub.replies["heartbeat.job"] = job
+    return relayed
+
+
+async def test_web_heartbeat_writes_are_scoped_to_the_connection_user(personal):
+    group, stub = personal
+    relayed = heartbeat_answers(stub)
+    job = {"session_id": "s-mine", "id": "job"}
+
+    async def refused(ws, request_id, params, code):
+        await ws.send(request(request_id, "heartbeat.job.delete", params))
+        frame = await answer(ws, request_id)
+        assert (frame["ok"], frame["code"], frame.get("payload")) == (False, code, {}), (request_id, frame)
+
+    async with connect(web_url(group), additional_headers=ORIGIN) as web:
+        # The caller's user_id is dropped: only the connection identity scopes the job.
+        await web.send(request("mine", "heartbeat.job.delete", {**job, "user_id": "bob"}))
+        assert await answer(web, "mine") == {"type": "res", "id": "mine", "ok": True, "payload": {"deleted": True}}
+        await refused(web, "foreign", {"session_id": "s-foreign", "id": "job"}, "SESSION_IDENTITY_REQUIRED")
+        # The channel reads a non-object params value as {}, so it needs no case of its own.
+        await refused(web, "no-session", {"id": "job"}, "BAD_REQUEST")
+        await refused(web, "array", ["s-mine", "job"], "BAD_REQUEST")
+        # The ownership answer is passed through before any job operation is relayed.
+        await refused(web, "gone", {"session_id": "s-gone", "id": "job"}, "NOT_FOUND")
+        # An owned Session with a malformed job is the regular handler's refusal.
+        await refused(web, "no-id", {"session_id": "s-mine"}, "BAD_REQUEST")
+        # Listing and metadata have no Session scope of their own.
+        await web.send(request("jobs", "heartbeat.job.list", {"session_id": "s-mine"}))
+        listed = await answer(web, "jobs")
+        assert (listed["ok"], listed["payload"]) == (True, {"jobs": []}), listed
+        await web.send(request("meta", "heartbeat.job.meta", {}))
+        assert (await answer(web, "meta"))["ok"] is True
+    async with connect(web_url(group, user="bob"), additional_headers=ORIGIN) as other:
+        await refused(other, "steal", {**job, "user_id": USER}, "SESSION_IDENTITY_REQUIRED")
+    # An anonymous connection owns anonymous Sessions, and only those.
+    async with connect(web_url(group, user=""), additional_headers=ORIGIN) as anonymous:
+        await refused(anonymous, "named", job, "SESSION_IDENTITY_REQUIRED")
+        await anonymous.send(request("own", "heartbeat.job.delete", {"session_id": "s-anon", "id": "job"}))
+        assert (await answer(anonymous, "own"))["ok"] is True
+    assert [(envelope["params"]["action"], envelope["params"]["data"], envelope.get("user_id")) for envelope in relayed] == [
+        ("delete", {"job_id": "job"}, USER),
+        ("list", {"session_id": "s-mine"}, USER),
+        ("meta", {}, USER),
+        ("delete", {"job_id": "job"}, None),
+    ]
+    # The unguarded list takes the Session from its params, as the regular handler does.
+    assert [envelope["session_id"] for envelope in relayed] == ["s-mine", "s-mine", "", "s-anon"]
+    assert all(envelope["channel"] == "web" for envelope in relayed)
+    # One ownership answer per well-formed write; none for a request refused before the check.
+    assert len(sent(stub, "session.get_metadata")) == 7
+
+
 async def test_protocol_listener_keeps_web_settings_out(personal):
     group, stub = personal
     stub.replies["config.get"] = {"preferred_language": "zh", "model_api_key": "synthetic-settings-readback"}
     host, port = group.addresses[1]
     for route, method in (("/tui", "config.set"), ("/tui", "config.save_all"), ("/tui", "models.upsert"),
                           ("/tui", "locale.set_conf"), ("/tui", "permissions.tools.update"),
+                          ("/tui", "project.create"), ("/tui", "heartbeat.job.delete"),
                           ("/acp", "config.get"), ("/acp", "models.list")):
         async with connect(f"ws://{host}:{port}{route}?user_id={USER}", additional_headers=ORIGIN) as protocol:
             await protocol.send(request(method, method, {}))
@@ -499,7 +658,8 @@ async def test_account_worker_keeps_the_tui_compatibility_requests_out(tmp_path,
             await tui.send(json.dumps({"type": "req", "id": "display", "method": "config.get", "params": {}}))
             assert (await answer(tui, "display")) == {"id": "display", "closed": 1008}
         # The account Worker's Web listener keeps the data-plane admission it had.
-        for method in ("config.get", "config.save_all", "models.list", "commands.list", "project.list"):
+        for method in ("config.get", "config.save_all", "models.list", "commands.list", "project.list",
+                       "project.create", "project.rename", "heartbeat.job.list", "heartbeat.job.delete"):
             async with connect(web_url(group), additional_headers=ORIGIN) as web:
                 await web.send(request(method, method, {}))
                 assert await answer(web, method) == {"id": method, "closed": 1008}, method
@@ -508,4 +668,5 @@ async def test_account_worker_keeps_the_tui_compatibility_requests_out(tmp_path,
             await group.stop()
         finally:
             await asyncio.to_thread(stub.stop)
-    assert not any(request["method"] == "config.get" for request in stub.requests)
+    assert not any(request["method"] in {"config.get", "project.create", "project.rename", "heartbeat.job",
+                                         "session.get_metadata"} for request in stub.requests)

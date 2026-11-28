@@ -21,6 +21,7 @@ from e2a.message import (
 )
 from agent_gateway.channel_manager.web.media import normalize_chat_media_attachments
 from agent_gateway.application.inbound import MessagePreprocessor
+from agent_gateway.application.personal_web_operations import PERSONAL_WEB_OPERATIONS, protect_personal_web_operation
 from agent_gateway.application.personal_settings import PERSONAL_SETTINGS_METHODS, protect_settings_handler
 
 logger = logging.getLogger("gateway")
@@ -46,6 +47,9 @@ class _PersonalSettingsRegistration:
     def register_method(self, method: str, handler: Any, *, local_only: bool = False) -> None:
         if method in PERSONAL_SETTINGS_METHODS:
             handler = protect_settings_handler(self._channel, method, handler)
+            local_only = True
+        elif method in PERSONAL_WEB_OPERATIONS:
+            handler = protect_personal_web_operation(self._channel, method, handler)
             local_only = True
         self._channel.register_method(method, handler, local_only=local_only)
 
