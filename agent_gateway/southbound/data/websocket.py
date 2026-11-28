@@ -102,6 +102,17 @@ class _ReceiverFailure:
         self.exc = exc
 
 
+class AgentCapabilityUnavailable(RuntimeError):
+    """The active AgentServer socket cannot safely handle a restricted request.
+
+    Raised before anything is written, so the request was never sent and a
+    caller may not treat it as an AgentServer rejection.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("This AgentServer does not support the requested operation")
+
+
 class RequestNotSentError(RuntimeError):
     """The connection was retired before the request could be written."""
 
@@ -151,7 +162,9 @@ class WebSocketConnection:
     - 接收（流式）：多条 E2AResponse 线 JSON（或 legacy chunk），解析为 AgentResponseChunk。
     """
 
-    def __init__(self, *, ping_interval: float | None = 30.0, ping_timeout: float | None = 300.0) -> None:
+    def __init__(
+        self, *, ping_interval: float | None = 30.0, ping_timeout: float | None = 300.0,
+    ) -> None:
         self._uri: str | None = None
         self._extra_headers: dict[str, str] = {}
         self._ws: Any = None
@@ -163,6 +176,9 @@ class WebSocketConnection:
         self._server_ready: bool = False
         self._agent_ready: bool = False
         self._readiness_state: str | None = None
+        # Optional names advertised by the connection.ack of the live socket.
+        # They qualify that socket only and are dropped whenever it is retired.
+        self._capabilities: frozenset[str] = frozenset()
         # 消息分发机制：根据 request_id 路由到对应队列
         self._message_queues: dict[str, asyncio.Queue] = {}
         self._queue_lock = asyncio.Lock()  # 保护队列操作的锁
@@ -243,6 +259,10 @@ class WebSocketConnection:
         """Front transport is connected. Does not mean Agent Runtime can execute."""
         return self._server_ready
 
+    def advertises_capability(self, capability: str) -> bool:
+        """Advisory check; a write must still check its actual socket under the send lock."""
+        return self.server_ready and capability in self._capabilities
+
     @property
     def can_reconnect(self) -> bool:
         """Whether a request can restore the configured transport."""
@@ -263,6 +283,10 @@ class WebSocketConnection:
         status = str(payload.get("status") or "").strip().lower()
         readiness = payload.get("readiness")
         self._readiness_state = str(readiness) if isinstance(readiness, str) else None
+        capabilities = payload.get("capabilities")
+        self._capabilities = frozenset(
+            value for value in capabilities if isinstance(value, str)
+        ) if isinstance(capabilities, list) else frozenset()
         # Any ack means Front transport is up. FAILED/DRAINING describe Runtime,
         # not the socket; e2a_proxy must still reach Front control RPCs.
         self._server_ready = True
@@ -293,6 +317,7 @@ class WebSocketConnection:
             self._server_ready = False
             self._agent_ready = False
             self._readiness_state = None
+            self._capabilities = frozenset()
             origin = _build_ws_origin(uri)
             connect_kwargs: dict[str, Any] = {
                 "origin": origin,
@@ -519,6 +544,7 @@ class WebSocketConnection:
         self._server_ready = False
         self._agent_ready = False
         self._readiness_state = None
+        self._capabilities = frozenset()
         self._ws = None
         failure = _ReceiverFailure(exc)
         async with self._queue_lock:
@@ -599,6 +625,7 @@ class WebSocketConnection:
             self._server_ready = False
             self._agent_ready = False
             self._readiness_state = None
+            self._capabilities = frozenset()
         logger.info("[WebSocketAgentServerClient] 已断开")
 
     async def _clear_push_tasks(self) -> None:
@@ -676,10 +703,14 @@ class WebSocketConnection:
     async def send_request(
         self, envelope: E2AEnvelope, *, timeout: float | None = None,
         on_written: Callable[[], None] | None = None,
+        required_capability: str | None = None,
     ) -> AgentResponse:
         try:
             with bind_agent_request_trace(envelope):
-                return await self._send_request_scoped(envelope, timeout=timeout, on_written=on_written)
+                return await self._send_request_scoped(
+                    envelope, timeout=timeout, on_written=on_written,
+                    required_capability=required_capability,
+                )
         finally:
             if self._credential_runtime is not None:
                 self._credential_runtime.release(envelope)
@@ -687,6 +718,7 @@ class WebSocketConnection:
     async def _send_request_scoped(
         self, envelope: E2AEnvelope, *, timeout: float | None = None,
         on_written: Callable[[], None] | None = None,
+        required_capability: str | None = None,
     ) -> AgentResponse:
         await self._ensure_connected_for_request()
         generation = self._connection_generation
@@ -739,6 +771,8 @@ class WebSocketConnection:
                 async with self._credential_write(envelope):
                     async with self._lock:
                         self._check_request_connection(generation)
+                        if required_capability is not None and required_capability not in self._capabilities:
+                            raise AgentCapabilityUnavailable()
                         lock_wait_ms = (monotonic() - lock_started) * 1000
                         if self._credential_runtime is not None:
                             self._credential_runtime.check(envelope)

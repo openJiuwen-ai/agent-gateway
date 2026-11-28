@@ -17,7 +17,9 @@ from agent_gateway.southbound.data.connection_pool import ConnectionPool
 from agent_gateway.southbound.data.http_sse import HttpSseConnection
 from agent_gateway.southbound.data.interfaces import PushHandler
 from agent_gateway.southbound.data.push_hub import sourced_push_handler
-from agent_gateway.southbound.data.websocket import DuplicateRequestIdError, RequestNotSentError, WebSocketConnection
+from agent_gateway.southbound.data.websocket import (
+    AgentCapabilityUnavailable, DuplicateRequestIdError, RequestNotSentError, WebSocketConnection,
+)
 
 Connection = WebSocketConnection | HttpSseConnection
 
@@ -82,20 +84,26 @@ class AgentDataTransport:
     @staticmethod
     def _failure(exc: Exception, source: Source) -> TransportError:
         state = DeliveryState.MAY_HAVE_EXECUTED
-        if isinstance(exc, (DuplicateRequestIdError, RequestNotSentError)):
+        if isinstance(exc, (AgentCapabilityUnavailable, DuplicateRequestIdError, RequestNotSentError)):
             state = DeliveryState.NOT_SENT
         return TransportError("request transport failed", delivery=state, source=source)
 
     async def send_request(self, target: ConnectionTarget, envelope: E2AEnvelope,
                            *, timeout: float | None = None,
-                           on_written: Callable[[], None] | None = None) -> UnaryResult:
+                           on_written: Callable[[], None] | None = None,
+                           required_capability: str | None = None) -> UnaryResult:
         source = self._source(target, envelope)
         client = await self._get_for_request(target, source)
         try:
             if isinstance(client, HttpSseConnection):
+                if required_capability is not None:
+                    # Only the WebSocket link reports the socket's capabilities.
+                    raise AgentCapabilityUnavailable()
                 payload = await client.send_request(envelope, base_url=target.endpoint, timeout=timeout)
             else:
                 kwargs = {} if on_written is None else {"on_written": on_written}
+                if required_capability is not None:
+                    kwargs["required_capability"] = required_capability
                 payload = await client.send_request(envelope, timeout=timeout, **kwargs)
         except Exception as exc:
             raise self._failure(exc, source) from exc
@@ -161,6 +169,9 @@ class StaticWebSocketTransport(AgentDataTransport):
     @property
     def can_reconnect(self) -> bool:
         return self._connection.can_reconnect
+
+    def advertises_capability(self, capability: str) -> bool:
+        return self._connection.advertises_capability(capability)
 
     def set_push_handler(self, handler: PushHandler | None) -> None:
         self._connection.set_server_push_handler(

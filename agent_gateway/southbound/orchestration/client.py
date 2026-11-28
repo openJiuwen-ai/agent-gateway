@@ -65,6 +65,9 @@ class StaticAgentClient(SouthboundAgentClient):
     def can_reconnect(self) -> bool:
         return self._transport.can_reconnect
 
+    def advertises_capability(self, capability: str) -> bool:
+        return self._transport.advertises_capability(capability)
+
     async def connect(self, uri: str) -> None:
         target = self._control.get_target()
         if uri != target.endpoint:
@@ -97,10 +100,13 @@ class StaticAgentClient(SouthboundAgentClient):
         self._transport.set_credential_runtime(runtime)
 
     async def send_request(self, envelope: E2AEnvelope, *, timeout: float | None = None,
-                           on_written: Callable[[], None] | None = None) -> AgentResponse:
+                           on_written: Callable[[], None] | None = None,
+                           required_capability: str | None = None) -> AgentResponse:
         async with self._router.resolve(RouteRequest(envelope, allow_create=False)) as route:
             try:
                 kwargs = {} if on_written is None else {"on_written": on_written}
+                if required_capability is not None:
+                    kwargs["required_capability"] = required_capability
                 result = await self._transport.send_request(route.targets[0], envelope, timeout=timeout, **kwargs)
             except TransportError as exc:
                 if exc.__cause__ is not None:

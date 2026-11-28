@@ -8,7 +8,8 @@ from websockets.exceptions import ConnectionClosedError
 from e2a.models import E2AEnvelope
 from e2a.wire_codec import encode_agent_response_for_wire
 from e2a.agent_models import AgentResponse
-from agent_gateway.routing.agent_client import WebSocketAgentServerClient
+from agent_gateway.routing.agent_client import AgentCapabilityUnavailable, WebSocketAgentServerClient
+from agent_gateway.southbound.data.websocket import RequestNotSentError
 
 
 class Socket:
@@ -142,3 +143,40 @@ async def test_real_authenticated_server_accepts_automatic_reconnect(monkeypatch
             assert requests == ['first', 'second']
         finally:
             await client.disconnect()
+
+
+async def test_retired_socket_advertisement_is_never_inherited_by_a_waiter(monkeypatch):
+    """A request waiting for the writer belongs to one socket and its capabilities."""
+    calls, sockets = transport(monkeypatch)
+    client = WebSocketAgentServerClient()
+    try:
+        await client.connect('ws://localhost/agent/ws')
+        client._apply_connection_ack({'payload': {'capabilities': ['market_skill_install_v1']}})
+        envelope = E2AEnvelope(
+            request_id='market-install', channel='web', method='skills.install',
+            params={'spec': 'fixture@market'},
+        )
+        assert (await client.send_request(
+            envelope, timeout=1, required_capability='market_skill_install_v1',
+        )).ok
+        async with client._lock:
+            task = asyncio.create_task(client.send_request(
+                envelope, timeout=1, required_capability='market_skill_install_v1',
+            ))
+            await asyncio.sleep(0)
+            assert not task.done()
+            assert 'market-install' in client._message_queues
+            await drop(client, sockets[0])
+            await client._ensure_connected_for_request()
+        # The waiter is not replayed onto the replacement socket.
+        with pytest.raises(RequestNotSentError, match='closed before send'):
+            await task
+        assert len(calls) == 2
+        assert len(sockets[0].sent) == 1 and sockets[1].sent == []
+        # The replacement socket never advertised the capability.
+        with pytest.raises(AgentCapabilityUnavailable, match='does not support'):
+            await client.send_request(envelope, timeout=1, required_capability='market_skill_install_v1')
+        assert sockets[1].sent == []
+        assert 'market-install' not in client._message_queues
+    finally:
+        await client.disconnect()
