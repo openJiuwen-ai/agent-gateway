@@ -4,8 +4,9 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Final
+
+from agent_gateway.common import env_names
 
 # 与《日志脱敏规则下发.md》§10.4 一致，便于 REST 热更新后对照日志
 LOG_MASKING_PROBE_SAMPLES: Final[tuple[tuple[str, str], ...]] = (
@@ -34,10 +35,7 @@ LOG_MASKING_PROBE_SAMPLES: Final[tuple[tuple[str, str], ...]] = (
 
 
 def log_masking_probes_enabled() -> bool:
-    flag = (
-        os.environ.get("JIUWENCLAW_LOG_MASKING_PROBE", "").strip().lower()
-        or os.environ.get("JIUWENSWARM_LOG_MASKING_PROBE", "").strip().lower()
-    )
+    flag = env_names.get(env_names.LOG_MASKING_PROBE, "").strip().lower()
     return flag in (
         "1",
         "true",

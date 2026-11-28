@@ -8,7 +8,7 @@ Control/Acceptor、IPC、fd 交接、用户亲和或 Cron 分片，不改变 HTT
 
 `startup/bootstrap.py` 提供显式的环境、第三方日志、Gateway 日志与工作区准备阶段。
 导入 helper 不执行这些阶段；入口仍按原顺序调用。父进程设置的
-`JIUWENSWARM_RUNTIME_WORKSPACE_READY` 继续跳过重复准备，不恢复已删除的媒体能力迁移。
+`AGENT_GATEWAY_RUNTIME_WORKSPACE_READY` 继续跳过重复准备，不恢复已删除的媒体能力迁移。
 
 `startup/lifecycle.py` 保留原工作区 OS 锁：重复实例以状态码 1 退出，正常和异常退出释放锁。
 SIGINT/SIGTERM 设置同一个退出事件，恢复已安装的信号处理器并等待遥测清理，包括部分信号

@@ -11,6 +11,8 @@ The gateway resolves its runtime directory from two environment variables:
 | `JIUWENSWARM_DATA_DIR` | Directly sets the instance root (config, sessions, logs, cron, and so on) | Highest |
 | `JIUWENSWARM_HOME` | Sets the user home; the instance root is `.jiuwenswarm` under it | Next |
 
+Gateway also accepts the new names `AGENT_GATEWAY_DATA_DIR` and `AGENT_GATEWAY_HOME`. The examples below also start the JiuwenSwarm AgentServer, which only reads the legacy names, so they use the legacy names.
+
 Each instance root contains a workspace lock (`.gateway.lock`): only one gateway process may serve a given root, which prevents duplicate cron scheduling. Different roots can run in parallel.
 
 ## Option 1: Environment isolation (recommended)

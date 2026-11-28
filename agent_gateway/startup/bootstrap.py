@@ -33,14 +33,14 @@ def configure_process_logging(mark: StageMarker) -> None:
 
 def prepare_group_workspace(mark: StageMarker) -> None:
     """Prepare workspace resources unless the parent already prepared them."""
-    import os
+    from agent_gateway.common import env_names
     from agent_gateway.common.paths import (
         cleanup_stale_openjiuwen_descs,
         prepare_runtime_workspace,
     )
 
     cleanup_stale_openjiuwen_descs()
-    if os.environ.get("JIUWENSWARM_RUNTIME_WORKSPACE_READY") != "1":
+    if env_names.get(env_names.RUNTIME_WORKSPACE_READY) != "1":
         prepare_runtime_workspace(cleanup_stale_descs=False)
     mark("runtime_workspace_ready")
 
