@@ -7235,6 +7235,16 @@ class MessageHandler(ABC):
         self._disconnect_cancel_tasks.clear()
         self._evolution_approval.clear_all()
         self._session_last_user_query.clear()
+        # 同族会话级缓存一并清理：MessageHandler 是进程内单例，停机后重新
+        # start_forwarding 会复用同一实例，残留的发起者/会话别名会把请求
+        # 指回已经消失的会话，也是这些表在运行期唯一的回收点。
+        # 两张别名表在运行期由各自的锁保护，停机清空同样持锁，避免在飞协程
+        # 在清空之后回填一条残留别名。
+        self._session_last_originator.clear()
+        async with self._acp_session_alias_lock:
+            self._acp_session_aliases.clear()
+        async with self._external_session_alias_lock:
+            self._external_session_aliases.clear()
 
         # 取消转发循环
         if self._forward_task is not None:
