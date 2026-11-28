@@ -10,6 +10,8 @@ import json
 import logging
 import math
 import uuid
+from collections import OrderedDict
+from functools import lru_cache
 from typing import Any
 from urllib.parse import quote, urljoin
 from weakref import WeakValueDictionary
@@ -21,22 +23,25 @@ from agent_gateway.extensions.agentos.agentos_router.backend import (
     SandboxInfo, AgentApiError, AgentTimeoutError,
     AGENT_GENERATION_ENV, AgentNotFoundError, AgentNotVisibleError,
     AgentGenerationMismatchError, AgentFailedError, AgentCreateUncertainError,
-    TRACE_ID_HEADER, apply_trace_header, bind_southbound_trace_id,
+    TRACE_ID_HEADER, bind_southbound_trace_id,
 )
-from agent_gateway.telemetry import inject_request_headers
+from agent_gateway.trace_context import outbound_trace_headers, resolve_trace_id
 
 
 logger = logging.getLogger(__name__)
+# Eviction only causes a later policy refresh. Uncertain operations keep their IDs.
+_MAX_APPLIED_NETWORK_POLICIES = 1024
 
 
 def trace_headers(headers: dict[str, str], trace_id: str | None = None) -> dict[str, str]:
     """Propagate business tracing independently of ADX operation identities."""
-    carrier = inject_request_headers(headers)
-    return apply_trace_header(carrier, carrier.get(TRACE_ID_HEADER) or trace_id)
+    carrier = outbound_trace_headers(headers, trace_id)
+    carrier[TRACE_ID_HEADER] = bind_southbound_trace_id(carrier[TRACE_ID_HEADER])
+    return carrier
 
 
 def _resolve_trace_id(trace_id: str | None = None) -> str:
-    return bind_southbound_trace_id(inject_request_headers({}).get(TRACE_ID_HEADER) or trace_id)
+    return bind_southbound_trace_id(resolve_trace_id(trace_id))
 
 
 class AdxControlError(AgentApiError):
@@ -79,6 +84,9 @@ class AdxControlClient:
         self._deletes: dict[str, str] = {}
         # Active and waiting operations keep the shared lock alive.
         self._environment_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+        self._network_applied: OrderedDict[str, str] = OrderedDict()
+        self._network_pending: dict[str, tuple[str, str, dict]] = {}
+        self._compile_network_policy = lru_cache(maxsize=128)(self._compile_network_policy)
 
     async def connect(self, uri: str) -> None:
         del uri
@@ -89,6 +97,7 @@ class AdxControlClient:
         await self.close()
 
     async def close(self) -> None:
+        self._compile_network_policy.cache_clear()
         await self.http.aclose()
 
     @staticmethod
@@ -151,6 +160,7 @@ class AdxControlClient:
         value = await self._request('GET', '/api/instances', params={'instance_id': instance},
                                     missing_ok=True, trace_id=trace_id)
         if value is None or value == []:
+            self._network_applied.pop(instance, None)
             if observed_delete is not None:
                 # Release only the deletion observed before the authoritative GET.
                 async with self._environment_locks.setdefault(instance, asyncio.Lock()):
@@ -208,7 +218,9 @@ class AdxControlClient:
                         await asyncio.sleep(self.config.router.probes.wait_running_interval_seconds)
                         continue
                     observed = True
-                    terminal = value.get('status') in ('failed', 'deleted', 'deleting')
+                    terminal = value.get('status') in ('deleted', 'deleting') or (
+                        value.get('status') == 'failed' and not value.get('restart_pending')
+                    )
                     if expected_generation is not None:
                         generation_pending = True
                         actual = await self._instance_generation(instance_id, value, trace_id=trace_id)
@@ -339,6 +351,9 @@ class AdxControlClient:
                 if len(set(options)) != len(options) or 'rw' not in options or 'ro' in options:
                     raise ValueError(error)
                 body['mounts'][0]['options'] = ['rbind', *options]
+            if 'network' in launch:
+                _, policy = self._builtin_network_policy(workspace)
+                body['network'] = copy.deepcopy(policy)
             body['process'] = copy.deepcopy(launch['process'])
             body['mounts'].extend(copy.deepcopy(launch.get('mounts', [])))
             body['env'] = {**copy.deepcopy(launch.get('image_env', {})), **body['env'],
@@ -347,15 +362,70 @@ class AdxControlClient:
             from agent_gateway.extensions.adx.runtime_config import (
                 managed_sandbox_settings, runtime_environment_settings,
             )
+            # The built-in AgentServer only reads the JIUWENSWARM_* names; keep them.
             body['env']['JIUWENSWARM_RUNTIME_SETTINGS'] = json.dumps(runtime_environment_settings())
             body['env']['JIUWENSWARM_AGENTOS_SANDBOX_CONFIG'] = json.dumps(managed_sandbox_settings())
             body['env']['HOME'] = self.config.workspace_target
             body['env']['JIUWENSWARM_HOME'] = self.config.workspace_target
             # The built-in AgentServer authenticates tool requests to the node.
-            body['env']['JIUWENSWARM_ADX_API_TOKEN'] = self.config.token
+            body['env']['ADX_TOKEN'] = self.config.token
         if local_rootfs is not None and not body.get('process', {}).get('commands'):
             raise ValueError('Local Agent rootfs requires process commands in its launch specification')
         return body
+
+    def _compile_network_policy(self, model_origins: tuple[str, ...]) -> tuple[str, dict]:
+        from agent_gateway.extensions.adx.network import agent_policy, http_policy
+
+        network = self.config.builtin_launch['network']
+        policy = http_policy(agent_policy(
+            {'ingress_url': network['ingress_url'], 'ingress_policy_peer': network.get('ingress_policy_peer')},
+            model_origins, network.get('allowed_internal_origins', []),
+            profile=network.get('profile', 'N2'), blocked_cidrs=network.get('blocked_cidrs', []),
+        ))
+        return self._policy_digest(policy), policy
+
+    @staticmethod
+    def _policy_digest(policy: dict) -> str:
+        return hashlib.sha256(json.dumps(policy, sort_keys=True).encode()).hexdigest()
+
+    def _remember_applied_policy(self, instance: str, digest: str) -> None:
+        self._network_applied[instance] = digest
+        self._network_applied.move_to_end(instance)
+        if len(self._network_applied) > _MAX_APPLIED_NETWORK_POLICIES:
+            self._network_applied.popitem(last=False)
+
+    def _builtin_network_policy(self, workspace: str) -> tuple[str, dict]:
+        from agent_gateway.extensions.adx.network import workspace_model_origins
+
+        return self._compile_network_policy(tuple(workspace_model_origins(workspace)))
+
+    async def ensure_builtin_network(self, instance: str, workspace: str) -> None:
+        launch = self.config.builtin_launch or {}
+        if 'network' not in launch:
+            return
+        async with self._environment_locks.setdefault(instance, asyncio.Lock()):
+            digest, desired = self._builtin_network_policy(workspace)
+            # Reconcile an ambiguous previous replacement before submitting a
+            # different policy. A model switch must not reorder old mutations.
+            if instance in self._network_pending:
+                await self._apply_pending_network(instance)
+            if self._network_applied.get(instance) == digest:
+                self._network_applied.move_to_end(instance)
+                return
+            self._network_pending[instance] = (digest, 'network-' + uuid.uuid4().hex, desired)
+            await self._apply_pending_network(instance)
+
+    async def _apply_pending_network(self, instance: str) -> None:
+        digest, operation, policy = self._network_pending[instance]
+        try:
+            await self._request('PUT', f'/api/environment/v1/environments/{quote(instance, safe="")}/network',
+                                body=policy, request_id=operation, operation_id=operation)
+        except AdxControlError as error:
+            if error.outcome in ('terminal', 'not_started') or error.code in ('INVALID_ARGUMENT', 'PERMISSION_DENIED', 'NOT_FOUND'):
+                self._network_pending.pop(instance, None)
+            raise
+        self._remember_applied_policy(instance, digest)
+        self._network_pending.pop(instance, None)
 
     async def create_sandbox(self, *, namespace: str, name: str, workspace: str, runtime_spec: dict,
                              env_vars: dict | None = None, mounts: list | None = None,
@@ -404,6 +474,8 @@ class AdxControlClient:
                                      status_code=error.status_code) from error
         if not isinstance(result, dict) or result.get('environmentId') != instance:
             raise AdxCreateUncertain('ADX create returned an unexpected Environment ID', outcome='unknown')
+        if 'network' in body:
+            self._remember_applied_policy(instance, self._policy_digest(body['network']))
         return await self._ready_sandbox_info(instance, trace_id=trace_id)
 
     async def _ready_sandbox_info(self, instance: str, *, trace_id: str | None = None) -> SandboxInfo:
@@ -422,6 +494,8 @@ class AdxControlClient:
     def _forget_environment(self, instance: str) -> None:
         self._creates.pop(instance, None)
         self._deletes.pop(instance, None)
+        self._network_applied.pop(instance, None)
+        self._network_pending.pop(instance, None)
 
     async def delete_sandbox(self, sandbox_id: str, *, trace_id: str | None = None) -> None:
         trace_id = _resolve_trace_id(trace_id)
@@ -453,9 +527,20 @@ class AdxControlClient:
         if not isinstance(result, dict):
             raise AdxControlError('Invalid ADX operation response')
         if result.get('error') and response.status_code in (200, 400, 404):
-            message = str(result['error'])
-            missing = 'not found' in message.lower() or 'no such file' in message.lower()
-            raise AdxControlError(message, code='NOT_FOUND' if missing else 'INTERNAL_ERROR')
+            error = result['error']
+            message = str(error.get('message') or result.get('message') or error) if isinstance(error, dict) else str(error)
+            error_code = str(error.get('code') or '') if isinstance(error, dict) else str(result.get('error_code') or '')
+            if error_code.upper() == 'FILE_NOT_FOUND':
+                code = 'file_not_found'
+            elif isinstance(error, dict) and error_code.upper() in ('NOT_FOUND', 'INSTANCE_NOT_FOUND'):
+                code = 'instance_not_found'
+            elif (action.startswith('file.') and response.status_code in (200, 400)
+                  and ('not found' in message.lower() or 'no such file' in message.lower())):
+                # Older Execd file actions report path errors without a structured code.
+                code = 'file_not_found'
+            else:
+                code = error_code or 'INTERNAL_ERROR'
+            raise AdxControlError(message, code=code)
         if response.status_code >= 300:
             raise AdxControlError(f'ADX operation returned HTTP {response.status_code}')
         return result

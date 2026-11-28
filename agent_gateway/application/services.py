@@ -28,7 +28,7 @@ def _reject_removed_agent_client_type(agent_client_config: dict[str, Any]) -> No
     if client_type in _REMOVED_AGENT_CLIENT_TYPES:
         raise RuntimeError(
             f"gateway.agent_client.type={client_type} 已移除（FaaS invoke 链路已删除），"
-            "请改用 agentos_router（YuanRong 部署）或 websocket（本地 AgentServer）"
+            "请改用 agentos_router（ADX 部署）或 websocket（本地 AgentServer）"
         )
 
 
@@ -41,7 +41,6 @@ class GatewayServices:
     client: Any
     third_agent: Any
     agent_server_ext: Any
-    using_adx_router: Any
     extension_registry: Any
     extension_manager: Any
     storage_ctx: Any
@@ -174,10 +173,6 @@ async def assemble_services(
     gateway_config = full_cfg.get("gateway") or {}
     agent_client_config = gateway_config.get("agent_client") or {}
     _reject_removed_agent_client_type(agent_client_config)
-    using_adx_router = str(agent_client_config.get("type") or "").strip().lower() == "adx_router"
-    if using_adx_router:
-        if agent_server_ext is None or agent_server_ext.metadata.id != "adx_router":
-            raise RuntimeError("Selected adx_router extension failed to load; check gateway.adx configuration")
     client = resolve_agent_server_client(
         agent_server_ext,
         mode=agent_client_mode,
@@ -378,7 +373,6 @@ async def assemble_services(
         client=client,
         third_agent=third_agent,
         agent_server_ext=agent_server_ext,
-        using_adx_router=using_adx_router,
         extension_registry=extension_registry,
         extension_manager=extension_manager,
         storage_ctx=storage_ctx,

@@ -448,15 +448,32 @@ def test_built_in_prepared_local_rootfs_and_image_environment(monkeypatch, tmp_p
     }
 
 
-def test_declared_runtime_credential_requires_a_launch_value(monkeypatch):
-    from agent_gateway.common import runtime_settings
+@pytest.mark.asyncio
+@pytest.mark.parametrize('runtime_class', ['supervisor', 'runsc'])
+async def test_builtin_launch_injects_sdk_token_without_receiver_conversion(
+    monkeypatch, tmp_path, runtime_class,
+):
+    from dataclasses import replace
 
-    monkeypatch.setattr(runtime_settings, "runtime_settings",
-                        lambda: {"credentials": {"EXAMPLE_SOURCE": "EXAMPLE_TARGET"}})
-    monkeypatch.delenv("EXAMPLE_SOURCE", raising=False)
-
-    with pytest.raises(ValueError, match="EXAMPLE_SOURCE is missing for EXAMPLE_TARGET"):
-        runtime_settings.prepare_runtime_environment()
+    launch = {'process': {'commands': [['python', '-m', 'jiuwenswarm.server.app_agentserver']]},
+              'env': {'ADX_TOKEN': 'stale-sdk-token'}}
+    client = AdxControlClient(replace(config(monkeypatch, tmp_path),
+                                     runtime_class=runtime_class, builtin_launch=launch))
+    try:
+        body = client._creation_body('test', 'alice', '/users/alice', {}, {}, [], builtin=True)
+        assert body['env']['ADX_TOKEN'] == 'platform-secret'
+        settings = json.loads(body['env']['JIUWENSWARM_RUNTIME_SETTINGS'])
+        assert not settings.get('credentials')
+        assert {'ADX_TOKEN', 'JIUWENSWARM_ADX_NODE_INGRESS_URL',
+                'JIUWENSWARM_ADX_NODE_CONTEXT_FILE'} <= set(settings['preserve_env'])
+        sandbox = json.loads(body['env']['JIUWENSWARM_AGENTOS_SANDBOX_CONFIG'])
+        assert sandbox['managed_connection']['context_file_env'] == 'JIUWENSWARM_ADX_NODE_CONTEXT_FILE'
+        custom = client._creation_body('test', 'third', '/users/alice',
+                                       {'rootfs': {'imageurl': 'custom:1'}}, {}, [], builtin=False)
+        assert 'ADX_TOKEN' not in custom['env']
+        assert custom.get('process') != launch['process']
+    finally:
+        await client.close()
 
 
 def test_third_party_web_port_is_published_only_when_requested(monkeypatch, tmp_path):

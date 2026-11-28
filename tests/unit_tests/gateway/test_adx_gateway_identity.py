@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -18,33 +19,33 @@ def _client(monkeypatch):
     }}}))
 
 
-@pytest.mark.parametrize("backend", ["adx_router", "agentos_router"])
-async def test_extension_registers_only_when_adx_backend_is_selected(monkeypatch, backend):
-    from agent_gateway.extensions.adx import extension
+@pytest.mark.asyncio
+async def test_extension_registers_only_when_adx_backend_is_selected(monkeypatch):
+    from agent_gateway.extensions.agentos.agentos_router import extension
 
-    # A Yuanrong deployment must start without any ADX settings or credentials.
-    settings = {"gateway": {"agent_client": {"type": backend}}}
-    if backend == "adx_router":
-        monkeypatch.setenv("ADX_TEST_PLATFORM", "platform-key")
-        settings["gateway"]["adx"] = {
-            "ingress_url": "https://adx.example", "tenant": "appliance", "token_env": "ADX_TEST_PLATFORM",
-        }
+    settings = {"gateway": {"agent_client": {"type": "agentos_router"}}}
+    monkeypatch.setenv("ADX_TEST_PLATFORM", "platform-key")
+    settings["gateway"]["adx"] = {
+        "ingress_url": "https://adx.example", "tenant": "appliance", "token_env": "ADX_TEST_PLATFORM",
+    }
     monkeypatch.setattr(extension, "get_config", lambda: settings)
     registered = []
     third_agents = []
     registry = SimpleNamespace(register_agent_server_client=registered.append,register_third_agent=third_agents.append)
     extensions = await extension.register_extensions(registry)
-    if backend == "agentos_router":
-        assert extensions == registered == []
-        return
     assert len(extensions) == 1 and extensions == registered == third_agents
-    assert extensions[0].metadata.id == "adx_router"
+    from pathlib import Path
+    extensions[0].set_extension_dir(Path(extension.__file__).parents[1])
+    assert extensions[0].metadata.id == "agentos_router"
     assert isinstance(extensions[0].get_client(), AdxRouterClient)
     await extensions[0].shutdown()
 
 
+
+
+@pytest.mark.asyncio
 async def test_extension_reuses_agentos_business_authenticator(monkeypatch):
-    from agent_gateway.extensions.adx import extension
+    from agent_gateway.extensions.agentos.agentos_router import extension
 
     monkeypatch.setenv("ADX_TEST_PLATFORM", "platform-key")
     created = []
@@ -55,7 +56,7 @@ async def test_extension_reuses_agentos_business_authenticator(monkeypatch):
 
     monkeypatch.setattr(extension, "AgentOSAuthenticator", FakeAuthenticator)
     monkeypatch.setattr(extension, "get_config", lambda: {"gateway": {
-        "agent_client": {"type": "adx_router"},
+        "agent_client": {"type": "agentos_router"},
         "agentos": {"auth_enabled": "true", "auth_service_url": "http://agentos-iam", "timeout": 7},
         "adx": {"ingress_url": "https://adx.example", "tenant": "appliance",
                 "token_env": "ADX_TEST_PLATFORM"},

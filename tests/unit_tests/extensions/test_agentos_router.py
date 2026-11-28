@@ -34,6 +34,11 @@ from agent_gateway.extensions.agentos.agentos_router.config import (
     read_optional_float,
     resolve_float_setting,
 )
+from agent_gateway.extensions.agentos.agentos_router.backend import (
+    AGENT_GENERATION_ENV,
+    DEFAULT_THIRD_AGENT_PROBE_SETTINGS,
+    RuntimeProbeSettings,
+)
 from agent_gateway.extensions.agentos.agentos_router.extension import AgentOSRouter
 from agent_gateway.extensions.agentos.agentos_router.models import (
     AgentInfo,
@@ -56,27 +61,26 @@ from agent_gateway.extensions.agentos.agentos_router.router_client import (
     _extract_placement_ips,
     _is_agent_network_error,
     _is_ws_connect_retryable,
-    _sandbox_name,
+    sandbox_name,
     _third_agent_probe_port,
     _third_agent_ssh_probe_port,
     _with_default_third_agent_probes,
     _with_web_access_cmds,
     resolve_agent_workspace,
 )
-from agent_gateway.extensions.yuanrong_frontend_client import (
-    AGENT_GENERATION_ENV,
+from agent_gateway.extensions.agentos.agentos_router.backend import (
     DEFAULT_RUNTIME_PROBE_SETTINGS,
     DEFAULT_THIRD_AGENT_PROBE_SETTINGS,
     RuntimeProbeSettings,
     SandboxInfo,
-    YuanrongAgentApiError,
-    YuanrongAgentCreateUncertainError,
-    YuanrongAgentDeleteRejectedError,
-    YuanrongAgentGenerationMismatchError,
-    YuanrongAgentNotFoundError,
-    YuanrongAgentNotVisibleError,
-    YuanrongAgentRequestNotSentError,
-    YuanrongAgentTimeoutError,
+    AgentApiError,
+    AgentCreateUncertainError,
+    AgentDeleteRejectedError,
+    AgentGenerationMismatchError,
+    AgentNotFoundError,
+    AgentNotVisibleError,
+    AgentRequestNotSentError,
+    AgentTimeoutError,
     deterministic_agent_instance_id,
 )
 
@@ -89,12 +93,12 @@ def _ssh_channel(
     return SshChannelEndpoint(ip=ip, port=port)
 
 
-class FakeYuanRongClient:
+class FakeControlClient:
     def __init__(self) -> None:
         self.server_ready = True
         self.function_version_urn = "urn:test:function:1"
         self.agent_namespace = "default"
-        self.frontend_endpoint = "http://yuanrong.test:8888"
+        self.ingress_url = "http://yuanrong.test:8888"
         self.send_calls = 0
         self.create_calls = 0
         self.create_payloads: list[dict[str, Any]] = []
@@ -204,10 +208,10 @@ class FakeYuanRongClient:
 
 
 class FakeAgentWsClient:
-    """create 后 WS 直连 instance 的假客户端：send 委托给 FakeYuanRongClient 计数。"""
+    """create 后 WS 直连 instance 的假客户端：send 委托给 FakeControlClient 计数。"""
 
-    def __init__(self, yuanrong: FakeYuanRongClient) -> None:
-        self._yuanrong = yuanrong
+    def __init__(self, yuanrong: FakeControlClient) -> None:
+        self._backend = yuanrong
         self.connected_uris: list[str] = []
         self.disconnected = False
         self.push_handler = None
@@ -220,7 +224,7 @@ class FakeAgentWsClient:
 
     async def connect(self, uri: str) -> None:
         self.connected_uris.append(uri)
-        self._yuanrong.ws_connect_uris.append(uri)
+        self._backend.ws_connect_uris.append(uri)
 
     async def disconnect(self) -> None:
         self.disconnected = True
@@ -231,12 +235,12 @@ class FakeAgentWsClient:
         *,
         timeout: float | None = None,
     ) -> AgentResponse:
-        return await self._yuanrong.send_request(envelope)
+        return await self._backend.send_request(envelope)
 
     def send_request_stream(
         self, envelope: E2AEnvelope
     ) -> AsyncIterator[AgentResponseChunk]:
-        return self._yuanrong.send_request_stream(envelope)
+        return self._backend.send_request_stream(envelope)
 
 
 class _Http502(Exception):
@@ -249,7 +253,7 @@ class FlakyAgentWsClient(FakeAgentWsClient):
     fail_times = 2
     instances: list["FlakyAgentWsClient"] = []
 
-    def __init__(self, yuanrong: FakeYuanRongClient) -> None:
+    def __init__(self, yuanrong: FakeControlClient) -> None:
         super().__init__(yuanrong)
         self.connect_attempts = 0
         self.connect_headers: list[dict] = []
@@ -265,7 +269,7 @@ class FlakyAgentWsClient(FakeAgentWsClient):
 
 
 def _router_client(
-    yuanrong: FakeYuanRongClient,
+    yuanrong: FakeControlClient,
     registry: FakeRegistryClient | None = None,
     agent_manager: AgentManager | None = None,
     **kwargs: Any,
@@ -389,7 +393,7 @@ def _envelope(*, agent_type: str | None = None) -> E2AEnvelope:
 async def test_swarm_request_creates_builtin_supervisor_runtime() -> None:
     """jiuwenswarm (builtin) now goes through _resolve_agent/_create_agent,
     using an inline supervisor+code_path runtime_spec (no registry image lookup)."""
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     registry = FakeRegistryClient()
     agent_manager = AgentManager()
     client = _router_client(yuanrong, registry, agent_manager)
@@ -448,11 +452,11 @@ async def test_swarm_request_creates_builtin_supervisor_runtime() -> None:
     }
     # create 后通过 frontend WS 代理直连 instance（不走 invoke 链路）。
     assert yuanrong.ws_connect_uris == [
-        "ws://yuanrong.test:8888/serverless/v1/ws"
-        f"?instance=sbx-1&tenant_id=default&port={fixed_port}"
+        "ws://yuanrong.test:8888/agent/ws"
+        f"?target=urn%3Aadx%3Ainstance%3Asbx-1&port={fixed_port}"
     ]
     # WS 连前 wait running；后台注册再 wait 一次，把 placeholder address
-    # PATCH 成 YuanRong/jiuwenbox 的实际 node/sandbox IP。
+    # PATCH 成 Environment/jiuwenbox 的实际 node/sandbox IP。
     assert yuanrong.wait_running_calls == ["sbx-1", "sbx-1"]
     assert registry.updated_instances == [
         {
@@ -486,7 +490,7 @@ async def test_web_moa_status_routes_to_authenticated_user_runtime(monkeypatch: 
         _register_web_handlers,
     )
 
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     manager = AgentManager()
     client = _router_client(yuanrong, agent_manager=manager)
     client._server_ready = True
@@ -527,7 +531,7 @@ async def test_web_moa_status_routes_to_authenticated_user_runtime(monkeypatch: 
 @pytest.mark.asyncio
 async def test_new_sandbox_uses_overridden_agent_sandbox_resources() -> None:
     """A management-plane override is passed to the next created sandbox."""
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     client = _router_client(
         yuanrong,
         agent_sandbox_cpu=2000,
@@ -549,7 +553,7 @@ async def test_new_sandbox_uses_overridden_agent_sandbox_resources() -> None:
 @pytest.mark.asyncio
 async def test_new_agentserver_instance_carries_tool_sandbox_env() -> None:
     """Tool Sandbox settings ride the builtin AgentServer create request."""
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     client = _router_client(
         yuanrong,
         tool_sandbox_idle_timeout_seconds=120,
@@ -572,7 +576,7 @@ async def test_new_agentserver_instance_carries_tool_sandbox_env() -> None:
 
 @pytest.mark.asyncio
 async def test_builtin_create_honors_probe_settings() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     client = _router_client(
         yuanrong,
         FakeRegistryClient(),
@@ -609,7 +613,7 @@ async def test_builtin_create_honors_probe_settings() -> None:
 
 @pytest.mark.asyncio
 async def test_third_party_create_honors_probe_settings() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     custom = RuntimeProbeSettings(
         startup_initial_delay_seconds=5,
         startup_period_seconds=4,
@@ -714,7 +718,7 @@ async def test_get_ws_client_retries_http_502_until_ready(monkeypatch) -> None:
     monkeypatch.setattr(router_mod, "_WS_CONNECT_RETRY_INTERVAL_SECONDS", 0.01)
     monkeypatch.setattr(router_mod, "_WS_CONNECT_READY_TIMEOUT_SECONDS", 2.0)
 
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     FlakyAgentWsClient.instances = []
     FlakyAgentWsClient.fail_times = 2
     client = _router_client(
@@ -741,8 +745,8 @@ async def test_get_ws_client_retries_http_502_until_ready(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_get_ws_client_waits_until_yuanrong_status_running() -> None:
-    """连 WS 前先 GET 等到 YuanRong status=running。"""
-    yuanrong = FakeYuanRongClient()
+    """连 WS 前先 GET 等到 Environment status=running。"""
+    yuanrong = FakeControlClient()
     yuanrong.get_info_statuses = ["creating", "running"]
     client = _router_client(yuanrong)
 
@@ -762,7 +766,7 @@ async def test_get_ws_client_coalesces_concurrent_first_connect(monkeypatch) -> 
     monkeypatch.setattr(router_mod, "_WS_CONNECT_RETRY_INTERVAL_SECONDS", 0.01)
     monkeypatch.setattr(router_mod, "_WS_CONNECT_READY_TIMEOUT_SECONDS", 2.0)
 
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     FlakyAgentWsClient.instances = []
     FlakyAgentWsClient.fail_times = 1
     client = _router_client(
@@ -786,7 +790,7 @@ async def test_get_ws_client_coalesces_concurrent_first_connect(monkeypatch) -> 
 @pytest.mark.asyncio
 async def test_swarm_request_repeated_reuses_single_runtime() -> None:
     """Repeated jiuwenswarm requests reuse a single runtime (single-flight create)."""
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     registry = FakeRegistryClient()
     agent_manager = AgentManager()
     client = _router_client(yuanrong, registry, agent_manager)
@@ -808,7 +812,7 @@ async def test_swarm_request_repeated_reuses_single_runtime() -> None:
 @pytest.mark.asyncio
 async def test_chat_interrupt_does_not_cold_start_when_no_runtime() -> None:
     """chat.interrupt 在没有就绪实例时不得冷启动沙箱（no-op 成功）。"""
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     agent_manager = AgentManager()
     client = _router_client(yuanrong, FakeRegistryClient(), agent_manager)
 
@@ -838,7 +842,7 @@ async def test_chat_interrupt_does_not_cold_start_when_no_runtime() -> None:
 @pytest.mark.asyncio
 async def test_chat_interrupt_forwards_to_ready_runtime() -> None:
     """chat.interrupt 在已有 READY builtin 时正常转发，不额外建沙箱。"""
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     agent_manager = AgentManager()
     client = _router_client(yuanrong, FakeRegistryClient(), agent_manager)
 
@@ -899,7 +903,7 @@ async def test_missing_workspace_precreate_failure_is_retryable(tmp_path) -> Non
     删除重建用户时，workspace 目录可能在首次请求瞬间尚未就绪；这类发生在
     ``create_sandbox`` 之前的失败应允许下一次请求重试，而不是一直回放错误。
     """
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     agent_manager = AgentManager()
     workspace_root = tmp_path / "ws"
     client = _router_client(
@@ -946,7 +950,7 @@ async def test_third_party_image_lookup_failure_is_precreate_retryable(
                 raise RegistryConnectionError("registry temporarily unavailable")
             return await super().get_image_info(image_name)
 
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     registry = FlakyRegistry()
     manager = AgentManager()
     client = _router_client(yuanrong, registry, manager)
@@ -973,7 +977,7 @@ async def test_third_party_create_429_is_precreate_retryable(
 ) -> None:
     """A first-attempt 429 explicitly rejected the create, so no sandbox exists."""
 
-    class RateLimitedOnceYuanRong(FakeYuanRongClient):
+    class RateLimitedOnceYuanRong(FakeControlClient):
         def __init__(self) -> None:
             super().__init__()
             self.rate_limited = True
@@ -981,7 +985,7 @@ async def test_third_party_create_429_is_precreate_retryable(
         async def create_sandbox(self, **kwargs: Any) -> SandboxInfo:
             if self.rate_limited:
                 self.rate_limited = False
-                raise YuanrongAgentApiError(
+                raise AgentApiError(
                     "create rate limited", status_code=429,
                 )
             return await super().create_sandbox(**kwargs)
@@ -1014,7 +1018,7 @@ async def test_third_party_type_creates_via_yuanrong(agentos_workspace_root: str
             info.metadata["env_vars"] = {"TRACE_ID": "registry-trace", "FEATURE_FLAG": 1}
             return info
 
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     agent_manager = AgentManager()
     client = _router_client(yuanrong, RegistryWithEnvVars(), agent_manager)
 
@@ -1072,7 +1076,7 @@ async def test_third_party_keeps_registry_probes() -> None:
             info.metadata["runtime_spec"] = spec
             return info
 
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     client = _router_client(yuanrong, RegistryWithProbes(), AgentManager())
     try:
         await client.send_request(_envelope(agent_type="opencode"))
@@ -1093,7 +1097,7 @@ async def test_third_party_web_access_mode_probes_web_port() -> None:
             ]
             return info
 
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     client = _router_client(yuanrong, RegistryWithWeb(), AgentManager())
     try:
         await client.send_request(_envelope(agent_type="openclaw"))
@@ -1117,7 +1121,7 @@ async def test_third_party_web_access_mode_from_launch_spec_probes_web_port() ->
             }
             return info
 
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     client = _router_client(yuanrong, RegistryWithLaunchSpecWeb(), AgentManager())
     try:
         await client.send_request(_envelope(agent_type="openclaw"))
@@ -1136,7 +1140,7 @@ async def test_agent_switch_creates_without_forwarding_chat() -> None:
             info.metadata["env_vars"] = {"TRACE_ID": "switch-trace", "ENABLE_FLAG": True}
             return info
 
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     agent_manager = AgentManager()
     client = _router_client(
         yuanrong, RegistryWithEnvVars(), agent_manager, ssh_channel_endpoint=_ssh_channel()
@@ -1185,7 +1189,7 @@ async def test_agent_switch_creates_without_forwarding_chat() -> None:
 
 @pytest.mark.asyncio
 async def test_agent_switch_fails_without_ssh_endpoint() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     agent_manager = AgentManager()
     client = _router_client(yuanrong, FakeRegistryClient(), agent_manager)
 
@@ -1204,7 +1208,7 @@ async def test_agent_switch_fails_without_ssh_endpoint() -> None:
 
 @pytest.mark.asyncio
 async def test_agent_list_returns_registry_images_without_creating() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     registry = FakeRegistryClient()
     agent_manager = AgentManager()
     client = _router_client(yuanrong, registry, agent_manager)
@@ -1235,7 +1239,7 @@ async def test_agent_list_returns_registry_images_without_creating() -> None:
 
 @pytest.mark.asyncio
 async def test_agent_list_cmd_follows_requested_access_mode() -> None:
-    client = _router_client(FakeYuanRongClient(), FakeRegistryClient(), AgentManager())
+    client = _router_client(FakeControlClient(), FakeRegistryClient(), AgentManager())
 
     tui = await client.thirdagent_list(
         user_id="u1", current_agent_type="jiuwenswarm", access_mode="tui"
@@ -1275,7 +1279,7 @@ async def test_agent_list_and_switch_preserve_registry_name_case() -> None:
             assert image_name == "Claude-Code"
             return await super().get_image_info(image_name)
 
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     registry = MixedCaseRegistry()
     client = _router_client(
         yuanrong, registry, AgentManager(), ssh_channel_endpoint=_ssh_channel()
@@ -1309,7 +1313,7 @@ async def test_agent_list_and_switch_preserve_registry_name_case() -> None:
 
 @pytest.mark.asyncio
 async def test_agent_switch_reuses_existing_agent() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     agent_manager = AgentManager()
     client = _router_client(
         yuanrong, FakeRegistryClient(), agent_manager, ssh_channel_endpoint=_ssh_channel()
@@ -1337,7 +1341,7 @@ async def test_agent_switch_reuses_existing_agent() -> None:
 
 @pytest.mark.asyncio
 async def test_chat_after_switch_reuses_agent() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     agent_manager = AgentManager()
     client = _router_client(
         yuanrong, FakeRegistryClient(), agent_manager, ssh_channel_endpoint=_ssh_channel()
@@ -1365,7 +1369,7 @@ async def test_chat_after_switch_reuses_agent() -> None:
 
 @pytest.mark.asyncio
 async def test_switch_to_jiuwenswarm_is_direct_without_create() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     agent_manager = AgentManager()
     client = _router_client(
         yuanrong, FakeRegistryClient(), agent_manager, ssh_channel_endpoint=_ssh_channel()
@@ -1392,7 +1396,7 @@ async def test_switch_to_jiuwenswarm_is_direct_without_create() -> None:
 
 @pytest.mark.asyncio
 async def test_agent_switch_includes_ephemeral_ssh_private_key_when_issuer_set() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     agent_manager = AgentManager()
     client = AgentOSRouterClient(
         yuanrong, FakeRegistryClient(), agent_manager, ssh_channel_endpoint=_ssh_channel()
@@ -1420,7 +1424,7 @@ async def test_agent_switch_includes_ephemeral_ssh_private_key_when_issuer_set()
 
 @pytest.mark.asyncio
 async def test_agent_switch_fails_when_key_issuance_raises() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     agent_manager = AgentManager()
     client = AgentOSRouterClient(
         yuanrong, FakeRegistryClient(), agent_manager, ssh_channel_endpoint=_ssh_channel()
@@ -1447,7 +1451,7 @@ async def test_agent_switch_fails_when_key_issuance_raises() -> None:
 
 @pytest.mark.asyncio
 async def test_agent_switch_fails_when_issuer_returns_empty_key() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     agent_manager = AgentManager()
     client = AgentOSRouterClient(
         yuanrong, FakeRegistryClient(), agent_manager, ssh_channel_endpoint=_ssh_channel()
@@ -1470,7 +1474,7 @@ async def test_agent_switch_fails_when_issuer_returns_empty_key() -> None:
 
 @pytest.mark.asyncio
 async def test_agent_switch_omits_ssh_private_key_when_issuer_cleared() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     agent_manager = AgentManager()
     client = AgentOSRouterClient(
         yuanrong, FakeRegistryClient(), agent_manager, ssh_channel_endpoint=_ssh_channel()
@@ -1495,7 +1499,7 @@ async def test_agent_switch_omits_ssh_private_key_when_issuer_cleared() -> None:
 
 @pytest.mark.asyncio
 async def test_delete_agent_releases_yuanrong_sandbox() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     registry = FakeRegistryClient()
     agent_manager = AgentManager()
     client = _router_client(yuanrong, registry, agent_manager)
@@ -1517,7 +1521,7 @@ async def test_delete_agent_releases_yuanrong_sandbox() -> None:
 @pytest.mark.asyncio
 async def test_delete_agent_missing_is_noop() -> None:
     client = _router_client(
-        FakeYuanRongClient(), FakeRegistryClient(), AgentManager()
+        FakeControlClient(), FakeRegistryClient(), AgentManager()
     )
     assert await client.delete_agent("u1", "opencode") is False
 
@@ -1530,14 +1534,14 @@ class StubRelaySession:
 
 
 class StubSshRelay:
-    """Stands in for YuanrongSshRelay: run() blocks until released."""
+    """Stands in for SshRelay: run() blocks until released."""
 
     def __init__(self) -> None:
         self.run_instance_ids: list[str] = []
         self.failures: list[str] = []
         self.started = asyncio.Event()
         self.finish = asyncio.Event()
-        # Match YuanrongSshRelay: 3rdagent create reads this for the TCP probe.
+        # Match SshRelay: 3rdagent create reads this for the TCP probe.
         self.backend_port = 2222
 
     def fail_session(self, session: StubRelaySession, message: str) -> None:
@@ -1598,7 +1602,7 @@ def test_third_agent_probe_port_prefers_web_access_mode() -> None:
 
 @pytest.mark.asyncio
 async def test_reap_idle_once_deletes_idle_sandbox() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     registry = FakeRegistryClient()
     agent_manager = AgentManager()
     client = _router_client(
@@ -1626,7 +1630,7 @@ async def test_reap_idle_once_deletes_idle_sandbox() -> None:
 
 @pytest.mark.asyncio
 async def test_reap_idle_once_skips_recently_active_and_held_agents() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     agent_manager = AgentManager()
     client = _router_client(
         yuanrong,
@@ -1658,7 +1662,7 @@ async def test_reap_idle_once_skips_recently_active_and_held_agents() -> None:
 
 @pytest.mark.asyncio
 async def test_ssh_relay_holds_sandbox_until_disconnect() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     agent_manager = AgentManager()
     ssh_relay = StubSshRelay()
     client = _router_client(
@@ -1694,7 +1698,7 @@ async def test_ssh_relay_holds_sandbox_until_disconnect() -> None:
 
 @pytest.mark.asyncio
 async def test_stale_failed_runtime_is_reclaimed_without_rebuild() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     manager = AgentManager()
     client = _router_client(
         yuanrong,
@@ -1734,7 +1738,7 @@ async def test_stale_failed_runtime_is_reclaimed_without_rebuild() -> None:
 
 @pytest.mark.asyncio
 async def test_stale_failed_runtime_retires_unused_provisioned_sandbox() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     manager = AgentManager()
     client = _router_client(
         yuanrong,
@@ -1751,7 +1755,7 @@ async def test_stale_failed_runtime_retires_unused_provisioned_sandbox() -> None
             "u1", "opencode", creator=failing_creator,
         )
     runtime = (await manager.list_user_agents("u1"))[0]
-    async with client._sandbox_lifecycle(_sandbox_name("u1", "opencode")) as lifecycle:
+    async with client._sandbox_lifecycle(sandbox_name("u1", "opencode")) as lifecycle:
         lifecycle.provisioned_instance = "orphan-sbx"
     manager._runtimes[runtime.key].info.updated_at = time.time() - 301
 
@@ -1765,7 +1769,7 @@ async def test_stale_failed_runtime_retires_unused_provisioned_sandbox() -> None
 @pytest.mark.asyncio
 @pytest.mark.parametrize("alias_status", [AgentStatus.READY, AgentStatus.CREATING])
 async def test_stale_failed_runtime_keeps_sandbox_used_by_alias(alias_status) -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     manager = AgentManager(
         key_fields=["user_id", "agent_type", "session_id"],
     )
@@ -1794,7 +1798,7 @@ async def test_stale_failed_runtime_keeps_sandbox_used_by_alias(alias_status) ->
     )
     assert ready.info.sandbox_id == "shared-sbx"
     manager._runtimes[ready.key].info.status = alias_status
-    async with client._sandbox_lifecycle(_sandbox_name("u1", "opencode")) as lifecycle:
+    async with client._sandbox_lifecycle(sandbox_name("u1", "opencode")) as lifecycle:
         lifecycle.provisioned_instance = "shared-sbx"
     stored = manager._runtimes[failed.key]
     stored.info.status = AgentStatus.FAILED
@@ -1814,7 +1818,7 @@ async def test_stale_failed_runtime_keeps_sandbox_used_by_alias(alias_status) ->
 
 @pytest.mark.asyncio
 async def test_stale_failed_runtime_keeps_unfinished_create_attempt() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     manager = AgentManager()
     client = _router_client(
         yuanrong,
@@ -1835,7 +1839,7 @@ async def test_stale_failed_runtime_keeps_unfinished_create_attempt() -> None:
     async def noop_create() -> SandboxInfo:
         return SandboxInfo(sandbox_id="unused", metadata={})
 
-    async with client._sandbox_lifecycle(_sandbox_name("u1", "opencode")) as lifecycle:
+    async with client._sandbox_lifecycle(sandbox_name("u1", "opencode")) as lifecycle:
         lifecycle.provisioned_instance = "old-sbx"
         lifecycle.attempt = _SandboxAttempt("gen", "det", noop_create)
     manager._runtimes[runtime.key].info.updated_at = time.time() - 301
@@ -1844,7 +1848,7 @@ async def test_stale_failed_runtime_keeps_unfinished_create_attempt() -> None:
 
     assert yuanrong.delete_calls == []
     assert await manager.list_user_agents("u1") == []
-    lifecycle = client._sandbox_lifecycles.get(_sandbox_name("u1", "opencode"))
+    lifecycle = client._sandbox_lifecycles.get(sandbox_name("u1", "opencode"))
     assert lifecycle is not None
     assert lifecycle.attempt is not None
     assert lifecycle.provisioned_instance == "old-sbx"
@@ -1853,7 +1857,7 @@ async def test_stale_failed_runtime_keeps_unfinished_create_attempt() -> None:
 
 @pytest.mark.asyncio
 async def test_stale_failed_runtime_defers_pop_while_sandbox_retiring() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     manager = AgentManager()
     client = _router_client(
         yuanrong,
@@ -1871,7 +1875,7 @@ async def test_stale_failed_runtime_defers_pop_while_sandbox_retiring() -> None:
         )
     runtime = (await manager.list_user_agents("u1"))[0]
 
-    lifecycle_name = _sandbox_name("u1", "opencode")
+    lifecycle_name = sandbox_name("u1", "opencode")
     async with client._sandbox_lifecycle(lifecycle_name) as lifecycle:
         lifecycle.provisioned_instance = "new-sbx"
         lifecycle.retired_instance = "old-sbx"
@@ -1892,7 +1896,7 @@ async def test_stale_failed_runtime_defers_pop_while_sandbox_retiring() -> None:
 
 @pytest.mark.asyncio
 async def test_idle_delete_emits_idle_reaper_reason(caplog) -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     manager = AgentManager()
     client = _router_client(
         yuanrong,
@@ -1926,7 +1930,7 @@ async def test_idle_delete_emits_idle_reaper_reason(caplog) -> None:
 
 @pytest.mark.asyncio
 async def test_failed_reclaim_runs_when_idle_reaper_disabled() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     manager = AgentManager()
     client = _router_client(
         yuanrong,
@@ -1952,7 +1956,7 @@ async def test_failed_reclaim_runs_when_idle_reaper_disabled() -> None:
 
 @pytest.mark.asyncio
 async def test_idle_reaper_disabled_with_nonpositive_timeout() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     agent_manager = AgentManager()
     client = _router_client(
         yuanrong,
@@ -1978,7 +1982,7 @@ async def test_idle_reaper_disabled_with_nonpositive_timeout() -> None:
 
 @pytest.mark.asyncio
 async def test_idle_reaper_task_lifecycle_on_connect_disconnect() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     client = _router_client(
         yuanrong,
         FakeRegistryClient(),
@@ -2017,7 +2021,7 @@ async def test_agentos_third_agent_list_and_switch() -> None:
         AgentOSThirdAgent,
     )
 
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     registry = FakeRegistryClient()
     agent_manager = AgentManager()
     client = _router_client(
@@ -2061,7 +2065,7 @@ async def _ready_creator(agent_info: AgentInfo) -> AgentInfo:
 async def test_delayed_cleanup_uses_configured_timeout() -> None:
     """The wait must follow ``disconnect_cleanup_timeout_seconds``,
     not the old hardcoded 60s."""
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     agent_manager = AgentManager()
     client = _router_client(
         yuanrong,
@@ -2086,7 +2090,7 @@ async def test_delayed_cleanup_uses_configured_timeout() -> None:
 async def test_delayed_cleanup_skips_held_agents() -> None:
     """Like the idle reaper, a held agent (task_count > 0) must not be killed
     by the disconnect cleanup even after the timeout elapses."""
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     agent_manager = AgentManager()
     client = _router_client(
         yuanrong,
@@ -2115,7 +2119,7 @@ async def test_delayed_cleanup_skips_held_agents() -> None:
 async def test_delayed_cleanup_deletes_unheld_idle_builtin() -> None:
     """When the task is ended (task_count == 0) and idle past the timeout,
     the disconnect cleanup must delete the agent (mirroring the idle reaper)."""
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     registry = FakeRegistryClient()
     agent_manager = AgentManager()
     client = _router_client(
@@ -2148,7 +2152,7 @@ async def test_delayed_cleanup_deletes_unheld_idle_builtin() -> None:
 async def test_delayed_cleanup_skips_creating_or_non_builtin_agents() -> None:
     """Cleanup is gated by the same READY+task_count==0+idle triple as the
     idle reaper, so non-READY runtimes are not force-deleted."""
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     agent_manager = AgentManager()
     client = _router_client(
         yuanrong,
@@ -2177,7 +2181,7 @@ async def test_delayed_cleanup_skips_creating_or_non_builtin_agents() -> None:
 @pytest.mark.asyncio
 async def test_delayed_cleanup_cancelled_on_reconnect() -> None:
     """Reconnect during the wait window must cancel the pending cleanup task."""
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     agent_manager = AgentManager()
     client = _router_client(
         yuanrong,
@@ -2231,7 +2235,7 @@ async def _await_warmup(client: AgentOSRouterClient, user_id: str) -> None:
 
 @pytest.mark.asyncio
 async def test_web_connect_warms_builtin_sandbox_and_ws() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     agent_manager = AgentManager()
     client = _router_client(yuanrong, FakeRegistryClient(), agent_manager)
 
@@ -2240,8 +2244,8 @@ async def test_web_connect_warms_builtin_sandbox_and_ws() -> None:
 
     assert yuanrong.create_calls == 1
     assert yuanrong.ws_connect_uris == [
-        "ws://yuanrong.test:8888/serverless/v1/ws"
-        "?instance=sbx-1&tenant_id=default&port=18092"
+        "ws://yuanrong.test:8888/agent/ws"
+        "?target=urn%3Aadx%3Ainstance%3Asbx-1&port=18092"
     ]
     runtime = await agent_manager.get_agent("u1", "jiuwenswarm")
     assert runtime is not None
@@ -2251,7 +2255,7 @@ async def test_web_connect_warms_builtin_sandbox_and_ws() -> None:
 
 @pytest.mark.asyncio
 async def test_tui_connect_warms_builtin_sandbox() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     client = _router_client(yuanrong)
 
     await client._on_channel_event(_channel_event("u1", "connected", "tui"))
@@ -2264,7 +2268,7 @@ async def test_tui_connect_warms_builtin_sandbox() -> None:
 
 @pytest.mark.asyncio
 async def test_ssh_connect_does_not_warmup() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     client = _router_client(yuanrong)
 
     await client._on_channel_event(_channel_event("u1", "connected", "ssh"))
@@ -2276,7 +2280,7 @@ async def test_ssh_connect_does_not_warmup() -> None:
 
 @pytest.mark.asyncio
 async def test_connect_warmup_coalesces_inflight_for_same_user() -> None:
-    class SlowYuanRongClient(FakeYuanRongClient):
+    class SlowControlClient(FakeControlClient):
         def __init__(self) -> None:
             super().__init__()
             self.gate = asyncio.Event()
@@ -2285,7 +2289,7 @@ async def test_connect_warmup_coalesces_inflight_for_same_user() -> None:
             await self.gate.wait()
             return await super().create_sandbox(**kwargs)
 
-    yuanrong = SlowYuanRongClient()
+    yuanrong = SlowControlClient()
     client = _router_client(yuanrong)
 
     await client._on_channel_event(_channel_event("u1", "connected", "web"))
@@ -2302,7 +2306,7 @@ async def test_connect_warmup_coalesces_inflight_for_same_user() -> None:
 
 @pytest.mark.asyncio
 async def test_connect_warmup_disabled_skips_create() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     client = _router_client(yuanrong, connect_warmup_enabled=False)
 
     await client._on_channel_event(_channel_event("u1", "connected", "web"))
@@ -2314,7 +2318,7 @@ async def test_connect_warmup_disabled_skips_create() -> None:
 
 @pytest.mark.asyncio
 async def test_connect_warmup_skips_when_session_id_in_key_fields() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     client = _router_client(
         yuanrong,
         agent_manager=AgentManager(
@@ -2331,11 +2335,11 @@ async def test_connect_warmup_skips_when_session_id_in_key_fields() -> None:
 
 @pytest.mark.asyncio
 async def test_connect_warmup_failure_does_not_raise() -> None:
-    class FailingYuanRongClient(FakeYuanRongClient):
+    class FailingControlClient(FakeControlClient):
         async def create_sandbox(self, **kwargs: Any) -> SandboxInfo:
             raise RuntimeError("create failed")
 
-    yuanrong = FailingYuanRongClient()
+    yuanrong = FailingControlClient()
     agent_manager = AgentManager()
     client = _router_client(yuanrong, agent_manager=agent_manager)
 
@@ -2351,7 +2355,7 @@ async def test_connect_warmup_failure_does_not_raise() -> None:
 async def test_chat_after_failed_warmup_create_retries() -> None:
     """Warmup create failure must not pin a FAILED runtime that blocks chat."""
 
-    class FailOnceYuanRong(FakeYuanRongClient):
+    class FailOnceEnvironment(FakeControlClient):
         def __init__(self) -> None:
             super().__init__()
             self._fail_next = True
@@ -2362,7 +2366,7 @@ async def test_chat_after_failed_warmup_create_retries() -> None:
                 raise RuntimeError("create failed")
             return await super().create_sandbox(**kwargs)
 
-    yuanrong = FailOnceYuanRong()
+    yuanrong = FailOnceEnvironment()
     agent_manager = AgentManager()
     client = _router_client(yuanrong, agent_manager=agent_manager)
 
@@ -2388,7 +2392,7 @@ async def test_warmup_ws_failure_keeps_ready_runtime() -> None:
         async def connect(self, uri: str) -> None:
             raise RuntimeError("ws failed")
 
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     agent_manager = AgentManager()
     client = _router_client(
         yuanrong,
@@ -2423,7 +2427,7 @@ async def test_sandbox_prewarm_lifecycle_protected_during_warmup(monkeypatch) ->
     class GatedWsClient(FakeAgentWsClient):
         """connect 阻塞在 gate 上，模拟实例 WS 预热在途窗口。"""
 
-        def __init__(self, yuanrong: FakeYuanRongClient) -> None:
+        def __init__(self, yuanrong: FakeControlClient) -> None:
             super().__init__(yuanrong)
             self.gate = asyncio.Event()
 
@@ -2431,7 +2435,7 @@ async def test_sandbox_prewarm_lifecycle_protected_during_warmup(monkeypatch) ->
             await self.gate.wait()
             await super().connect(uri)
 
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     agent_manager = AgentManager()
     gated_clients: list[GatedWsClient] = []
 
@@ -2495,7 +2499,7 @@ async def test_leader_cancel_wakes_follower_and_clears_inflight() -> None:
     gate = asyncio.Event()
 
     class GatedWsClient(FakeAgentWsClient):
-        def __init__(self, yuanrong: FakeYuanRongClient) -> None:
+        def __init__(self, yuanrong: FakeControlClient) -> None:
             super().__init__(yuanrong)
             self.gate = gate
 
@@ -2503,7 +2507,7 @@ async def test_leader_cancel_wakes_follower_and_clears_inflight() -> None:
             await self.gate.wait()
             await super().connect(uri)
 
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     agent_manager = AgentManager()
     gated_clients: list[GatedWsClient] = []
 
@@ -2554,7 +2558,7 @@ async def test_leader_cancel_wakes_follower_and_clears_inflight() -> None:
 
 @pytest.mark.asyncio
 async def test_chat_after_connect_warmup_reuses_sandbox() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     client = _router_client(yuanrong)
 
     await client._on_channel_event(_channel_event("u1", "connected", "web"))
@@ -2604,7 +2608,7 @@ async def test_register_agent_retries_connection_error_until_success() -> None:
     )
     agent_manager = AgentManager()
     info = await _seed_ready_runtime(agent_manager)
-    client = _router_client(FakeYuanRongClient(), registry, agent_manager)
+    client = _router_client(FakeControlClient(), registry, agent_manager)
 
     with patch(
         "agent_gateway.extensions.agentos.agentos_router.router_client.asyncio.sleep",
@@ -2614,7 +2618,7 @@ async def test_register_agent_retries_connection_error_until_success() -> None:
 
     assert registry.register_calls == 3
     assert len(registry.registered) == 1
-    # placement 更新（FakeYuanRongClient.get_agent_info 返回 node/sandbox ip）
+    # placement 更新（FakeControlClient.get_agent_info 返回 node/sandbox ip）
     assert len(registry.updated_instances) == 1
     await client.shutdown()
 
@@ -2627,7 +2631,7 @@ async def test_register_agent_conflict_retries_once() -> None:
     )
     agent_manager = AgentManager()
     info = await _seed_ready_runtime(agent_manager)
-    client = _router_client(FakeYuanRongClient(), registry, agent_manager)
+    client = _router_client(FakeControlClient(), registry, agent_manager)
 
     await client._register_agent(info)
 
@@ -2644,7 +2648,7 @@ async def test_register_agent_validation_fails_fast() -> None:
     )
     agent_manager = AgentManager()
     info = await _seed_ready_runtime(agent_manager)
-    client = _router_client(FakeYuanRongClient(), registry, agent_manager)
+    client = _router_client(FakeControlClient(), registry, agent_manager)
 
     await client._register_agent(info)
 
@@ -2659,7 +2663,7 @@ async def test_register_agent_stops_when_agent_deleted_mid_retry() -> None:
     """退避重试期间 agent 被删除：终止重试，不把已清理实例写回注册中心。"""
     registry = FlakyRegistryClient([RegistryConnectionError("boom")])
     agent_manager = AgentManager()
-    client = _router_client(FakeYuanRongClient(), registry, agent_manager)
+    client = _router_client(FakeControlClient(), registry, agent_manager)
     info = await _seed_ready_runtime(agent_manager)
 
     release = asyncio.Event()
@@ -2700,7 +2704,7 @@ async def test_register_agent_gives_up_at_backoff_cap() -> None:
     )
     agent_manager = AgentManager()
     info = await _seed_ready_runtime(agent_manager)
-    client = _router_client(FakeYuanRongClient(), registry, agent_manager)
+    client = _router_client(FakeControlClient(), registry, agent_manager)
 
     with patch(
         "agent_gateway.extensions.agentos.agentos_router.router_client.asyncio.sleep",
@@ -2729,7 +2733,7 @@ def test_extract_placement_ips_accepts_jiuwenbox_aliases() -> None:
     ) == ("", "10.64.0.2")
 
 
-class DelayedPlacementYuanRongClient(FakeYuanRongClient):
+class DelayedPlacementControlClient(FakeControlClient):
     """GET before running has no IPs; wait_until_running then returns real IPs."""
 
     def __init__(self) -> None:
@@ -2754,8 +2758,8 @@ class DelayedPlacementYuanRongClient(FakeYuanRongClient):
         return await self.get_agent_info(instance_id)
 
 
-class JiuwenboxIpYuanRongClient(FakeYuanRongClient):
-    """YuanRong GET exposes jiuwenbox ``ip_address`` instead of sandbox_ip."""
+class JiuwenboxIpControlClient(FakeControlClient):
+    """Environment GET exposes jiuwenbox ``ip_address`` instead of sandbox_ip."""
 
     async def get_agent_info(self, instance_id: str) -> dict:
         return {
@@ -2773,7 +2777,7 @@ class JiuwenboxIpYuanRongClient(FakeYuanRongClient):
 @pytest.mark.asyncio
 async def test_register_agent_patches_placement_after_running() -> None:
     """create 后立即 GET 没有 IP；等到 running 再 PATCH 真实 node/sandbox IP."""
-    yuanrong = DelayedPlacementYuanRongClient()
+    yuanrong = DelayedPlacementControlClient()
     registry = FakeRegistryClient()
     agent_manager = AgentManager()
     info = await _seed_ready_runtime(agent_manager)
@@ -2796,8 +2800,8 @@ async def test_register_agent_patches_placement_after_running() -> None:
 
 @pytest.mark.asyncio
 async def test_register_agent_patches_jiuwenbox_ip_address() -> None:
-    """YuanRong 透传 jiuwenbox ip_address 时，注册中心 address 仍 patch 为实际 IP."""
-    yuanrong = JiuwenboxIpYuanRongClient()
+    """Environment 透传 jiuwenbox ip_address 时，注册中心 address 仍 patch 为实际 IP."""
+    yuanrong = JiuwenboxIpControlClient()
     registry = FakeRegistryClient()
     agent_manager = AgentManager()
     info = await _seed_ready_runtime(agent_manager)
@@ -2820,7 +2824,7 @@ async def test_register_agent_patches_jiuwenbox_ip_address() -> None:
 @pytest.mark.asyncio
 async def test_register_agent_skips_placement_when_ips_missing() -> None:
     """running 后仍无 IP：不 PATCH，保留注册时的 placeholder address."""
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
 
     async def _empty_info(instance_id: str) -> dict:
         return {"instance_id": instance_id, "status": "running"}
@@ -2838,18 +2842,18 @@ async def test_register_agent_skips_placement_when_ips_missing() -> None:
     await client.shutdown()
 
 
-class NeverRunningYuanRongClient(FakeYuanRongClient):
+class NeverRunningControlClient(FakeControlClient):
     async def wait_until_running(self, instance_id: str, **_kwargs: Any) -> dict:
         self.wait_running_calls.append(instance_id)
-        raise YuanrongAgentApiError(
+        raise AgentApiError(
             f"agent instance not running after 60s: instance_id={instance_id}"
         )
 
 
 @pytest.mark.asyncio
 async def test_register_agent_deletes_sandbox_and_registry_when_never_running() -> None:
-    """create 已登记但一直未 running：删 YuanRong 沙箱并注销注册中心条目。"""
-    yuanrong = NeverRunningYuanRongClient()
+    """create 已登记但一直未 running：删 Environment 沙箱并注销注册中心条目。"""
+    yuanrong = NeverRunningControlClient()
     registry = FakeRegistryClient()
     agent_manager = AgentManager()
     info = await _seed_ready_runtime(agent_manager)
@@ -2877,7 +2881,7 @@ async def test_register_agent_deletes_sandbox_and_registry_when_never_running() 
 @pytest.mark.asyncio
 async def test_send_request_cleans_up_when_create_never_reaches_running() -> None:
     """请求路径 create 成功后探针不过：删沙箱、注销登记、不留下 READY runtime。"""
-    yuanrong = NeverRunningYuanRongClient()
+    yuanrong = NeverRunningControlClient()
     registry = FakeRegistryClient()
     agent_manager = AgentManager()
     client = _router_client(yuanrong, registry, agent_manager)
@@ -2894,21 +2898,21 @@ async def test_send_request_cleans_up_when_create_never_reaches_running() -> Non
         await client.shutdown()
 
 
-# ── YuanRong 删除幂等 + 强制清理不被中断（issue #3497 §7.3） ────────────────
+# ── Environment 删除幂等 + 强制清理不被中断（issue #3497 §7.3） ────────────────
 
 
-class FailingDeleteYuanRongClient(FakeYuanRongClient):
+class FailingDeleteControlClient(FakeControlClient):
     async def delete_sandbox(self, sandbox_id: str) -> None:
         self.delete_calls.append(sandbox_id)
-        raise YuanrongAgentApiError(
+        raise AgentApiError(
             "agent API failed: http_status=500, code=500, message='boom'"
         )
 
 
 @pytest.mark.asyncio
 async def test_delete_agent_survives_yuanrong_delete_failure() -> None:
-    """强制删除路径：YuanRong 删除失败不阻断内存 runtime 移除与注册中心注销。"""
-    yuanrong = FailingDeleteYuanRongClient()
+    """强制删除路径：Environment 删除失败不阻断内存 runtime 移除与注册中心注销。"""
+    yuanrong = FailingDeleteControlClient()
     registry = FakeRegistryClient()
     agent_manager = AgentManager()
     client = _router_client(yuanrong, registry, agent_manager)
@@ -2931,7 +2935,7 @@ async def test_delete_agent_survives_yuanrong_delete_failure() -> None:
 # ── create 超时幂等回查（issue #3497 §7.2） ────────────────────────────────
 
 
-class TimeoutOnceYuanRongClient(FakeYuanRongClient):
+class TimeoutOnceControlClient(FakeControlClient):
     """首次 create 抛超时（半成功模拟），重试（同名幂等回查）成功。"""
 
     def __init__(self) -> None:
@@ -2953,7 +2957,7 @@ class TimeoutOnceYuanRongClient(FakeYuanRongClient):
             {"namespace": namespace, "name": name, "workspace": workspace}
         )
         if len(self.attempt_payloads) == 1:
-            raise YuanrongAgentTimeoutError("request timeout after 300s")
+            raise AgentTimeoutError("request timeout after 300s")
         return await super().create_sandbox(
             namespace=namespace,
             name=name,
@@ -2965,20 +2969,20 @@ class TimeoutOnceYuanRongClient(FakeYuanRongClient):
         )
 
 
-class AlwaysTimeoutYuanRongClient(FakeYuanRongClient):
+class AlwaysTimeoutControlClient(FakeControlClient):
     def __init__(self) -> None:
         super().__init__()
         self.create_attempts = 0
 
     async def create_sandbox(self, **kwargs: Any) -> SandboxInfo:
         self.create_attempts += 1
-        raise YuanrongAgentTimeoutError("request timeout after 300s")
+        raise AgentTimeoutError("request timeout after 300s")
 
 
 @pytest.mark.asyncio
 async def test_create_agent_timeout_does_not_repost_blindly() -> None:
     """An ambiguous create result is never re-POSTed by the same request."""
-    yuanrong = TimeoutOnceYuanRongClient()
+    yuanrong = TimeoutOnceControlClient()
     registry = FakeRegistryClient()
     agent_manager = AgentManager()
     client = _router_client(yuanrong, registry, agent_manager)
@@ -2994,7 +2998,7 @@ async def test_create_agent_timeout_does_not_repost_blindly() -> None:
 @pytest.mark.asyncio
 async def test_create_agent_repeated_timeout_stays_pending() -> None:
     """Repeated ambiguous create results keep rebuild pending; no blind retry."""
-    yuanrong = AlwaysTimeoutYuanRongClient()
+    yuanrong = AlwaysTimeoutControlClient()
     registry = FakeRegistryClient()
     agent_manager = AgentManager()
     client = _router_client(yuanrong, registry, agent_manager)
@@ -3496,7 +3500,7 @@ def test_load_router_config_clamps_wait_running_below_probe_budget(
 
 @pytest.mark.asyncio
 async def test_create_uses_configured_workspace_root(tmp_path) -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     ws_user = tmp_path / "ws" / "u1"
     ws_user.mkdir(parents=True)
     ws_user.chmod(0o777)
@@ -3538,6 +3542,8 @@ async def test_agentos_extension_registers_when_selected(
             },
         }
     }
+    monkeypatch.setenv("ROUTER_ONLY_TEST_TOKEN", "test-token")
+    config["gateway"]["adx"] = {"ingress_url": "https://adx.example", "tenant": "test", "token_env": "ROUTER_ONLY_TEST_TOKEN"}
     monkeypatch.setattr(agentos_router_impl, "get_config", lambda: config)
 
     class Registry:
@@ -3620,7 +3626,7 @@ async def test_send_request_cleans_up_when_ws_connect_exhausted(monkeypatch) -> 
     monkeypatch.setattr(router_mod, "_WS_CONNECT_RETRY_INTERVAL_SECONDS", 0.01)
     monkeypatch.setattr(router_mod, "_WS_CONNECT_READY_TIMEOUT_SECONDS", 0.05)
 
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     registry = FakeRegistryClient()
     agent_manager = AgentManager()
     client = _router_client(
@@ -3647,7 +3653,7 @@ async def test_send_request_cleans_up_when_ws_connect_exhausted(monkeypatch) -> 
 @pytest.mark.asyncio
 async def test_send_request_cleans_up_on_network_error_during_send() -> None:
     """请求阶段连接断开（connection closed）→ 强制清理沙箱与注册条目."""
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     registry = FakeRegistryClient()
     agent_manager = AgentManager()
     shared: dict[str, SendFailsWsClient] = {}
@@ -3679,7 +3685,7 @@ async def test_send_request_cleans_up_on_network_error_during_send() -> None:
 @pytest.mark.asyncio
 async def test_send_request_stream_cleans_up_on_unary_timeout() -> None:
     """流式请求遇网络层超时 → 清理 + 产出错误 chunk（不裸抛）."""
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     registry = FakeRegistryClient()
     agent_manager = AgentManager()
 
@@ -3711,7 +3717,7 @@ async def test_send_request_stream_cleans_up_on_unary_timeout() -> None:
 @pytest.mark.asyncio
 async def test_send_request_non_network_error_not_cleaned_up() -> None:
     """业务层错误（非网络）原样抛出，不触发清理."""
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     registry = FakeRegistryClient()
     agent_manager = AgentManager()
 
@@ -3741,7 +3747,7 @@ async def test_send_request_non_network_error_not_cleaned_up() -> None:
 @pytest.mark.asyncio
 async def test_register_agent_skips_when_runtime_already_cleaned() -> None:
     """清理先于后台注册执行时，迟到的注册不得把僵尸条目写回注册中心."""
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     registry = FakeRegistryClient()
     agent_manager = AgentManager()
     client = _router_client(yuanrong, registry, agent_manager)
@@ -3768,7 +3774,7 @@ async def test_register_agent_skips_when_runtime_already_cleaned() -> None:
 # --------------------------------------------------------------------------
 
 def test_apply_remote_overrides_updates_idle_timeout() -> None:
-    client = _router_client(FakeYuanRongClient(), sandbox_idle_timeout_seconds=600.0)
+    client = _router_client(FakeControlClient(), sandbox_idle_timeout_seconds=600.0)
 
     client.apply_remote_overrides(
         {"agent_sandbox": {"idle_timeout": 120}}
@@ -3779,7 +3785,7 @@ def test_apply_remote_overrides_updates_idle_timeout() -> None:
 
 def test_apply_remote_overrides_updates_agent_sandbox_resources() -> None:
     client = _router_client(
-        FakeYuanRongClient(),
+        FakeControlClient(),
         agent_sandbox_cpu=2000,
         agent_sandbox_memory=4096,
     )
@@ -3793,7 +3799,7 @@ def test_apply_remote_overrides_updates_agent_sandbox_resources() -> None:
 
 
 def test_apply_remote_overrides_logs_tool_sandbox_only_on_change() -> None:
-    client = _router_client(FakeYuanRongClient())
+    client = _router_client(FakeControlClient())
     log_path = "agent_gateway.extensions.agentos.agentos_router.router_client.log_agentos"
     overrides = {"tool_sandbox": {"idle_timeout": 45, "cpu": 4000, "memory": 8192}}
 
@@ -3812,7 +3818,7 @@ def test_apply_remote_overrides_logs_tool_sandbox_only_on_change() -> None:
 
 def test_apply_remote_overrides_ignores_unrelated_sections() -> None:
     client = _router_client(
-        FakeYuanRongClient(),
+        FakeControlClient(),
         sandbox_idle_timeout_seconds=600.0,
         agent_sandbox_cpu=2000,
         agent_sandbox_memory=4096,
@@ -3832,7 +3838,7 @@ def test_apply_remote_overrides_ignores_unrelated_sections() -> None:
 
 def test_apply_remote_overrides_tolerates_missing_path() -> None:
     client = _router_client(
-        FakeYuanRongClient(),
+        FakeControlClient(),
         sandbox_idle_timeout_seconds=600.0,
         agent_sandbox_cpu=2000,
         agent_sandbox_memory=4096,
@@ -3852,7 +3858,7 @@ def test_apply_remote_overrides_env_does_not_win_over_remote(monkeypatch) -> Non
     monkeypatch.setenv("AGENTOS_BUILTIN_AGENT_CPU", "1111")
     monkeypatch.setenv("AGENTOS_BUILTIN_AGENT_MEMORY", "2222")
     client = _router_client(
-        FakeYuanRongClient(),
+        FakeControlClient(),
         sandbox_idle_timeout_seconds=600.0,
         agent_sandbox_cpu=1111,
         agent_sandbox_memory=2222,
@@ -3874,7 +3880,7 @@ def test_apply_remote_overrides_absent_field_does_not_roll_back() -> None:
     # the last pushed value stays (last-known-good), it is not treated as a
     # signal to fall back to env/yaml.
     client = _router_client(
-        FakeYuanRongClient(),
+        FakeControlClient(),
         sandbox_idle_timeout_seconds=600.0,
         agent_sandbox_cpu=2000,
         agent_sandbox_memory=4096,
@@ -3897,7 +3903,7 @@ def test_apply_remote_overrides_absent_field_does_not_roll_back() -> None:
 
 @pytest.mark.asyncio
 async def test_apply_remote_overrides_disables_idle_reclaim_but_keeps_reaper() -> None:
-    client = _router_client(FakeYuanRongClient(), sandbox_idle_timeout_seconds=600.0)
+    client = _router_client(FakeControlClient(), sandbox_idle_timeout_seconds=600.0)
     client._closed = False
     client._ensure_idle_reaper_task()
     task = client._idle_reaper_task
@@ -3915,7 +3921,7 @@ async def test_apply_remote_overrides_disables_idle_reclaim_but_keeps_reaper() -
 
 @pytest.mark.asyncio
 async def test_apply_remote_overrides_starts_reaper_when_enabled() -> None:
-    client = _router_client(FakeYuanRongClient(), sandbox_idle_timeout_seconds=0)
+    client = _router_client(FakeControlClient(), sandbox_idle_timeout_seconds=0)
     client._closed = False
     assert client._idle_reaper_task is None
 
@@ -3930,7 +3936,7 @@ async def test_apply_remote_overrides_starts_reaper_when_enabled() -> None:
 
 @pytest.mark.asyncio
 async def test_apply_remote_overrides_keeps_reaper_running_on_value_change() -> None:
-    client = _router_client(FakeYuanRongClient(), sandbox_idle_timeout_seconds=600.0)
+    client = _router_client(FakeControlClient(), sandbox_idle_timeout_seconds=600.0)
     client._closed = False
     client._ensure_idle_reaper_task()
     existing = client._idle_reaper_task
@@ -3946,7 +3952,7 @@ async def test_apply_remote_overrides_keeps_reaper_running_on_value_change() -> 
 
 @pytest.mark.asyncio
 async def test_openclaw_create_does_not_default_web_port() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     agent_manager = AgentManager()
     client = _router_client(
         yuanrong, FakeRegistryClient(), agent_manager, ssh_channel_endpoint=_ssh_channel()
@@ -3977,7 +3983,7 @@ async def test_http_web_access_mode_records_web_port() -> None:
             ]
             return info
 
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     agent_manager = AgentManager()
     client = _router_client(
         yuanrong,
@@ -4004,7 +4010,7 @@ async def test_http_web_access_mode_records_web_port() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_web_endpoint_http_and_ws() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     agent_manager = AgentManager()
     client = _router_client(yuanrong, FakeRegistryClient(), agent_manager)
     key = AgentRuntime.build_key(
@@ -4022,14 +4028,14 @@ async def test_resolve_web_endpoint_http_and_ws() -> None:
         http_url = await client.resolve_web_endpoint("u1", "openclaw", "http")
         ws_url = await client.resolve_web_endpoint("u1", "openclaw", "ws")
         assert http_url == (
-            "http://yuanrong.test:8888/serverless/v1/http"
-            "?instance=sbx-web&tenant_id=default&port=18789"
+            "http://yuanrong.test:8888/agent/http"
+            "?target=urn%3Aadx%3Ainstance%3Asbx-web&port=18789"
         )
         assert ws_url == (
-            "ws://yuanrong.test:8888/serverless/v1/http"
-            "?instance=sbx-web&tenant_id=default&port=18789"
+            "ws://yuanrong.test:8888/agent/http"
+            "?target=urn%3Aadx%3Ainstance%3Asbx-web&port=18789"
         )
-        assert "/serverless/v1/ws" not in ws_url
+        assert "/agent/ws" not in ws_url
         stored = agent_manager._runtimes[key]
         assert stored.task_count == 0
     finally:
@@ -4038,7 +4044,7 @@ async def test_resolve_web_endpoint_http_and_ws() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_web_endpoint_unknown_protocol_and_wss_scheme() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     agent_manager = AgentManager()
     client = _router_client(yuanrong, FakeRegistryClient(), agent_manager)
     key = AgentRuntime.build_key(
@@ -4056,12 +4062,12 @@ async def test_resolve_web_endpoint_unknown_protocol_and_wss_scheme() -> None:
     )
     try:
         assert await client.resolve_web_endpoint("u1", "openclaw", "tcp") is None
-        # https frontend → wss, still on the /serverless/v1/http tunnel path
-        yuanrong.frontend_endpoint = "https://yuanrong.test:8888"
+        # https frontend → wss, still on the /agent/http tunnel path
+        yuanrong.ingress_url = "https://yuanrong.test:8888"
         wss_url = await client.resolve_web_endpoint("u1", "openclaw", "ws")
         assert wss_url == (
-            "wss://yuanrong.test:8888/serverless/v1/http"
-            "?instance=sbx-web&tenant_id=default&port=18789"
+            "wss://yuanrong.test:8888/agent/http"
+            "?target=urn%3Aadx%3Ainstance%3Asbx-web&port=18789"
         )
     finally:
         await client.shutdown()
@@ -4069,7 +4075,7 @@ async def test_resolve_web_endpoint_unknown_protocol_and_wss_scheme() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_web_endpoint_acquire_holds_idle_reaper() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     agent_manager = AgentManager()
     client = _router_client(
         yuanrong,
@@ -4111,7 +4117,7 @@ async def test_resolve_web_endpoint_acquire_holds_idle_reaper() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_web_endpoint_acquire_without_port_does_not_hold() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     agent_manager = AgentManager()
     client = _router_client(yuanrong, FakeRegistryClient(), agent_manager)
     key = AgentRuntime.build_key(
@@ -4136,7 +4142,7 @@ async def test_resolve_web_endpoint_acquire_without_port_does_not_hold() -> None
 
 @pytest.mark.asyncio
 async def test_resolve_web_endpoint_requires_web_port() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     agent_manager = AgentManager()
     client = _router_client(yuanrong, FakeRegistryClient(), agent_manager)
     key = AgentRuntime.build_key(
@@ -4166,15 +4172,15 @@ async def test_resolve_web_endpoint_creates_when_missing() -> None:
             ]
             return info
 
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     agent_manager = AgentManager()
     client = _router_client(yuanrong, RegistryWithHttpWeb(), agent_manager)
     try:
         url = await client.resolve_web_endpoint("u1", "claude-code", "http")
         assert yuanrong.create_calls == 1
         assert url == (
-            "http://yuanrong.test:8888/serverless/v1/http"
-            "?instance=sbx-1&tenant_id=default&port=18789"
+            "http://yuanrong.test:8888/agent/http"
+            "?target=urn%3Aadx%3Ainstance%3Asbx-1&port=18789"
         )
         runtime = await agent_manager.get_agent("u1", "claude-code")
         assert runtime is not None
@@ -4188,7 +4194,7 @@ async def test_resolve_web_endpoint_creates_when_missing() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_web_endpoint_creating_raises_busy() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     agent_manager = AgentManager()
     client = _router_client(yuanrong, FakeRegistryClient(), agent_manager)
     key = AgentRuntime.build_key(
@@ -4228,7 +4234,7 @@ async def test_agentos_router_extension_delegates_web_endpoint() -> None:
     assert captured["args"] == ("u1", "openclaw", "http", True)
 
 
-class _GatedYuanRong(FakeYuanRongClient):
+class _GatedEnvironment(FakeControlClient):
     """Blocks ``wait_until_running`` until released; queues one token per entry."""
 
     def __init__(self) -> None:
@@ -4257,8 +4263,8 @@ class _RegistryWithHttpWeb(FakeRegistryClient):
 
 
 _WEB_HTTP_URL = (
-    "http://yuanrong.test:8888/serverless/v1/http"
-    "?instance=sbx-web&tenant_id=default&port=18789"
+    "http://yuanrong.test:8888/agent/http"
+    "?target=urn%3Aadx%3Ainstance%3Asbx-web&port=18789"
 )
 
 
@@ -4291,7 +4297,7 @@ async def _drain_tasks(tasks: list[asyncio.Task]) -> None:
 @pytest.mark.asyncio
 async def test_resolve_web_endpoint_concurrent_requests_share_readiness() -> None:
     """All requests for one sandbox wait the same readiness, not just the creator."""
-    yuanrong = _GatedYuanRong()
+    yuanrong = _GatedEnvironment()
     agent_manager = AgentManager()
     client = _router_client(yuanrong, FakeRegistryClient(), agent_manager)
     _seed_ready_web_runtime(agent_manager)
@@ -4321,7 +4327,7 @@ async def test_resolve_web_endpoint_concurrent_requests_share_readiness() -> Non
 @pytest.mark.asyncio
 async def test_resolve_web_endpoint_cancel_releases_activity_hold() -> None:
     """Cancelling the readiness wait must release the acquired activity hold."""
-    yuanrong = _GatedYuanRong()
+    yuanrong = _GatedEnvironment()
     agent_manager = AgentManager()
     client = _router_client(yuanrong, FakeRegistryClient(), agent_manager)
     _seed_ready_web_runtime(agent_manager)
@@ -4351,7 +4357,7 @@ async def test_resolve_web_endpoint_cancel_releases_activity_hold() -> None:
 @pytest.mark.asyncio
 async def test_resolve_web_endpoint_waits_for_running_after_create() -> None:
     """Real create path: the resolving request only returns once the sandbox runs."""
-    yuanrong = _GatedYuanRong()
+    yuanrong = _GatedEnvironment()
     agent_manager = AgentManager()
     client = _router_client(yuanrong, _RegistryWithHttpWeb(), agent_manager)
     tasks: list[asyncio.Task] = []
@@ -4366,8 +4372,8 @@ async def test_resolve_web_endpoint_waits_for_running_after_create() -> None:
 
         yuanrong.release()
         assert await task == (
-            "http://yuanrong.test:8888/serverless/v1/http"
-            "?instance=sbx-1&tenant_id=default&port=18789"
+            "http://yuanrong.test:8888/agent/http"
+            "?target=urn%3Aadx%3Ainstance%3Asbx-1&port=18789"
         )
     finally:
         yuanrong.release()
@@ -4411,7 +4417,7 @@ async def test_delete_waits_for_creation_before_lifecycle_lock(monkeypatch, tmp_
         })
 
     frontend = SimpleNamespace(
-        agent_namespace='default', frontend_endpoint='http://frontend.test',
+        agent_namespace='default', ingress_url='http://frontend.test',
         create_sandbox=AsyncMock(return_value=SandboxInfo(sandbox_id='same-id', metadata={})),
         delete_sandbox=AsyncMock(), disconnect=AsyncMock(),
         wait_until_running=AsyncMock(return_value={'status': 'running'}),
@@ -4454,7 +4460,7 @@ async def test_delete_waits_for_creation_before_lifecycle_lock(monkeypatch, tmp_
     (AgentPreCreateError('missing workspace'), 404),
 ])
 async def test_web_rebuild_pending_is_retryable_but_missing_endpoint_is_404(error, status):
-    frontend = SimpleNamespace(agent_namespace='default', frontend_endpoint='http://frontend.test', disconnect=AsyncMock())
+    frontend = SimpleNamespace(agent_namespace='default', ingress_url='http://frontend.test', disconnect=AsyncMock())
     registry = SimpleNamespace(close=AsyncMock())
     router = AgentOSRouterClient(frontend, registry, AgentManager())
     router._create_agent = AsyncMock(side_effect=error)
@@ -4471,7 +4477,7 @@ async def test_web_rebuild_pending_is_retryable_but_missing_endpoint_is_404(erro
 async def test_delete_does_not_remove_replacement_after_creation_settles(monkeypatch):
     entered, release, waiting, settled, resume = (asyncio.Event() for _ in range(5))
     manager = AgentManager()
-    frontend = SimpleNamespace(agent_namespace='default', frontend_endpoint='http://frontend.test', disconnect=AsyncMock())
+    frontend = SimpleNamespace(agent_namespace='default', ingress_url='http://frontend.test', disconnect=AsyncMock())
     router = AgentOSRouterClient(frontend, SimpleNamespace(close=AsyncMock()), manager)
 
     async def first_creator(_info):
@@ -4520,7 +4526,7 @@ async def test_delete_returns_when_create_wait_times_out():
     entered, release = asyncio.Event(), asyncio.Event()
     manager = AgentManager(creating_timeout_seconds=0.1)
     frontend = SimpleNamespace(
-        agent_namespace='default', frontend_endpoint='http://frontend.test',
+        agent_namespace='default', ingress_url='http://frontend.test',
         delete_sandbox=AsyncMock(), disconnect=AsyncMock(),
     )
     registry = SimpleNamespace(unregister_agent=AsyncMock(), close=AsyncMock())
@@ -4555,7 +4561,7 @@ async def test_delete_then_rebuild_uses_distinct_physical_ids(monkeypatch, tmp_p
 
     class Frontend:
         agent_namespace = 'default'
-        frontend_endpoint = 'http://frontend.test'
+        ingress_url = 'http://frontend.test'
 
         async def create_sandbox(self, **kwargs):
             posts.append(kwargs)
@@ -4571,7 +4577,7 @@ async def test_delete_then_rebuild_uses_distinct_physical_ids(monkeypatch, tmp_p
             old_get_entered.set()
             await release_old_get.wait()
             if instance_id not in live:
-                raise YuanrongAgentNotFoundError('gone')
+                raise AgentNotFoundError('gone')
             return {'status': 'running'}
 
         async def wait_until_running(self, instance_id, *, expected_generation=None, **kwargs):
@@ -4617,10 +4623,10 @@ async def test_delete_then_rebuild_uses_distinct_physical_ids(monkeypatch, tmp_p
 async def test_replacement_reusing_retired_id_is_never_published(monkeypatch, tmp_path):
     (tmp_path / 'u1').mkdir()
     frontend = SimpleNamespace(
-        agent_namespace='default', frontend_endpoint='http://frontend.test',
+        agent_namespace='default', ingress_url='http://frontend.test',
         create_sandbox=AsyncMock(return_value=SandboxInfo('reused-id')),
         delete_sandbox=AsyncMock(),
-        get_agent_info=AsyncMock(side_effect=YuanrongAgentNotFoundError('gone')),
+        get_agent_info=AsyncMock(side_effect=AgentNotFoundError('gone')),
         wait_until_running=AsyncMock(return_value={'status': 'running'}),
         disconnect=AsyncMock(),
     )
@@ -4645,13 +4651,13 @@ async def test_replacement_reusing_retired_id_is_never_published(monkeypatch, tm
 async def test_mismatched_replacement_generation_stays_pending(monkeypatch, tmp_path):
     (tmp_path / 'u1').mkdir()
     frontend = SimpleNamespace(
-        agent_namespace='default', frontend_endpoint='http://frontend.test',
+        agent_namespace='default', ingress_url='http://frontend.test',
         create_sandbox=AsyncMock(side_effect=lambda **kwargs: SandboxInfo(
             deterministic_agent_instance_id('default', kwargs['name'])
         )),
         delete_sandbox=AsyncMock(),
-        get_agent_info=AsyncMock(side_effect=YuanrongAgentNotFoundError('gone')),
-        wait_until_running=AsyncMock(side_effect=YuanrongAgentGenerationMismatchError('wrong generation')),
+        get_agent_info=AsyncMock(side_effect=AgentNotFoundError('gone')),
+        wait_until_running=AsyncMock(side_effect=AgentGenerationMismatchError('wrong generation')),
         disconnect=AsyncMock(),
     )
     manager = AgentManager()
@@ -4679,12 +4685,12 @@ async def test_ambiguous_create_timeout_replays_only_the_same_name(tmp_path, rec
 
     class Frontend:
         agent_namespace = 'default'
-        frontend_endpoint = 'http://frontend.test'
+        ingress_url = 'http://frontend.test'
 
         async def create_sandbox(self, **kwargs):
             posts.append(kwargs)
             if len(posts) == 1 or not recovered:
-                raise YuanrongAgentTimeoutError('response lost')
+                raise AgentTimeoutError('response lost')
             return SandboxInfo(deterministic_agent_instance_id('default', kwargs['name']))
 
         async def wait_until_running(self, candidate, *, expected_generation, deadline):
@@ -4722,7 +4728,7 @@ async def test_delete_joins_inflight_creation_before_reclaim(monkeypatch, tmp_pa
 
     class Frontend:
         agent_namespace = 'default'
-        frontend_endpoint = 'http://frontend.test'
+        ingress_url = 'http://frontend.test'
 
         async def create_sandbox(self, **kwargs):
             entered.set()
@@ -4767,21 +4773,21 @@ async def test_pending_candidate_recovery(monkeypatch, tmp_path, all_absent):
 
     class Frontend:
         agent_namespace = 'default'
-        frontend_endpoint = 'http://frontend.test'
+        ingress_url = 'http://frontend.test'
 
         async def create_sandbox(self, **kwargs):
             posts.append(kwargs)
             return SandboxInfo(sandbox_id=deterministic_agent_instance_id('default', kwargs['name']), metadata={})
 
         async def get_agent_info(self, _):
-            raise YuanrongAgentNotFoundError('gone')
+            raise AgentNotFoundError('gone')
 
         async def wait_until_running(self, _, *, expected_generation=None, **kwargs):
             expected.append(expected_generation)
             if len(expected) == 1:
                 if all_absent:
-                    raise YuanrongAgentNotVisibleError('only observed explicit absence')
-                raise YuanrongAgentTimeoutError('still starting')
+                    raise AgentNotVisibleError('only observed explicit absence')
+                raise AgentTimeoutError('still starting')
             return {'status': 'running', 'env_vars': {AGENT_GENERATION_ENV: expected_generation}}
 
         async def delete_sandbox(self, _):
@@ -4817,7 +4823,7 @@ async def test_cancelled_rebuild_wait_can_be_resumed(monkeypatch, tmp_path):
     old_gone = asyncio.Event()
     frontend = SimpleNamespace(
         agent_namespace='default',
-        frontend_endpoint='http://frontend.test',
+        ingress_url='http://frontend.test',
         create_sandbox=AsyncMock(side_effect=lambda **kwargs: SandboxInfo(deterministic_agent_instance_id('default', kwargs['name']))),
         delete_sandbox=AsyncMock(),
         wait_until_running=AsyncMock(return_value={'status': 'running'}),
@@ -4827,7 +4833,7 @@ async def test_cancelled_rebuild_wait_can_be_resumed(monkeypatch, tmp_path):
     async def get_agent_info(_):
         waiting_for_old.set()
         await old_gone.wait()
-        raise YuanrongAgentNotFoundError('gone')
+        raise AgentNotFoundError('gone')
 
     frontend.get_agent_info = get_agent_info
     manager = AgentManager()
@@ -4862,12 +4868,12 @@ def recovery_router(tmp_path, monkeypatch):
     def build():
         frontend = SimpleNamespace(
             agent_namespace="default",
-            frontend_endpoint="http://frontend.test",
+            ingress_url="http://frontend.test",
             create_sandbox=AsyncMock(side_effect=lambda **kwargs: SandboxInfo(
                 deterministic_agent_instance_id("default", kwargs["name"])
             )),
             delete_sandbox=AsyncMock(),
-            get_agent_info=AsyncMock(side_effect=YuanrongAgentNotFoundError("gone")),
+            get_agent_info=AsyncMock(side_effect=AgentNotFoundError("gone")),
             wait_until_running=AsyncMock(return_value={"status": "running"}),
             disconnect=AsyncMock(),
         )
@@ -4899,7 +4905,7 @@ async def _create_recovery_runtime(router):
 
 
 @pytest.mark.parametrize("startup", [False, True])
-@pytest.mark.parametrize("error_type", [YuanrongAgentRequestNotSentError, YuanrongAgentDeleteRejectedError])
+@pytest.mark.parametrize("error_type", [AgentRequestNotSentError, AgentDeleteRejectedError])
 async def test_rejected_delete_is_retried_before_replacement(recovery_router, startup, error_type):
     router, frontend, registry = recovery_router()
     router._probe_settings = replace(router._probe_settings, wait_running_timeout_seconds=2)
@@ -4919,7 +4925,7 @@ async def test_rejected_delete_is_retried_before_replacement(recovery_router, st
             assert frontend.create_sandbox.await_count == previous_post_count
             if frontend.delete_sandbox.await_count == 1:
                 return {"status": "running"}
-            raise YuanrongAgentNotFoundError("gone")
+            raise AgentNotFoundError("gone")
 
         frontend.get_agent_info.side_effect = get_old
         replacement = await _create_recovery_runtime(router)
@@ -4944,7 +4950,7 @@ async def test_visible_old_instance_is_deleted_again_before_replacement(recovery
         events.append(("delete", instance_id))
         if len([e for e in events if e[0] == "delete"]) == 1:
             if first_delete == "ambiguous":
-                raise YuanrongAgentTimeoutError("response lost before delete")
+                raise AgentTimeoutError("response lost before delete")
             return  # Acknowledged, but still visible.
         old_visible = False
 
@@ -4953,7 +4959,7 @@ async def test_visible_old_instance_is_deleted_again_before_replacement(recovery
         assert frontend.create_sandbox.await_count == 1
         if old_visible:
             return {"status": "running"}
-        raise YuanrongAgentNotFoundError("gone")
+        raise AgentNotFoundError("gone")
 
     frontend.delete_sandbox.side_effect = delete
     frontend.get_agent_info.side_effect = get
@@ -4980,13 +4986,13 @@ async def test_background_retirement_retries_without_new_create(recovery_router)
     async def delete(_):
         nonlocal visible
         if frontend.delete_sandbox.await_count == 1:
-            raise YuanrongAgentTimeoutError("response lost before delete")
+            raise AgentTimeoutError("response lost before delete")
         visible = False
 
     async def get(_):
         if visible:
             return {"status": "running"}
-        raise YuanrongAgentNotFoundError("gone")
+        raise AgentNotFoundError("gone")
 
     frontend.delete_sandbox.side_effect = delete
     frontend.get_agent_info.side_effect = get
@@ -5008,7 +5014,7 @@ async def test_background_retirement_retries_without_new_create(recovery_router)
 async def test_create_that_was_not_sent_can_be_retried(recovery_router):
     router, frontend, _ = recovery_router()
     frontend.create_sandbox.side_effect = [
-        YuanrongAgentRequestNotSentError("connection refused"), SandboxInfo("instance"),
+        AgentRequestNotSentError("connection refused"), SandboxInfo("instance"),
     ]
     try:
         with pytest.raises(AgentRebuildPending, match="not sent"):
@@ -5021,12 +5027,12 @@ async def test_create_that_was_not_sent_can_be_retried(recovery_router):
 
 @pytest.mark.parametrize("failures", [1, 3])
 @pytest.mark.parametrize("error", [
-    YuanrongAgentTimeoutError("response lost"),
+    AgentTimeoutError("response lost"),
     # A definite rejection (e.g. workspace not prepared) also arrives as an
     # uncertain HTTP 500 with an empty body.
-    YuanrongAgentCreateUncertainError("create agent result uncertain: http_status=500"),
+    AgentCreateUncertainError("create agent result uncertain: http_status=500"),
     # ADX surfaces HTTP status directly on its API error.
-    YuanrongAgentApiError("create agent failed: http_status=503", status_code=503),
+    AgentApiError("create agent failed: http_status=503", status_code=503),
 ])
 async def test_uncertain_create_is_replayed_with_the_same_name(recovery_router, failures, error):
     router, frontend, _ = recovery_router()
@@ -5059,8 +5065,8 @@ async def test_uncertain_create_is_replayed_with_the_same_name(recovery_router, 
 
 
 @pytest.mark.parametrize("error", [
-    YuanrongAgentTimeoutError("response lost"),
-    YuanrongAgentApiError("create agent failed: http_status=503", status_code=503),
+    AgentTimeoutError("response lost"),
+    AgentApiError("create agent failed: http_status=503", status_code=503),
 ])
 async def test_persistent_uncertain_create_fails_after_replay_limit(recovery_router, error):
     router, frontend, _ = recovery_router()
@@ -5100,9 +5106,9 @@ async def test_rejected_replay_retires_the_name_and_starts_a_new_generation(reco
     async def create(**kwargs):
         posts.append(kwargs)
         if len(posts) == 1:
-            raise YuanrongAgentTimeoutError("response lost")
+            raise AgentTimeoutError("response lost")
         if len(posts) == 2:
-            raise YuanrongAgentApiError("agent API failed: http_status=400")
+            raise AgentApiError("agent API failed: http_status=400")
         return SandboxInfo(deterministic_agent_instance_id("default", kwargs["name"]))
 
     frontend.create_sandbox.side_effect = create
@@ -5122,6 +5128,7 @@ async def test_rejected_replay_retires_the_name_and_starts_a_new_generation(reco
         await router.shutdown()
 
 
+@pytest.mark.asyncio
 async def test_rate_limited_replay_keeps_the_original_attempt(recovery_router):
     router, frontend, _ = recovery_router()
     posts = []
@@ -5129,9 +5136,9 @@ async def test_rate_limited_replay_keeps_the_original_attempt(recovery_router):
     async def create(**kwargs):
         posts.append(kwargs)
         if len(posts) == 1:
-            raise YuanrongAgentTimeoutError("response lost")
+            raise AgentTimeoutError("response lost")
         if len(posts) == 2:
-            raise YuanrongAgentApiError(
+            raise AgentApiError(
                 "agent API failed: http_status=429",
                 status_code=429,
             )
@@ -5168,7 +5175,7 @@ async def _ready_web_runtime(manager):
 
 def _web_router(manager):
     return AgentOSRouterClient(
-        SimpleNamespace(frontend_endpoint='http://frontend.test', agent_namespace='default'),
+        SimpleNamespace(ingress_url='http://frontend.test', agent_namespace='default'),
         SimpleNamespace(), manager,
     )
 
@@ -5177,7 +5184,7 @@ async def test_web_hold_releases_original_runtime_after_replacement():
     manager = AgentManager()
     router = _web_router(manager)
     await _ready_web_runtime(manager)
-    router._wait_yuanrong_running = AsyncMock()
+    router._wait_environment_running = AsyncMock()
     _, old_hold = await router.resolve_web_endpoint(
         'u1', 'third-party', 'http', acquire=True, return_hold=True,
     )
@@ -5190,7 +5197,7 @@ async def test_web_hold_releases_original_runtime_after_replacement():
     assert (await manager.get_agent('u1', 'third-party')).task_count == 1
     await new_hold()
     assert (await manager.get_agent('u1', 'third-party')).task_count == 0
-    assert router._wait_yuanrong_running.await_count == 2
+    assert router._wait_environment_running.await_count == 2
 
 
 async def test_old_web_probe_cannot_mark_replacement_ready():
@@ -5204,7 +5211,7 @@ async def test_old_web_probe_cannot_mark_replacement_ready():
         started.set()
         await resume.wait()
 
-    router._wait_yuanrong_running = AsyncMock(side_effect=wait)
+    router._wait_environment_running = AsyncMock(side_effect=wait)
     old = asyncio.create_task(router.resolve_web_endpoint(
         'u1', 'third-party', 'http', acquire=True, return_hold=True,
     ))
@@ -5213,12 +5220,12 @@ async def test_old_web_probe_cannot_mark_replacement_ready():
     await _ready_web_runtime(manager)
     resume.set()
     assert await old is None
-    router._wait_yuanrong_running = AsyncMock()
+    router._wait_environment_running = AsyncMock()
     endpoint, hold = await router.resolve_web_endpoint(
         'u1', 'third-party', 'http', acquire=True, return_hold=True,
     )
     assert endpoint
-    router._wait_yuanrong_running.assert_awaited_once()
+    router._wait_environment_running.assert_awaited_once()
     await hold()
 
 
@@ -5266,7 +5273,7 @@ async def test_session_creates_share_only_verified_deterministic_sandbox(monkeyp
         )
         return SandboxInfo(instance_id, metadata={"instance_id": instance_id})
 
-    frontend = SimpleNamespace(agent_namespace="default", frontend_endpoint="http://frontend.test",
+    frontend = SimpleNamespace(agent_namespace="default", ingress_url="http://frontend.test",
                                create_sandbox=AsyncMock(side_effect=create_sandbox), disconnect=AsyncMock())
     manager = _shared_manager()
     router = AgentOSRouterClient(frontend, SimpleNamespace(close=AsyncMock()), manager,
@@ -5303,7 +5310,7 @@ async def test_cached_sandbox_is_not_reused_after_owner_disappears(monkeypatch, 
     async def create_sandbox(*, namespace, name, **kwargs):
         return SandboxInfo(deterministic_agent_instance_id(namespace, name))
 
-    frontend = SimpleNamespace(agent_namespace="default", frontend_endpoint="http://frontend.test",
+    frontend = SimpleNamespace(agent_namespace="default", ingress_url="http://frontend.test",
                                create_sandbox=AsyncMock(side_effect=create_sandbox), disconnect=AsyncMock())
     manager = _shared_manager()
     router = AgentOSRouterClient(frontend, SimpleNamespace(close=AsyncMock()), manager,
@@ -5322,7 +5329,7 @@ async def test_cached_sandbox_is_not_reused_after_owner_disappears(monkeypatch, 
 async def test_startup_guard_normalizes_instance_id():
     frontend = SimpleNamespace(
         delete_sandbox=AsyncMock(),
-        get_agent_info=AsyncMock(side_effect=YuanrongAgentNotFoundError("gone")),
+        get_agent_info=AsyncMock(side_effect=AgentNotFoundError("gone")),
         disconnect=AsyncMock(),
     )
     router = AgentOSRouterClient(

@@ -3,17 +3,11 @@
 from __future__ import annotations
 
 from agent_gateway.routing.container_files import AgentFileDownloadChunk
-from agent_gateway.southbound.control.managed import (
-    AgentMount as AgentMount,
-    AgentRootfsSpec as AgentRootfsSpec,
-    AgentRuntimeSpec as AgentRuntimeSpec,
-    SandboxInfo as SandboxInfo,
-)
 
 import contextvars
 import uuid
-from dataclasses import dataclass
-from typing import Any, Mapping
+from dataclasses import dataclass, field
+from typing import Any, Mapping, TypedDict
 
 TRACE_ID_HEADER = "X-Trace-Id"
 AGENT_GENERATION_ENV = "JIUWEN_GATEWAY_SANDBOX_GENERATION"
@@ -151,6 +145,40 @@ DEFAULT_THIRD_AGENT_PROBE_SETTINGS = RuntimeProbeSettings(
     liveness_timeout_seconds=2,
     liveness_failure_threshold=3,
 )
+
+class AgentMount(TypedDict, total=False):
+    """Bind mount for POST Environment API ``mounts``."""
+
+    source: str
+    target: str
+    readonly: bool
+
+class AgentRootfsSpec(TypedDict, total=False):
+    """Inline ``runtime_spec.rootfs`` for POST Environment API."""
+
+    imageurl: str
+    user: str
+    ports: list[str]
+
+class AgentRuntimeSpec(TypedDict, total=False):
+    """Framework launch configuration assembled before Environment creation."""
+
+    runtime: str
+    sandbox_type: str
+    rootfs: AgentRootfsSpec
+    cpu: int
+    memory: int
+    code_path: str
+    cmds: list[list[str]]
+    probes: dict[str, Any]
+
+@dataclass
+class SandboxInfo:
+    """AgentOS lifecycle record produced by the Environment control adapter."""
+
+    sandbox_id: str
+    status: str = "ready"
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 class AgentApiError(RuntimeError):
     """Raised when the Environment API returns a non-success response."""

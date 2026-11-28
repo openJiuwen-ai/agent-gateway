@@ -5,27 +5,36 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
+from agent_gateway.common.agentos_runtime import is_agentos_runtime
 from e2a.agent_models import AgentResponse
 from e2a.models import E2AEnvelope
 
 from agent_gateway.extensions.adx.ssh_relay import AdxSshRelay
 from agent_gateway.channel_manager.base import ChannelType
-from agent_gateway.extensions.adx.config import AdxRouterConfig
-from agent_gateway.extensions.adx.control_client import AdxControlClient, trace_headers
+from agent_gateway.extensions.adx.config import AdxRouterConfig, is_loopback_ingress
+from agent_gateway.extensions.adx.control_client import AdxControlClient, AdxControlError, trace_headers
 from agent_gateway.extensions.adx.errors import AdxRoutingError
 from agent_gateway.extensions.adx.file_client import AdxFileMixin
-from agent_gateway.extensions.agentos.agentos_router.agent_manager import BUILTIN_AGENT_TYPE, AgentManager
+from agent_gateway.extensions.agentos.agentos_router.agent_manager import (
+    AgentCreateFailed, AgentPreCreateError, AgentRuntime,
+    AgentManager,
+    BUILTIN_AGENT_TYPE,
+)
 from agent_gateway.extensions.agentos.agentos_router.agentos_authenticator import (
     AgentOSAuthenticator,
 )
 from agent_gateway.extensions.agentos.agentos_router.registry_client import RegistryClient
+from agent_gateway.extensions.agentos.agentos_router.models import AgentInfo
 from agent_gateway.extensions.agentos.agentos_router.router_client import (
     AgentOSRouterClient,
     is_ws_connect_retryable,
     ws_connect_ready_timeout_seconds,
     ws_connect_retry_interval_seconds,
+    resolve_agent_workspace,
+    sandbox_name,
 )
 from agent_gateway.extensions.auth.credential_authenticator import AuthResult
 from agent_gateway.health_check import HEALTH_CHECK_CHANNEL_ID, HEALTH_CHECK_OK
@@ -42,6 +51,8 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
                  registry_client: RegistryClient | None = None,
                  auth_client: AgentOSAuthenticator | None = None) -> None:
         self._config = config
+        host = urlsplit(config.ingress_url).hostname
+        self._local_ingress = is_loopback_ingress(host or '')
         self._control = control_client or AdxControlClient(config)
         settings = config.router
         super().__init__(
@@ -49,11 +60,13 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
             AgentManager(
                 creating_timeout_seconds=settings.creating_timeout_seconds, key_fields=settings.agent_key_fields,
             ),
-            workspace_root=settings.workspace_root, agent_sandbox_cpu=settings.agent_sandbox_cpu,
+            workspace_root=settings.workspace_root,
+            sandbox_idle_timeout_seconds=settings.sandbox_idle_timeout_seconds,
+            agent_sandbox_cpu=settings.agent_sandbox_cpu,
             agent_sandbox_memory=settings.agent_sandbox_memory,
             tool_sandbox_idle_timeout_seconds=settings.tool_sandbox_idle_timeout_seconds,
-            tool_sandbox_cpu=settings.tool_sandbox_cpu, tool_sandbox_memory=settings.tool_sandbox_memory,
-            sandbox_idle_timeout_seconds=settings.sandbox_idle_timeout_seconds,
+            tool_sandbox_cpu=settings.tool_sandbox_cpu,
+            tool_sandbox_memory=settings.tool_sandbox_memory,
             sandbox_idle_check_interval_seconds=settings.sandbox_idle_check_interval_seconds,
             disconnect_cleanup_timeout_seconds=settings.disconnect_cleanup_timeout_seconds,
             connect_warmup_enabled=settings.connect_warmup_enabled,
@@ -63,11 +76,6 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
         )
         self._closed = True
         self.set_or_update_server_config(config={})
-
-    async def _create_sandbox_for_agent(self, agent_info, *, web_port=None, **kwargs):
-        return await self._control.create_sandbox(
-            builtin=agent_info.agent_type == BUILTIN_AGENT_TYPE, web_port=web_port, **kwargs,
-        )
 
     async def _wait_for_replacement(self, sandbox, generation: str, deadline: float) -> None:
         # create_sandbox returns this placement only after our POST or a generation check.
@@ -79,6 +87,110 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
     async def shutdown(self) -> None:
         await super().shutdown()
         await self._control.close()
+
+    def _sandbox_instance_id(self, namespace: str, name: str) -> str:
+        return f'{namespace}-{name}'
+
+    def _sandbox_physical_name(self, agent_info: AgentInfo) -> str:
+        return f'{sandbox_name(agent_info.user_id, agent_info.agent_type)}-{agent_info.agent_id[:12]}'
+
+    async def _create_agent_impl(self, agent_info, operation, trace_id=""):
+        if agent_info.agent_type == BUILTIN_AGENT_TYPE:
+            from agent_gateway.extensions.adx.workspace import check_workspace_config
+            try:
+                workspace = resolve_agent_workspace(agent_info.user_id, workspace_root=self._workspace_root)
+                await asyncio.to_thread(check_workspace_config,
+                    Path(workspace) / '.jiuwenswarm/config/config.yaml',
+                    require_prepared=is_agentos_runtime())
+            except ValueError as exc:
+                # No Environment was requested. A later successful deployment
+                # can admit this user without restarting Gateway or clearing caches.
+                raise AgentPreCreateError(str(exc)) from exc
+        return await super()._create_agent_impl(agent_info, operation, trace_id)
+
+    async def _create_sandbox_for_agent(self, agent_info, *, reuse_existing, web_port=None, **kwargs):
+        builtin = agent_info.agent_type == BUILTIN_AGENT_TYPE
+        runtime_class = self._control.resolve_runtime_class(kwargs.get('runtime_spec') or {}, builtin=builtin)
+        if reuse_existing and (runtime_class == 'runsc' or self._config.restart_policy is not None):
+            namespace = self._control.agent_namespace + '-'
+            # Registry rows survive Gateway restart; native state remains the
+            # authority. Also discover pre-generation IDs during an upgrade.
+            records = await self._registry.list_instances(
+                user=agent_info.user_id, framework=agent_info.agent_type, include_unhealthy=True)
+            candidates = {namespace + sandbox_name(agent_info.user_id, agent_info.agent_type)}
+            candidates.update(record.instance_id for record in records
+                if record.user == agent_info.user_id and record.framework == agent_info.agent_type
+                and record.instance_id.startswith(namespace))
+            available = []
+            for instance in sorted(candidates):
+                try:
+                    view = await self._control.get_agent_info(instance, trace_id=kwargs.get("trace_id"))
+                except AdxControlError as exc:
+                    if exc.code == 'NOT_FOUND':
+                        continue
+                    raise
+                if (view.get('status') in ('running', 'paused', 'pausing', 'resuming')
+                        or view.get('status') == 'failed' and view.get('restart_pending')):
+                    available.append(instance)
+                elif view.get('status') not in ('failed', 'deleted', 'stopped'):
+                    raise AdxControlError('Existing ADX Environment is still transitioning', code='CONFLICT')
+            if len(available) > 1:
+                raise AdxControlError('Multiple native Environments match the Agent identity', code='CONFLICT')
+            if available:
+                return await self._control._ready_sandbox_info(available[0], trace_id=kwargs.get("trace_id"))
+        return await self._control.create_sandbox(builtin=builtin, web_port=web_port, **kwargs)
+
+    async def _run_network_failure_delete(self, runtime: AgentRuntime, *, reason: str = 'network_failure') -> None:
+        """Keep ADX-owned recovery state when a business transport disconnects."""
+        runtime_class = self._control.resolve_runtime_class(
+            runtime.info.metadata.get('runtime_spec') or {}, builtin=runtime.info.agent_type == BUILTIN_AGENT_TYPE)
+        if runtime_class != 'runsc' and self._config.restart_policy is None:
+            await super()._run_network_failure_delete(runtime, reason=reason)
+            return
+        if not await self._agent_manager.is_current(runtime):
+            return
+        instance = runtime.info.sandbox_id
+        try:
+            view = await self._control.get_agent_info(instance)
+        except AdxControlError as exc:
+            if exc.code == 'NOT_FOUND':
+                await super()._run_network_failure_delete(runtime, reason=reason)
+                return
+            logger.warning('[ADX] retaining Environment after uncertain lifecycle lookup instance_id=%s', instance)
+        else:
+            if view.get('status') in ('failed', 'deleted', 'deleting', 'stopped') and not view.get('restart_pending'):
+                await super()._run_network_failure_delete(runtime, reason=reason)
+                return
+            logger.info('[ADX] retaining Environment after transport failure instance_id=%s state=%s',
+                        instance, view.get('status'))
+        if await self._agent_manager.is_current(runtime):
+            await self._close_ws_client(instance)
+
+    async def _resolve_agent(
+        self, envelope: E2AEnvelope, *, acquire: bool = False, ws_ready: bool = False, trace_id: str | None = None,
+    ) -> AgentRuntime:
+        try:
+            runtime = await super()._resolve_agent(envelope, acquire=acquire, ws_ready=ws_ready, trace_id=trace_id)
+        except AdxControlError as exc:
+            raise AgentCreateFailed(f"AGENT_CREATE_FAILED: {exc}") from exc
+        try:
+            launch = self._control.config.builtin_launch or {}
+            if 'network' in launch and runtime.info.agent_type == BUILTIN_AGENT_TYPE:
+                workspace = resolve_agent_workspace(runtime.info.user_id, workspace_root=self._workspace_root)
+                await self._control.ensure_builtin_network(runtime.info.sandbox_id, workspace)
+        except (Exception, asyncio.CancelledError) as exc:
+            if acquire:
+                await asyncio.shield(self._release_after_network_failure(runtime))
+            if isinstance(exc, AdxControlError):
+                raise AgentCreateFailed(f"AGENT_NETWORK_UPDATE_FAILED: {exc}") from exc
+            raise
+        return runtime
+
+    async def _release_after_network_failure(self, runtime: AgentRuntime) -> None:
+        try:
+            await self._agent_manager.release(runtime.key, expected_agent_id=runtime.info.agent_id)
+        except Exception:
+            logger.exception("Failed to release AgentServer activity after network update failure")
 
     def set_channel_manager(self, channel_manager) -> None:
         super().set_channel_manager(channel_manager)
@@ -97,21 +209,29 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
 
     def set_or_update_server_config(self, *, config: dict, env: dict | None = None) -> None:
         super().set_or_update_server_config(config=config, env=env)
-
-    def _tool_sandbox_env(self) -> dict[str, str]:
-        return super()._tool_sandbox_env()
+        self._control.agent_idle_timeout_seconds = self._sandbox_idle_timeout_seconds
 
     def _agent_url(self, instance: str, port: int, protocol: str) -> str:
         origin = urlsplit(self._config.ingress_url)
+        # ADX decodes the query value and the instance segment of its target URN separately.
         target = 'urn:adx:instance:' + quote(instance, safe='')
-        return urlunsplit(('wss' if protocol == 'ws' else 'https', origin.netloc,
+        scheme = ('wss' if origin.scheme == 'https' else 'ws') if protocol == 'ws' else origin.scheme
+        return urlunsplit((scheme, origin.netloc,
                           f'/agent/{protocol}', urlencode({'target': target, 'port': port}), ''))
 
+    def _port_url(self, instance_id: str, agent_port: int, protocol: str) -> str:
+        if not self._local_ingress:
+            return self._agent_url(instance_id, agent_port, protocol)
+        origin = urlsplit(self._config.ingress_url)
+        scheme = ('wss' if origin.scheme == 'https' else 'ws') if protocol == 'ws' else origin.scheme
+        path = f'/{quote(instance_id, safe="")}/{agent_port}'
+        return urlunsplit((scheme, origin.netloc, path, '', ''))
+
     def _agent_ws_url(self, instance_id: str, agent_port: int) -> str:
-        return self._agent_url(instance_id, agent_port, 'ws')
+        return self._port_url(instance_id, agent_port, 'ws')
 
     def _agent_http_url(self, instance_id: str, agent_port: int) -> str:
-        return self._agent_url(instance_id, agent_port, 'http')
+        return self._port_url(instance_id, agent_port, 'http')
 
     def _agent_web_ws_url(self, instance_id: str, agent_port: int) -> str:
         return self._agent_ws_url(instance_id, agent_port)
@@ -153,6 +273,6 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
                 raise AdxRoutingError('ADX router is closed', code='ADX_ROUTER_CLOSED')
             return AgentResponse(
                 envelope.request_id, envelope.channel,
-                payload={"health_check": f"{HEALTH_CHECK_OK}: mocked by adx_router"},
+                payload={"health_check": f"{HEALTH_CHECK_OK}: mocked by ADX backend"},
             )
         return await super().send_request(envelope, timeout=timeout)

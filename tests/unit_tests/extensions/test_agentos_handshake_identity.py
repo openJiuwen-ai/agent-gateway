@@ -18,7 +18,7 @@ from agent_gateway.channel_manager.base import RobotMessageRouter
 from agent_gateway.channel_manager.web.web_channel_app import _serve_channel_websocket
 from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
 from agent_gateway.extensions.auth.credential_authenticator import AuthResult
-from tests.unit_tests.extensions.test_agentos_router import FakeYuanRongClient, _router_client
+from tests.unit_tests.extensions.test_agentos_router import FakeControlClient, _router_client
 
 _IAM_USER_ID = "d8e63255-9dfd-4aa0-8b59-2b9096442154"
 
@@ -41,7 +41,7 @@ class _Iam:
 
 async def _authenticate(*, path: str, headers: dict | None = None, channel: str = "web",
                         iam: _Iam | None = None) -> AuthResult:
-    client = _router_client(FakeYuanRongClient(), auth_client=iam)
+    client = _router_client(FakeControlClient(), auth_client=iam)
     try:
         return await client.authenticate_http(path=path, headers=headers or {}, channel=channel)
     finally:
@@ -120,7 +120,7 @@ async def test_other_channels_keep_their_own_identity_checks() -> None:
 @pytest.mark.asyncio
 async def test_web_handshake_declaring_another_user_is_not_accepted() -> None:
     """End to end through the real Web upgrade: the connection is refused before it is accepted."""
-    client = _router_client(FakeYuanRongClient(), auth_client=_Iam())
+    client = _router_client(FakeControlClient(), auth_client=_Iam())
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     channel.set_handshake_auth(client.authenticate_http)
     channel.handle_connection = AsyncMock()
@@ -199,7 +199,7 @@ def _upgrade(query: str, headers) -> MagicMock:
 
 @pytest.mark.asyncio
 async def test_web_handshake_with_a_repeated_identity_header_is_not_accepted() -> None:
-    client = _router_client(FakeYuanRongClient(), auth_client=_Iam())
+    client = _router_client(FakeControlClient(), auth_client=_Iam())
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     channel.set_handshake_auth(client.authenticate_http)
     channel.handle_connection = AsyncMock()
@@ -214,7 +214,7 @@ async def test_web_handshake_with_a_repeated_identity_header_is_not_accepted() -
 
 @pytest.mark.asyncio
 async def test_web_connection_uses_the_identity_the_handshake_verified() -> None:
-    client = _router_client(FakeYuanRongClient(), auth_client=_Iam())
+    client = _router_client(FakeControlClient(), auth_client=_Iam())
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     channel.set_handshake_auth(client.authenticate_http)
     seen = []
