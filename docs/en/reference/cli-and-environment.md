@@ -75,6 +75,8 @@ For existing deployments, Gateway still reads the legacy variable names; new dep
 - When deployed with another harness, set Gateway's data directory explicitly with `AGENT_GATEWAY_DATA_DIR`. Set any `JIUWENSWARM_*` variables the harness itself uses (for example `JIUWENSWARM_DATA_DIR`, which agent-core reads) only for the harness process, not for Gateway.
 - JWS-specific variables that Gateway injects into the AgentServer keep their original names.
 
+`.env.example` at the repository root is a reference for a standalone deployment or another harness, not the JiuwenSwarm `.env` template. To make it effective, copy it to `<data root>/config/.env` (default `~/.jiuwenswarm/config/.env`) or start Gateway with `--dotenv <path>`; exporting the variables also works. For the personal edition the location follows `AGENT_GATEWAY_DATA_DIR` / `AGENT_GATEWAY_HOME`, not `AGENT_GATEWAY_CONFIG_DIR`. AgentOS deployments load `<workspace>/config/.env`, shared with the AgentServer. JiuwenSwarm deployments should use JiuwenSwarm's own `.env.template` and launcher.
+
 ## Configuration file
 
 Default path: `$AGENT_GATEWAY_DATA_DIR/config/config.yaml`; when `AGENT_GATEWAY_DATA_DIR` is unset, `$AGENT_GATEWAY_HOME/.jiuwenswarm/config/config.yaml`.

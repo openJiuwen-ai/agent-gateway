@@ -173,7 +173,7 @@ Gateway 不承担 Agent 执行：所有涉及工作区、模型凭据与工具�
 | `GATEWAY_HOST` / `GATEWAY_PORT` | `127.0.0.1` / `19001` | TUI 路由监听地址 |
 | `AGENT_CONNECT_RETRY` / `AGENT_CONNECT_RETRY_INTERVAL` | `20` / `3` | 下游连接重试次数 / 间隔（秒） |
 
-环境变量见[命令行与环境变量参考](docs/zh/reference/cli-and-environment.md)。与 JiuwenSwarm AgentServer 一起部署时，请确保两边使用相同的数据目录和密钥。
+环境变量见[命令行与环境变量参考](docs/zh/reference/cli-and-environment.md)；仓库根目录的 `.env.example` 是独立部署时的配置模板。与 JiuwenSwarm AgentServer 一起部署时，请确保两边使用相同的数据目录和密钥。
 
 ### config.yaml
 

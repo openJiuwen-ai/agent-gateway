@@ -81,8 +81,6 @@ SPAWN_ENV_KEYS: frozenset[str] = frozenset(
         # Unified tool switch (blacklist); config.yaml references ${DISABLED_TOOLS-...}.
         # Defaults to disabling search_skill / install_skill / uninstall_skill.
         "DISABLED_TOOLS",
-        # Code-mode generated-code co-author header switch; process shared.
-        "JIUWENSWARM_CODE_COAUTHOR_HEADER_ENABLED",
         # HTTP/SSE service-to-service mTLS.  These values are process-scoped;
         # certificate paths point to files mounted by the deployment layer.
         "JIUWENSWARM_LINK_MTLS_MODE",
@@ -134,9 +132,6 @@ BUSINESS_MIRROR_KEYS: frozenset[str] = frozenset(
         "TOOL_CALLING_GUARD_STRIP_REASON",
         "ENABLED_SKILLS",
         "DISABLED_SKILLS",
-        # Canonical product keys only; relay ``JIUWENCLAW_*`` is remapped on ingest.
-        "JIUWENSWARM_DISABLED_SKILLS",
-        "JIUWENSWARM_SHARED_SKILLS_DIRS",
         "BOCHA_API_KEY",
         "JINA_API_KEY",
         "PERPLEXITY_API_KEY",
@@ -199,9 +194,6 @@ BUSINESS_MIRROR_KEYS: frozenset[str] = frozenset(
         "BROWSER_TIMEOUT_S",
         "BROWSER_ALLOW_SHORT_TIMEOUT_OVERRIDE",
         "MEMORY_MODE",
-        "JIUWENSWARM_ENABLE_DDG_SEARCH",
-        "JIUWENSWARM_ENABLE_JINA_SEARCH",
-        "JIUWENSWARM_ENABLE_JINA_FETCH",
         "JIUWENSWARM_SSL_VERIFY",
     }
 )

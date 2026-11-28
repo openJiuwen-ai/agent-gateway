@@ -181,7 +181,7 @@ The gateway is stateless with respect to agent execution: everything that touche
 | `GATEWAY_HOST` / `GATEWAY_PORT`                   | `127.0.0.1` / `19001`       | TUI route listen address                                       |
 | `AGENT_CONNECT_RETRY` / `AGENT_CONNECT_RETRY_INTERVAL` | `20` / `3`             | Southbound connection retries / interval in seconds            |
 
-See the [CLI and environment reference](docs/en/reference/cli-and-environment.md) for the environment variables. When deployed together with the JiuwenSwarm AgentServer, make sure both sides use the same data directory and secrets.
+See the [CLI and environment reference](docs/en/reference/cli-and-environment.md) for the environment variables; `.env.example` at the repository root is the template for a standalone deployment. When deployed together with the JiuwenSwarm AgentServer, make sure both sides use the same data directory and secrets.
 
 ### config.yaml
 
