@@ -20,7 +20,22 @@ _HEARTBEAT_METHODS = frozenset({
     'heartbeat.job.get', 'heartbeat.job.preview', 'heartbeat.job.create', 'heartbeat.job.update',
     'heartbeat.job.toggle', 'heartbeat.job.run_now', 'heartbeat.job.cancel', 'heartbeat.job.delete',
 })
-PERSONAL_WEB_OPERATIONS = _PROJECT_METHODS | _HEARTBEAT_METHODS
+# A Git write goes to the AgentServer that owns the worktree. It must say it
+# takes these from the personal panel, and the request is marked as such.
+PROJECT_GIT_CAPABILITY = 'personal_project_git_v1'
+PROJECT_GIT_MARKER = '_personal_project_git_v1'
+PROJECT_GIT_OPERATIONS = frozenset({
+    'project.git.probe', 'project.git.init', 'project.git.create_branch',
+    'project.git.switch_branch', 'project.git.commit', 'project.git.push',
+})
+# The personal panel never asks for these. A request that does is not the
+# page's, and history rewrite and forced or deleted remote branches are not
+# offered here.
+_RESTRICTED_GIT_FLAGS = {
+    'project.git.commit': ('amend', 'no_verify'),
+    'project.git.push': ('force', 'delete'),
+}
+PERSONAL_WEB_OPERATIONS = _PROJECT_METHODS | _HEARTBEAT_METHODS | PROJECT_GIT_OPERATIONS
 
 
 def protect_personal_web_operation(
@@ -36,6 +51,12 @@ def protect_personal_web_operation(
             return
         if not isinstance(params, dict):
             await channel.send_response(ws, req_id, ok=False, error='params must be an object', code='BAD_REQUEST')
+            return
+        for flag in _RESTRICTED_GIT_FLAGS.get(method, ()):
+            if flag not in params or params[flag] is False:
+                continue
+            code = 'UNSUPPORTED_REQUEST' if params[flag] is True else 'BAD_REQUEST'
+            await channel.send_response(ws, req_id, ok=False, error=f'{flag} is not supported', code=code)
             return
         if method in PROJECT_MUTATIONS:
             project_id = params.get('project_id')

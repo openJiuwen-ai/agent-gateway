@@ -3712,7 +3712,23 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         async def _handler(ws, req_id, params, session_id, user_id=None):
             from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
-            callbacks = {}
+            from agent_gateway.application.personal_web_operations import (
+                PROJECT_GIT_CAPABILITY, PROJECT_GIT_MARKER, PROJECT_GIT_OPERATIONS,
+            )
+
+            options = {}
+            if bind.personal_settings and label in PROJECT_GIT_OPERATIONS:
+                # Reply within the legacy panel's 15/60/90s wait limits.
+                timeout = {
+                    ReqMethod.PROJECT_GIT_COMMIT: 55.0,
+                    ReqMethod.PROJECT_GIT_PUSH: 85.0,
+                }.get(req_method, 12.0)
+                options.update(
+                    required_capability=PROJECT_GIT_CAPABILITY,
+                    extra_params={PROJECT_GIT_MARKER: True},
+                    drop_params=("user_id",),
+                    timeout_seconds=timeout,
+                )
             if mark_dirty or mark_dirty_on_failure:
                 project_id = str((params or {}).get("project_id") or "").strip()
 
@@ -3723,7 +3739,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                         return _mark_git_watcher_dirty(project_id)
                     return None
 
-                callbacks["on_done"] = _on_done
+                options["on_done"] = _on_done
             await proxy_unary_request(
                 channel=channel,
                 agent_client=_resolve(agent_client),
@@ -3735,7 +3751,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 req_method=req_method,
                 label=label,
                 preserve_error_payload=True,
-                **callbacks,
+                **options,
             )
 
         _handler.__doc__ = doc

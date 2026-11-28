@@ -10,7 +10,6 @@ from starlette.datastructures import Headers
 from agent_gateway.application import web as app_web
 from agent_gateway.application import personal_web_operations
 from agent_gateway.application.personal_settings import PERSONAL_SETTINGS_METHODS
-from agent_gateway.application import personal_web_operations
 from agent_gateway.application.personal_web_operations import (
     PERSONAL_WEB_OPERATIONS, protect_personal_web_operation,
 )
@@ -54,6 +53,9 @@ def bind(personal, *, agent_client=None, cron_controller=None):
 def test_every_personal_web_operation_has_a_regular_handler():
     assert PERSONAL_WEB_OPERATIONS == HEARTBEAT_WRITES | {
         "project.create", "project.rename", "project.pin", "project.remove", "project.restore",
+    } | {
+        "project.git.probe", "project.git.init", "project.git.create_branch", "project.git.switch_branch",
+        "project.git.commit", "project.git.push",
     }
     assert PERSONAL_WEB_OPERATIONS <= personal_web_methods()
     # Project-wide batch lifecycle is not here.

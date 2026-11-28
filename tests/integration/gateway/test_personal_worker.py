@@ -493,6 +493,8 @@ async def test_web_project_writes_need_a_browser_origin(personal):
                            ("project.pin", {"project_id": "p", "pinned": True}),
                            ("project.remove", {"project_id": "p"}),
                            ("project.restore", {"project_id": "p"}),
+                           ("project.git.init", {"project_id": "p"}),
+                           ("project.git.commit", {"project_id": "p", "message": "m"}),
                            ("heartbeat.job.delete", {"session_id": "s-mine", "id": "job"})):
         async with connect(web_url(group)) as web:
             await web.send(request(method, method, params))
@@ -502,7 +504,7 @@ async def test_web_project_writes_need_a_browser_origin(personal):
             }, method
     # Refused before any handler: neither the write nor its Session ownership check is sent.
     assert not sent(stub, "project.create", "project.rename", "project.pin", "project.remove",
-                    "project.restore", "session.get_metadata", "heartbeat.job")
+                    "project.restore", "project.git", "session.get_metadata", "heartbeat.job")
 
 
 async def test_web_project_writes_are_forwarded_once_with_the_connection_identity(personal):
@@ -641,6 +643,71 @@ async def test_web_project_removal_and_restore_events_reach_the_owner_only(tmp_p
             ("project.remove", {"project_id": "p-1"}, USER),
             ("project.restore", {"project_id": "p-1"}, USER),
             ("project.restore", {"project_id": "missing"}, USER),
+        ]
+
+
+GIT_CAPABILITY = "personal_project_git_v1"
+
+
+async def test_web_git_writes_need_the_agentserver_capability(tmp_path, monkeypatch):
+    seen = {}
+    for name, capabilities in (("legacy", ()), ("capable", (GIT_CAPABILITY,))):
+        async with personal_with(tmp_path, monkeypatch, *capabilities) as (group, stub):
+            for method in ("project.git.status", "project.git.probe", "project.git.init", "project.git.commit",
+                           "project.git.push"):
+                stub.replies[method] = {"answered": method}
+            async with connect(web_url(group), additional_headers=ORIGIN) as web:
+                # Status is a read of the regular handler set, whatever the AgentServer says.
+                await web.send(request("status", "project.git.status", {"project_id": "p-1"}))
+                seen[(name, "project.git.status")] = await answer(web, "status")
+                for method in ("project.git.probe", "project.git.init", "project.git.commit", "project.git.push"):
+                    await web.send(request(method, method, {"project_id": "p-1", "user_id": "bob"}))
+                    seen[(name, method)] = await answer(web, method)
+            seen[(name, "sent")] = [(request["method"], request["params"], request["user_id"])
+                                    for request in requests_sent(stub)]
+    writes = ("project.git.probe", "project.git.init", "project.git.commit", "project.git.push")
+    for method in writes:
+        # An AgentServer that does not take the personal panel's Git writes is answered without one.
+        legacy = seen[("legacy", method)]
+        assert (legacy["ok"], legacy["code"], legacy["payload"]) == (False, "UNSUPPORTED_DATA_PLANE", {}), legacy
+    assert seen[("legacy", "sent")] == [("project.git.status", {"project_id": "p-1"}, USER)]
+    for method in writes:
+        assert seen[("capable", method)] == {"type": "res", "id": method, "ok": True, "payload": {"answered": method}}
+    # Each write went out once: marked for the AgentServer, reduced to the connection's identity.
+    assert seen[("capable", "sent")] == [
+        ("project.git.status", {"project_id": "p-1"}, USER),
+    ] + [(method, {"project_id": "p-1", "_personal_project_git_v1": True}, USER) for method in writes]
+
+
+async def test_web_git_panel_refuses_what_it_never_asks_for(tmp_path, monkeypatch):
+    async with personal_with(tmp_path, monkeypatch, GIT_CAPABILITY) as (group, stub):
+        stub.replies["project.git.commit"] = {"committed": True}
+        stub.replies["project.git.push"] = {"pushed": True}
+        async with connect(web_url(group), additional_headers=ORIGIN) as web:
+            for request_id, method, params, code in (
+                ("amend", "project.git.commit", {"project_id": "p-1", "amend": True}, "UNSUPPORTED_REQUEST"),
+                ("no-verify", "project.git.commit", {"project_id": "p-1", "no_verify": True}, "UNSUPPORTED_REQUEST"),
+                ("force", "project.git.push", {"project_id": "p-1", "force": True}, "UNSUPPORTED_REQUEST"),
+                ("delete", "project.git.push", {"project_id": "p-1", "delete": True}, "UNSUPPORTED_REQUEST"),
+                ("force-text", "project.git.push", {"project_id": "p-1", "force": "yes"}, "BAD_REQUEST"),
+            ):
+                await web.send(request(request_id, method, params))
+                refused = await answer(web, request_id)
+                assert (refused["ok"], refused["code"], refused["payload"]) == (False, code, {}), (request_id, refused)
+            # The flags the panel does send, set to false, go through.
+            await web.send(request("commit", "project.git.commit", {
+                "project_id": "p-1", "message": "Update", "amend": False, "no_verify": False, "user_id": "bob",
+            }))
+            assert await answer(web, "commit") == {"type": "res", "id": "commit", "ok": True, "payload": {"committed": True}}
+            await web.send(request("push", "project.git.push", {"project_id": "p-1", "force": False, "delete": False}))
+            assert await answer(web, "push") == {"type": "res", "id": "push", "ok": True, "payload": {"pushed": True}}
+        assert [(request["method"], request["params"], request["user_id"]) for request in requests_sent(stub)] == [
+            ("project.git.commit", {
+                "project_id": "p-1", "message": "Update", "amend": False, "no_verify": False, "_personal_project_git_v1": True,
+            }, USER),
+            ("project.git.push", {
+                "project_id": "p-1", "force": False, "delete": False, "_personal_project_git_v1": True,
+            }, USER),
         ]
 
 
