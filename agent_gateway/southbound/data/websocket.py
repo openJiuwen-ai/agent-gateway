@@ -10,7 +10,7 @@ import json
 import logging
 import os
 from collections.abc import Awaitable, Callable, Mapping
-from contextlib import aclosing
+from contextlib import aclosing, asynccontextmanager
 from dataclasses import asdict, replace
 from time import monotonic
 from typing import Any, AsyncIterator
@@ -102,6 +102,17 @@ class _ReceiverFailure:
         self.exc = exc
 
 
+class AgentCapabilityUnavailable(RuntimeError):
+    """The active AgentServer socket cannot safely handle a restricted request.
+
+    Raised before anything is written, so the request was never sent and a
+    caller may not treat it as an AgentServer rejection.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("This AgentServer does not support the requested operation")
+
+
 class RequestNotSentError(RuntimeError):
     """The connection was retired before the request could be written."""
 
@@ -151,7 +162,10 @@ class WebSocketConnection:
     - 接收（流式）：多条 E2AResponse 线 JSON（或 legacy chunk），解析为 AgentResponseChunk。
     """
 
-    def __init__(self, *, ping_interval: float | None = 30.0, ping_timeout: float | None = 300.0) -> None:
+    def __init__(
+        self, *, ping_interval: float | None = 30.0, ping_timeout: float | None = 300.0,
+        wire_logger: logging.Logger | None = None, private_methods: frozenset[str] = frozenset(),
+    ) -> None:
         self._uri: str | None = None
         self._extra_headers: dict[str, str] = {}
         self._ws: Any = None
@@ -160,9 +174,16 @@ class WebSocketConnection:
         self._reconnect_enabled = False
         self._ping_interval = ping_interval
         self._ping_timeout = ping_timeout
+        # Opt-in: a deployment whose settings cross this link keeps whole frames
+        # out of the websockets DEBUG log and out of the request payload log.
+        self._wire_logger = wire_logger
+        self._private_methods = frozenset(private_methods)
         self._server_ready: bool = False
         self._agent_ready: bool = False
         self._readiness_state: str | None = None
+        # Optional names advertised by the connection.ack of the live socket.
+        # They qualify that socket only and are dropped whenever it is retired.
+        self._capabilities: frozenset[str] = frozenset()
         # 消息分发机制：根据 request_id 路由到对应队列
         self._message_queues: dict[str, asyncio.Queue] = {}
         self._queue_lock = asyncio.Lock()  # 保护队列操作的锁
@@ -176,12 +197,28 @@ class WebSocketConnection:
         self._cleanup_tasks: set[asyncio.Task] = set()
         # receiver 致命错误（连接断开 / ping 超时 / 发送失败）后的断连通知回调
         self._on_disconnect: Callable[[BaseException], Awaitable[None]] | None = None
+        self._credential_runtime: Any | None = None
 
     def set_server_push_handler(
         self, handler: Callable[[dict[str, Any]], Awaitable[None]] | None
     ) -> None:
         """注册 Agent 主动推送处理回调（metadata 含 ``E2A_WIRE_SERVER_PUSH_KEY`` 的帧）。"""
         self._on_server_push = handler
+
+    def set_credential_runtime(self, runtime: Any) -> None:
+        self._credential_runtime = runtime
+
+    @asynccontextmanager
+    async def _credential_write(self, envelope: E2AEnvelope):
+        runtime = self._credential_runtime
+        if runtime is None:
+            yield
+        else:
+            async with runtime.before_send(envelope):
+                try:
+                    yield
+                finally:
+                    runtime.release(envelope)
 
     async def _prepare_envelope(self, envelope: E2AEnvelope) -> None:
         """Compatibility entry points may supply business preparation."""
@@ -227,6 +264,10 @@ class WebSocketConnection:
         """Front transport is connected. Does not mean Agent Runtime can execute."""
         return self._server_ready
 
+    def advertises_capability(self, capability: str) -> bool:
+        """Advisory check; a write must still check its actual socket under the send lock."""
+        return self.server_ready and capability in self._capabilities
+
     @property
     def can_reconnect(self) -> bool:
         """Whether a request can restore the configured transport."""
@@ -247,6 +288,10 @@ class WebSocketConnection:
         status = str(payload.get("status") or "").strip().lower()
         readiness = payload.get("readiness")
         self._readiness_state = str(readiness) if isinstance(readiness, str) else None
+        capabilities = payload.get("capabilities")
+        self._capabilities = frozenset(
+            value for value in capabilities if isinstance(value, str)
+        ) if isinstance(capabilities, list) else frozenset()
         # Any ack means Front transport is up. FAILED/DRAINING describe Runtime,
         # not the socket; e2a_proxy must still reach Front control RPCs.
         self._server_ready = True
@@ -277,6 +322,7 @@ class WebSocketConnection:
             self._server_ready = False
             self._agent_ready = False
             self._readiness_state = None
+            self._capabilities = frozenset()
             origin = _build_ws_origin(uri)
             connect_kwargs: dict[str, Any] = {
                 "origin": origin,
@@ -285,6 +331,8 @@ class WebSocketConnection:
                 "close_timeout": 5.0,
                 "max_size": AGENT_WS_MAX_MESSAGE_BYTES,
             }
+            if self._wire_logger is not None:
+                connect_kwargs["logger"] = self._wire_logger
             cleaned_headers = {
                 str(key): str(value)
                 for key, value in dict(extra_headers or {}).items()
@@ -503,6 +551,7 @@ class WebSocketConnection:
         self._server_ready = False
         self._agent_ready = False
         self._readiness_state = None
+        self._capabilities = frozenset()
         self._ws = None
         failure = _ReceiverFailure(exc)
         async with self._queue_lock:
@@ -583,6 +632,7 @@ class WebSocketConnection:
             self._server_ready = False
             self._agent_ready = False
             self._readiness_state = None
+            self._capabilities = frozenset()
         logger.info("[WebSocketAgentServerClient] 已断开")
 
     async def _clear_push_tasks(self) -> None:
@@ -659,15 +709,23 @@ class WebSocketConnection:
 
     async def send_request(
         self, envelope: E2AEnvelope, *, timeout: float | None = None,
+        on_written: Callable[[], None] | None = None,
+        required_capability: str | None = None,
     ) -> AgentResponse:
-        with bind_agent_request_trace(envelope):
-            return await self._send_request_scoped(envelope, timeout=timeout)
+        try:
+            with bind_agent_request_trace(envelope):
+                return await self._send_request_scoped(
+                    envelope, timeout=timeout, on_written=on_written,
+                    required_capability=required_capability,
+                )
+        finally:
+            if self._credential_runtime is not None:
+                self._credential_runtime.release(envelope)
 
     async def _send_request_scoped(
-        self,
-        envelope: E2AEnvelope,
-        *,
-        timeout: float | None = None,
+        self, envelope: E2AEnvelope, *, timeout: float | None = None,
+        on_written: Callable[[], None] | None = None,
+        required_capability: str | None = None,
     ) -> AgentResponse:
         await self._ensure_connected_for_request()
         generation = self._connection_generation
@@ -683,6 +741,7 @@ class WebSocketConnection:
             float(timeout) if timeout is not None else _UNARY_REQUEST_TIMEOUT_SECONDS
         )
         sid = str(envelope.session_id or "")
+        log_payload = envelope.method not in self._private_methods
         logger.debug(
             "[E2A][out][nostream] request_id=%s channel=%s method=%s session_id=%s is_stream=%s",
             rid,
@@ -693,7 +752,8 @@ class WebSocketConnection:
             extra={"session_id": sid} if sid else {},
         )
         if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("[WebSocketAgentServerClient] 发送请求(非流式) E2A: %s", _to_json(envelope.to_dict()))
+            if log_payload:
+                logger.debug("[WebSocketAgentServerClient] 发送请求(非流式) E2A: %s", _to_json(envelope.to_dict()))
 
         if rid in self._message_queues:
             raise DuplicateRequestIdError(rid)
@@ -717,15 +777,25 @@ class WebSocketConnection:
             send_started = None
             send_outcome = "failed"
             try:
-                async with self._lock:
-                    self._check_request_connection(generation)
-                    lock_wait_ms = (monotonic() - lock_started) * 1000
-                    payload = _e2a_to_wire(wire_envelope)
-                    if logger.isEnabledFor(logging.DEBUG):
-                        logger.debug("[WebSocketAgentServerClient] 发送请求(非流式) payload: %s", _to_json(payload))
-                    send_started = monotonic()
-                    await self._send_wire_payload(payload)
-                    send_outcome = "written"
+                async with self._credential_write(envelope):
+                    async with self._lock:
+                        self._check_request_connection(generation)
+                        if required_capability is not None and required_capability not in self._capabilities:
+                            raise AgentCapabilityUnavailable()
+                        lock_wait_ms = (monotonic() - lock_started) * 1000
+                        if self._credential_runtime is not None:
+                            self._credential_runtime.check(envelope)
+                        payload = _e2a_to_wire(wire_envelope)
+                        if logger.isEnabledFor(logging.DEBUG):
+                            if log_payload:
+                                logger.debug("[WebSocketAgentServerClient] 发送请求(非流式) payload: %s", _to_json(payload))
+                        send_started = monotonic()
+                        await self._send_wire_payload(payload)
+                        send_outcome = "written"
+                        if self._credential_runtime is not None:
+                            self._credential_runtime.mark_written(envelope)
+                        if on_written is not None:
+                            on_written()
             finally:
                 if operation is not None:
                     operation.event("send.returned" if send_outcome == "written" else "send.failed", {
@@ -828,8 +898,17 @@ class WebSocketConnection:
                 pass
 
     async def _send_request_stream_scoped(
-        self, envelope: E2AEnvelope
+        self, envelope: E2AEnvelope,
     ) -> AsyncIterator[AgentResponseChunk]:
+        try:
+            async with aclosing(self._send_stream_with_credential(envelope)) as stream:
+                async for chunk in stream:
+                    yield chunk
+        finally:
+            if self._credential_runtime is not None:
+                self._credential_runtime.release(envelope)
+
+    async def _send_stream_with_credential(self, envelope: E2AEnvelope) -> AsyncIterator[AgentResponseChunk]:
         await self._ensure_connected_for_request()
         generation = self._connection_generation
         await self._prepare_envelope(envelope)
@@ -869,15 +948,20 @@ class WebSocketConnection:
             send_started = None
             send_outcome = "failed"
             try:
-                async with self._lock:
-                    self._check_request_connection(generation)
-                    lock_wait_ms = (monotonic() - lock_started) * 1000
-                    payload = _e2a_to_wire(wire_envelope)
-                    if logger.isEnabledFor(logging.DEBUG):
-                        logger.debug("[WebSocketAgentServerClient] 发送请求(流式) payload: %s", _to_json(payload))
-                    send_started = monotonic()
-                    await self._send_wire_payload(payload)
-                    send_outcome = "written"
+                async with self._credential_write(envelope):
+                    async with self._lock:
+                        self._check_request_connection(generation)
+                        lock_wait_ms = (monotonic() - lock_started) * 1000
+                        if self._credential_runtime is not None:
+                            self._credential_runtime.check(envelope)
+                        payload = _e2a_to_wire(wire_envelope)
+                        if logger.isEnabledFor(logging.DEBUG):
+                            logger.debug("[WebSocketAgentServerClient] 发送请求(流式) payload: %s", _to_json(payload))
+                        send_started = monotonic()
+                        await self._send_wire_payload(payload)
+                        send_outcome = "written"
+                        if self._credential_runtime is not None:
+                            self._credential_runtime.mark_written(envelope)
             finally:
                 if operation is not None:
                     operation.event("send.returned" if send_outcome == "written" else "send.failed", {

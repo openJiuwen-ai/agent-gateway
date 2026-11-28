@@ -17,8 +17,9 @@ import time
 import uuid
 from collections import OrderedDict
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, KeysView
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Iterator, KeysView
 from weakref import WeakKeyDictionary
 from urllib.parse import parse_qs, urlparse
 
@@ -61,6 +62,7 @@ from agent_gateway.common.ws_diagnostics import (
 from agent_gateway.trace_context import trace_context_from_headers
 from agent_gateway.routing.base_ws_channel import BaseWsChannel
 from agent_gateway.routing.keys import AgentRef, RoutingKey
+from agent_gateway.routing.owner_delivery import OwnerDelivery
 from agent_gateway.routing.session_sharing import RoutingTarget
 
 if TYPE_CHECKING:
@@ -284,6 +286,9 @@ class WebChannelConfig:
     # the CPU cost outweighs the bandwidth saving, so it stays off by default.
     # Public-network deployments can re-enable it with WEB_WS_PERMESSAGE_DEFLATE=1.
     ws_permessage_deflate: bool = False
+    #: A Gateway that only caches Session activity asks the AgentServer before
+    #: a /ws/git turn mutation. Off by default; the single process keeps its cache.
+    require_git_activity_snapshot: bool = False
 
 
 class WebChannel(BaseWsChannel):
@@ -552,6 +557,8 @@ class WebChannel(BaseWsChannel):
         # callbacks and busy-state tracking have consumed the canonical values.
         from agent_gateway.routing.e2a_proxy import is_agentos_routing_client
 
+        if not self._owner_allows(ws):
+            return
         if is_agentos_routing_client(self.agent_client):
             from agent_gateway.channel_manager.web.agentos_compat import (
                 project_agentos_web_frame,
@@ -689,7 +696,8 @@ class WebChannel(BaseWsChannel):
             if code:
                 frame["code"] = code
         try:
-            self._enqueue_send(ws, frame)
+            with self._direct_owner_scope(request_id=req_id):
+                self._enqueue_send(ws, frame)
         except Exception as e:
             if bool(getattr(ws, "closed", False)):
                 logger.debug(
@@ -778,6 +786,25 @@ class WebChannel(BaseWsChannel):
     @staticmethod
     def _connection_user_id(ws: Any) -> str | None:
         return WebChannel.connection_user_id(ws)
+
+    def _outbound_connection_user(self, ws: Any) -> str | None:
+        return self.connection_user_id(ws)
+
+    @contextmanager
+    def _direct_owner_scope(self, request_id: str | None = None, session_id: str | None = None) -> Iterator[None]:
+        """Scope a send addressed to one socket or one session, not to a Message.
+
+        A static Worker has no Message to read the owner from here. It takes
+        the owner from the route of the request or the session instead; without
+        either the frame stays undelivered.
+        """
+        gate = self.owner_delivery
+        if gate is None:
+            yield
+            return
+        owner = OwnerDelivery.owner_in_scope() or gate.of_request(request_id) or gate.of_session(session_id)
+        with gate.scope(owner):
+            yield
 
     def _extract_ws_user_id(self, ws: Any) -> str:
         """WebChannel: 从 ws 提取连接级 user_id。"""
@@ -1267,6 +1294,8 @@ class WebChannel(BaseWsChannel):
         session_id: str,
         event: str,
         payload: dict[str, Any],
+        *,
+        owner: str | None = None,
     ) -> None:
         """Send one event only to the connections registered for a session.
 
@@ -1275,7 +1304,17 @@ class WebChannel(BaseWsChannel):
                 receive the event.
             event: Event name, for example ``trace.updated``.
             payload: JSON-serializable event payload.
+            owner: Named user the session belongs to on a static Worker. The
+                event reaches that user's connections of the session only; the
+                user of the session route is used when it is omitted.
         """
+        gate = self.owner_delivery
+        if gate is not None:
+            named = owner if owner is not None else gate.of_session(session_id)
+            with gate.scope(named):
+                for ws in self._clients_for_session(session_id):
+                    await self.send_event(ws, event, payload)
+            return
         for ws in self._clients_for_session(session_id):
             await self.send_event(ws, event, payload)
 
@@ -1425,6 +1464,19 @@ class WebChannel(BaseWsChannel):
         msg: Message,
         *,
         routing_target: RoutingTarget | None = None,
+    ) -> None:
+        gate = self.owner_delivery
+        if gate is None:
+            await self._send_message_scoped(msg, routing_target)
+            return
+        # A static Worker delivers a Message to the user it names only.
+        with gate.scope(gate.of_message(msg)):
+            await self._send_message_scoped(msg, routing_target)
+
+    async def _send_message_scoped(
+        self,
+        msg: Message,
+        routing_target: RoutingTarget | None,
     ) -> None:
         from agent_gateway.telemetry import attach_message_trace, bind_message_trace, get_message_trace
 
@@ -2401,12 +2453,16 @@ class WebChannel(BaseWsChannel):
         from agent_gateway.channel_manager.web.git_ws_handler import (
             GitDiffWebSocketHandler,
         )
-        handler = GitDiffWebSocketHandler(self, registry)
+        _app_id = flat_query.get("app_id") or "default"
+        handler = GitDiffWebSocketHandler(
+            self, registry,
+            require_activity_snapshot=self.config.require_git_activity_snapshot,
+            app_id=_app_id,
+        )
 
         connection_user_id, _user_id = self._resolve_ws_identity(
             ws, flat_query, remote,
         )
-        _app_id = flat_query.get("app_id") or "default"
         _rk = RoutingKey(
             user_id=_user_id,
             channel_id=self.channel_id,

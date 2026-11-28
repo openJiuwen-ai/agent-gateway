@@ -3,6 +3,7 @@
 """Northbound southbound-client contract and fixed-target implementation."""
 
 from contextlib import aclosing
+import logging
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from e2a.agent_models import AgentResponse, AgentResponseChunk
@@ -65,6 +66,9 @@ class StaticAgentClient(SouthboundAgentClient):
     def can_reconnect(self) -> bool:
         return self._transport.can_reconnect
 
+    def advertises_capability(self, capability: str) -> bool:
+        return self._transport.advertises_capability(capability)
+
     async def connect(self, uri: str) -> None:
         target = self._control.get_target()
         if uri != target.endpoint:
@@ -93,10 +97,18 @@ class StaticAgentClient(SouthboundAgentClient):
 
         self._transport.set_push_handler(receive)
 
-    async def send_request(self, envelope: E2AEnvelope, *, timeout: float | None = None) -> AgentResponse:
+    def set_credential_runtime(self, runtime: Any) -> None:
+        self._transport.set_credential_runtime(runtime)
+
+    async def send_request(self, envelope: E2AEnvelope, *, timeout: float | None = None,
+                           on_written: Callable[[], None] | None = None,
+                           required_capability: str | None = None) -> AgentResponse:
         async with self._router.resolve(RouteRequest(envelope, allow_create=False)) as route:
             try:
-                result = await self._transport.send_request(route.targets[0], envelope, timeout=timeout)
+                kwargs = {} if on_written is None else {"on_written": on_written}
+                if required_capability is not None:
+                    kwargs["required_capability"] = required_capability
+                result = await self._transport.send_request(route.targets[0], envelope, timeout=timeout, **kwargs)
             except TransportError as exc:
                 if exc.__cause__ is not None:
                     raise exc.__cause__
@@ -115,16 +127,29 @@ class StaticAgentClient(SouthboundAgentClient):
                 raise
 
 
-def build_static_client(uri: str, *, shared_directory_layout: bool = False) -> SouthboundAgentClient:
-    target = ConnectionTarget(TransportKind.WEBSOCKET, uri)
+def build_static_client(
+    uri: str, *, shared_directory_layout: bool = False, wire_logger: logging.Logger | None = None,
+    private_methods: frozenset[str] = frozenset(), headers: tuple[tuple[str, str], ...] = (),
+) -> SouthboundAgentClient:
+    """The fixed local client; the optional log options keep it the same connection.
+
+    ``headers`` are sent on the AgentServer handshake and belong to the target,
+    so a reused connection is one that was opened with them.
+    """
+    target = ConnectionTarget(TransportKind.WEBSOCKET, uri, headers=headers)
     control = FixedTargetControl(target)
     return StaticAgentClient(
-        control, StaticRouter(control), StaticWebSocketTransport(target),
+        control, StaticRouter(control),
+        # The transport owns the socket, so the log options belong to it.
+        StaticWebSocketTransport(target, wire_logger=wire_logger, private_methods=private_methods),
         shared_directory_layout=shared_directory_layout,
     )
 
 
-def assemble_client(extension: Any, *, mode: str, enterprise: bool, uri: str) -> AgentServerClient:
+def assemble_client(
+    extension: Any, *, mode: str, enterprise: bool, uri: str, wire_logger: logging.Logger | None = None,
+    private_methods: frozenset[str] = frozenset(), headers: tuple[tuple[str, str], ...] = (),
+) -> AgentServerClient:
     """Reuse extension-owned clients and select the default fixed deployment.
 
     Preserve extension-declared layout capabilities, except for the legacy
@@ -134,7 +159,14 @@ def assemble_client(extension: Any, *, mode: str, enterprise: bool, uri: str) ->
 
     def websocket_factory() -> AgentServerClient:
         if not enterprise:
-            return build_static_client(uri, shared_directory_layout=True)
+            # The options reach the builder only when asked for: otherwise this
+            # is the call the single process has always made.
+            options = {}
+            if wire_logger is not None or private_methods:
+                options = {"wire_logger": wire_logger, "private_methods": private_methods}
+            if headers:
+                options["headers"] = headers
+            return build_static_client(uri, shared_directory_layout=True, **options)
         client = WebSocketAgentServerClient(ping_interval=20.0, ping_timeout=600.0)
         client.shared_directory_layout = False
         return client

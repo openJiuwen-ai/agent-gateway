@@ -26,6 +26,7 @@ from agent_gateway.common.session_message import (
 )
 from agent_gateway.channel_manager.base import RobotMessageRouter
 from agent_gateway.routing.base_ws_channel import BaseWsChannel
+from agent_gateway.routing.owner_delivery import OwnerDelivery
 from agent_gateway.routing.session_sharing import RoutingTarget
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,9 @@ class TuiChannelConfig:
     """TuiChannel 配置（占位——ws 宿主由 GatewayServer 承担，此处仅满足 BaseChannel 契约）."""
 
     enabled: bool = True
+    # Sharded Cron: deliver a Cron push only to connections of its owner user.
+    # Single mode keeps the historical broadcast to every TUI client.
+    cron_owner_filter: bool = False
 
 
 class TuiChannel(BaseWsChannel):
@@ -88,6 +92,22 @@ class TuiChannel(BaseWsChannel):
     ) -> None:
         """向 TUI 客户端发送消息.
 
+        A static Worker delivers the Message to the user it names only.
+        """
+        gate = self.owner_delivery
+        if gate is None:
+            await self._send_scoped(msg, routing_target)
+            return
+        with gate.scope(gate.of_message(msg)):
+            await self._send_scoped(msg, routing_target)
+
+    async def _send_scoped(
+            self,
+            msg: Any,
+            routing_target: RoutingTarget | None,
+    ) -> None:
+        """向 TUI 客户端发送消息.
+
         team 模式（routing_target 非空）：优先 delivery.ws_id 物理寻址（_ws_by_id），
         miss 再按 routing_keys 五维精确查 _clients_by_key。
         非团队模式（routing_target 为空）：扫 _clients_by_key 按 session_id 命中
@@ -117,6 +137,10 @@ class TuiChannel(BaseWsChannel):
             for ws_list in self._clients_by_key.values():
                 for w in ws_list:
                     if not getattr(w, "closed", False):
+                        if self.config.cron_owner_filter:
+                            owner = str(msg.payload.get("user_id") or "")
+                            if not owner or self._extract_ws_user_id(w) != owner:
+                                continue
                         clients.add(w)
             for w in clients:
                 self._enqueue_send(w, frame)

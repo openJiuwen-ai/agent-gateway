@@ -29,6 +29,12 @@ from agent_gateway.channel_manager.web.channel_sync import (
     select_channel_snapshot,
 )
 from agent_gateway.southbound.orchestration.client import SouthboundAgentClient
+from agent_gateway.southbound.orchestration.instance_lifecycle import (
+    MAX_UNCERTAIN_CREATE_ATTEMPTS,
+    AgentOSInstanceLifecycle,
+    AgentOSSandboxAttempt,
+    AgentOSSandboxLifecycle,
+)
 from agent_gateway.southbound.orchestration.agent_manager import (
     BUILTIN_AGENT_TYPE,
     AgentCreateInterrupted,
@@ -203,26 +209,10 @@ class _PreparationTrace:
     ready: bool = False
 
 
-@dataclass
-class _SandboxAttempt:
-    generation: str
-    deterministic_id: str
-    create: Callable[[], Awaitable[SandboxInfo]]
-    sandbox: SandboxInfo | None = None
-    uncertain_attempts: int = 0
-
-
-@dataclass
-class _SandboxLifecycle:
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    users: int = 0
-    retired_instance: str = ""
-    delete_retry_at: float | None = None
-    retirement_task: asyncio.Task[None] | None = None
-    attempt: _SandboxAttempt | None = None
-    provisioned_instance: str = ""
-    shared_sandbox: SandboxInfo | None = None
-    shared_sandbox_owner: str = ""
+# Sandbox lifecycle records live in instance_lifecycle, shared with the worker
+# dynamic-instance leaf. These router-private names remain for existing callers.
+_SandboxAttempt = AgentOSSandboxAttempt
+_SandboxLifecycle = AgentOSSandboxLifecycle
 
 
 def sandbox_name(user_id: str, agent_type: str) -> str:
@@ -331,9 +321,7 @@ _SANDBOX_PROBE_QUERY_TIMEOUT_SECONDS = 10.0
 _SANDBOX_PROBE_CONCURRENCY = 8
 _SANDBOX_UNAVAILABLE_STATUSES = frozenset({"failed", "deleted", "deleting"})
 
-# 同一个 attempt 的创建结果不确定时，首次 + 最多 3 次同名重放；超限后
-# 退役当前实例并转 FAILED，避免确定性 5xx 让用户永远停在 pending。
-_MAX_UNCERTAIN_CREATE_ATTEMPTS = 4
+_MAX_UNCERTAIN_CREATE_ATTEMPTS = MAX_UNCERTAIN_CREATE_ATTEMPTS
 
 # 注册中心写操作的指数退避重试：初始 1s、倍率 2、上限 30s。
 # 连接类错误（RegistryConnectionError / 5xx）按此退避重试直至成功、agent 被
@@ -631,6 +619,39 @@ def _validate_agent_workspace(workspace: Path) -> None:
         raise ValueError(f"agent workspace is not a directory: {workspace}")
 
 
+class _RouterSandboxLifecycleOperations:
+    """Route shared lifecycle steps back through the router, so its wrappers stay patchable."""
+
+    def __init__(self, router: ManagedRouter) -> None:
+        self._router = router
+
+    async def wait_for_retired_sandbox(
+        self, lifecycle: _SandboxLifecycle, deadline: float,
+    ) -> None:
+        await self._router._wait_for_retired_sandbox(lifecycle, deadline)
+
+    async def observe_retired_sandbox(
+        self, lifecycle: _SandboxLifecycle, *, allow_retry: bool = True,
+    ) -> bool:
+        return await self._router._observe_retired_sandbox(lifecycle, allow_retry=allow_retry)
+
+    async def replay_or_fail_uncertain_create(
+        self, lifecycle: _SandboxLifecycle, attempt: _SandboxAttempt, exc: Exception,
+    ) -> None:
+        await self._router._replay_or_fail_uncertain_create(lifecycle, attempt, exc)
+
+    async def post_sandbox_attempt(
+        self, lifecycle: _SandboxLifecycle, attempt: _SandboxAttempt, deadline: float,
+    ) -> None:
+        await self._router._post_sandbox_attempt(lifecycle, attempt, deadline)
+
+    async def delete_retired_sandbox(self, lifecycle: _SandboxLifecycle) -> None:
+        await self._router._delete_retired_sandbox(lifecycle)
+
+    async def request_sandbox_delete(self, lifecycle: _SandboxLifecycle) -> bool:
+        return await self._router._request_sandbox_delete(lifecycle)
+
+
 class ManagedRouter(SouthboundAgentClient):
     """Request and lifecycle coordination for managed AgentServer instances."""
 
@@ -697,6 +718,12 @@ class ManagedRouter(SouthboundAgentClient):
         )
         self._connect_warmup_enabled = bool(connect_warmup_enabled)
         self._probe_settings = probe_settings or DEFAULT_RUNTIME_PROBE_SETTINGS
+        self._instance_lifecycle = AgentOSInstanceLifecycle(
+            self._managed_control,
+            self._probe_settings,
+            cleanup_step=self._instance_cleanup_step,
+            operations=_RouterSandboxLifecycleOperations(self),
+        )
         self._idle_reaper_task: asyncio.Task[None] | None = None
         self._stale_cleanup_task: asyncio.Task[None] | None = None
         self._sandbox_probe_task: asyncio.Task[None] | None = None
@@ -724,6 +751,21 @@ class ManagedRouter(SouthboundAgentClient):
         # 每次全局配置保存自增；在途 fanout 只有仍属于最新一代时才能更新
         # 快照/已同步标记，避免旧 fanout 晚到后覆盖新配置。
         self._channel_sync_generation: int = 0
+
+    def _instance_cleanup_step(self, step: str, outcome: str, reason: str = "") -> None:
+        if (
+            step == "frontend"
+            and outcome == "incomplete"
+            and get_cleanup_result("frontend.delete") is not None
+        ):
+            # An observed delete result is already recorded; never downgrade it.
+            return
+        _cleanup_step(step, outcome, reason)
+
+    def _sandbox_lifecycle_service(self) -> AgentOSInstanceLifecycle:
+        # ``_probe_settings`` may be replaced after construction; follow it.
+        self._instance_lifecycle.probe_settings = self._probe_settings
+        return self._instance_lifecycle
 
     def set_channel_manager(self, channel_manager: ChannelManager, *, authenticate_http=None) -> None:
         """Attach handshake IAM for Web/TUI and subscribe channel disconnect events."""
@@ -3394,39 +3436,14 @@ class ManagedRouter(SouthboundAgentClient):
             yield retire
 
     async def _wait_for_retired_sandbox(self, lifecycle: _SandboxLifecycle, deadline: float) -> None:
-        loop = asyncio.get_running_loop()
-        retries = 0
-        try:
-            async with asyncio.timeout_at(deadline):
-                while True:
-                    retry_at = lifecycle.delete_retry_at
-                    if await self._observe_retired_sandbox(lifecycle, allow_retry=retries < 3):
-                        return
-                    if lifecycle.delete_retry_at != retry_at:
-                        retries += 1
-                    await asyncio.sleep(min(
-                        max(0.1, self._probe_settings.wait_running_interval_seconds),
-                        max(0.0, deadline - loop.time()),
-                    ))
-        except TimeoutError as exc:
-            raise AgentRebuildPending("AGENT_REBUILD_PENDING: waiting for the old sandbox") from exc
+        await self._sandbox_lifecycle_service().wait_for_retired_sandbox(lifecycle, deadline)
 
     async def _observe_retired_sandbox(
         self, lifecycle: _SandboxLifecycle, *, allow_retry: bool = True,
     ) -> bool:
-        """Return true only for an explicit absence; retry only after a positive observation."""
-        try:
-            await self._managed_control.query(lifecycle.retired_instance)
-        except AgentNotFoundError:
-            lifecycle.delete_retry_at = None
-            return True
-        except AgentApiError:
-            return False
-        retry_at = lifecycle.delete_retry_at
-        if allow_retry and retry_at is not None and asyncio.get_running_loop().time() >= retry_at:
-            if await self._request_sandbox_delete(lifecycle):
-                raise AgentRebuildPending("AGENT_REBUILD_PENDING: old sandbox deletion was rejected")
-        return False
+        return await self._sandbox_lifecycle_service().observe_retired_sandbox(
+            lifecycle, allow_retry=allow_retry,
+        )
 
     async def _replay_or_fail_uncertain_create(
         self,
@@ -3434,130 +3451,25 @@ class ManagedRouter(SouthboundAgentClient):
         attempt: _SandboxAttempt,
         exc: Exception,
     ) -> None:
-        """Replay an uncertain create with the same name, up to a hard limit.
-
-        The same name cannot create a second sandbox, but a deterministic 5xx
-        would otherwise replay forever and never let the runtime reach FAILED.
-        """
-        attempt.uncertain_attempts += 1
-        if attempt.uncertain_attempts < _MAX_UNCERTAIN_CREATE_ATTEMPTS:
-            lifecycle.attempt = attempt
-            raise AgentRebuildPending(
-                "AGENT_REBUILD_PENDING: the create result is unknown"
-            ) from exc
-
-        lifecycle.retired_instance = attempt.deterministic_id
-        lifecycle.delete_retry_at = None
-        lifecycle.attempt = None
-        await self._request_sandbox_delete(lifecycle)
-        raise AgentCreateFailed(
-            "sandbox create stayed uncertain after "
-            f"{attempt.uncertain_attempts} attempts: {exc}"
-        ) from exc
+        await self._sandbox_lifecycle_service().replay_or_fail_uncertain_create(
+            lifecycle, attempt, exc,
+        )
 
     async def _post_sandbox_attempt(
         self, lifecycle: _SandboxLifecycle, attempt: _SandboxAttempt, deadline: float,
     ) -> None:
-        try:
-            async with asyncio.timeout_at(deadline):
-                attempt.sandbox = await attempt.create()
-        except (TimeoutError, AgentTimeoutError, AgentCreateUncertainError) as exc:
-            await self._replay_or_fail_uncertain_create(lifecycle, attempt, exc)
-        except AgentGenerationMismatchError as exc:
-            # A replay may find a name owned by another generation.
-            lifecycle.attempt = None
-            raise AgentRebuildPending("AGENT_REBUILD_PENDING: the sandbox generation did not match") from exc
-        except (ValueError, AgentApiError) as exc:
-            status = getattr(exc, "status_code", None)
-            if isinstance(exc, AgentApiError) and status == 429:
-                # 429 未创建新沙箱，但上一次结果不确定的 POST 可能已经建好实例。
-                # 保留 attempt 让下次请求重放，不要退役并删除这个可能存活的实例。
-                raise AgentRebuildPending(
-                    "AGENT_REBUILD_PENDING: replacement creation was rate limited"
-                ) from exc
-            if isinstance(exc, AgentApiError) and (
-                status == 408 or (isinstance(status, int) and status >= 500)
-            ):
-                # 408/5xx 的结果不确定：保留 attempt，下一次请求重放同一名称。
-                await self._replay_or_fail_uncertain_create(lifecycle, attempt, exc)
-            # Retire this name so the next request starts a new generation instead of replaying a refused create.
-            lifecycle.retired_instance = attempt.deterministic_id
-            lifecycle.attempt = None
-            await self._request_sandbox_delete(lifecycle)
-            raise AgentRebuildPending("AGENT_REBUILD_PENDING: replacement creation was rejected") from exc
+        await self._sandbox_lifecycle_service().post_sandbox_attempt(
+            lifecycle, attempt, deadline,
+        )
 
     async def _provision_sandbox(
         self,
         lifecycle: _SandboxLifecycle,
         attempt: _SandboxAttempt,
     ) -> SandboxInfo:
-        if not lifecycle.retired_instance and lifecycle.attempt is None:
-            try:
-                return await attempt.create()
-            except AgentRequestNotSentError as exc:
-                raise AgentRebuildPending("AGENT_REBUILD_PENDING: create request was not sent") from exc
-            except (AgentTimeoutError, AgentCreateUncertainError) as exc:
-                # Keep this attempt so later callers replay the same name
-                # instead of minting a generation that could orphan this POST.
-                await self._replay_or_fail_uncertain_create(lifecycle, attempt, exc)
-            except asyncio.CancelledError:
-                lifecycle.attempt = attempt
-                raise
-            except AgentApiError as exc:
-                # 429 is an explicit rejection: no sandbox was created by this
-                # attempt. Treat it as a retryable pre-create failure instead of
-                # caching a permanent FAILED runtime. Other 4xx may be
-                # deterministic (bad runtime_spec etc.) and keep the old path.
-                status = getattr(exc, "status_code", None)
-                if status == 429:
-                    raise AgentPreCreateError(
-                        "AGENT_PRE_CREATE_RETRYABLE: sandbox create was rate "
-                        f"limited: {exc}"
-                    ) from exc
-                if status == 408 or (isinstance(status, int) and status >= 500):
-                    # 408/5xx 的结果不确定：保留 attempt，下一次请求重放同一名称。
-                    await self._replay_or_fail_uncertain_create(lifecycle, attempt, exc)
-                raise
-
-        deadline = asyncio.get_running_loop().time() + self._probe_settings.wait_running_timeout_seconds
-        lifecycle.attempt = attempt
-        if attempt.sandbox is None:
-            if lifecycle.retired_instance:
-                await self._wait_for_retired_sandbox(lifecycle, deadline)
-            # Environment derives the instance ID from the name and returns the existing instance
-            # on a repeated create (AGENT_REUSE_EXISTING_INSTANCE), so a replay cannot start a second one.
-            await self._post_sandbox_attempt(lifecycle, attempt, deadline)
-        sandbox = attempt.sandbox
-        if sandbox.sandbox_id == lifecycle.retired_instance:
-            # A delayed DELETE still targets this ID even if its marker
-            # changed. Never publish it as a replacement.
-            raise AgentRebuildPending("AGENT_REBUILD_PENDING: replacement reused the retired sandbox ID")
-        try:
-            await self._managed_control.verify_generation(
-                sandbox, generation=attempt.generation, deadline=deadline,
-            )
-        except AgentGenerationMismatchError as exc:
-            # Each generation has its own name. A mismatch cannot establish
-            # ownership of the instance or justify deleting it.
-            raise AgentRebuildPending("AGENT_REBUILD_PENDING: the sandbox generation did not match") from exc
-        except AgentFailedError as exc:
-            lifecycle.retired_instance = sandbox.sandbox_id
-            lifecycle.attempt = None
-            await self._request_sandbox_delete(lifecycle)
-            raise AgentRebuildPending("AGENT_REBUILD_PENDING: replacement sandbox failed to start") from exc
-        except AgentNotVisibleError as exc:
-            if sandbox.sandbox_id == attempt.deterministic_id:
-                # A later caller can retry this same physical name after
-                # the acknowledged instance remains invisible.
-                attempt.sandbox = None
-            raise AgentRebuildPending("AGENT_REBUILD_PENDING: replacement sandbox is not visible yet") from exc
-        except AgentApiError as exc:
-            # Keep the candidate so the next caller can resume polling it.
-            raise AgentRebuildPending("AGENT_REBUILD_PENDING: replacement sandbox is not verified yet") from exc
-        lifecycle.retired_instance = ""
-        lifecycle.delete_retry_at = None
-        lifecycle.attempt = None
-        return sandbox
+        return await self._sandbox_lifecycle_service().provision_sandbox(
+            lifecycle, attempt,
+        )
 
     def _sandbox_physical_name(self, agent_info: AgentInfo) -> str:
         return f"gateway-{agent_info.agent_id}"
@@ -4177,30 +4089,10 @@ class ManagedRouter(SouthboundAgentClient):
         )
 
     async def _delete_retired_sandbox(self, lifecycle: _SandboxLifecycle) -> None:
-        # The frontend may ACK before its background kill runs, or lose its
-        # response after accepting the request. In both cases give that kill
-        # time to complete before a positive observation can trigger a retry.
-        retry_delay = max(1.0, self._probe_settings.wait_running_interval_seconds)
-        try:
-            async with asyncio.timeout(self._probe_settings.wait_running_timeout_seconds):
-                await self._managed_control.delete(lifecycle.retired_instance)
-        except (AgentRequestNotSentError, AgentDeleteRejectedError):
-            retry_delay = max(0.01, self._probe_settings.wait_running_interval_seconds)
-            raise
-        finally:
-            lifecycle.delete_retry_at = asyncio.get_running_loop().time() + retry_delay
+        await self._sandbox_lifecycle_service().delete_retired_sandbox(lifecycle)
 
     async def _request_sandbox_delete(self, lifecycle: _SandboxLifecycle) -> bool:
-        """Request deletion and return whether the frontend definitely rejected it."""
-        try:
-            await self._delete_retired_sandbox(lifecycle)
-            if get_cleanup_result("frontend.delete") is None:
-                _cleanup_step("frontend", "incomplete", "result_unconfirmed")
-        except Exception as exc:
-            _cleanup_step("frontend", "failed", type(exc).__name__)
-            logger.exception("Environment sandbox delete failed: instance_id=%s", lifecycle.retired_instance)
-            return isinstance(exc, (AgentRequestNotSentError, AgentDeleteRejectedError))
-        return False
+        return await self._sandbox_lifecycle_service().request_sandbox_delete(lifecycle)
 
     async def _retire_sandbox(
         self, lifecycle: _SandboxLifecycle, agent_info: AgentInfo, *, best_effort_registry: bool = False,

@@ -18,6 +18,7 @@ from typing import Any
 
 from agent_gateway.channel_manager.base import BaseWebChannel
 from agent_gateway.routing.keys import DeliveryTarget, RoutingKey
+from agent_gateway.routing.owner_delivery import OwnerDelivery
 from agent_gateway.routing.session_sharing import RoutingTarget
 from agent_gateway.trace_context import trace_context_from_headers
 
@@ -400,6 +401,25 @@ class BaseWsChannel(BaseWebChannel):
             op = None
         return data, op
 
+    # Installed on a Worker that serves named users from static targets.
+    owner_delivery: OwnerDelivery | None = None
+
+    def _outbound_connection_user(self, ws: Any) -> str | None:
+        return self._extract_ws_user_id(ws) or None
+
+    def _owner_allows(self, ws: Any) -> bool:
+        """Static multi-target gate: one frame reaches its owner's sockets only."""
+        gate = self.owner_delivery
+        if gate is None:
+            return True
+        allowed = OwnerDelivery.allows(self._outbound_connection_user(ws), OwnerDelivery.owner_in_scope())
+        if not allowed:
+            logger.debug(
+                "[%s] outbound frame without a matching owner dropped ws_id=%s",
+                self.channel_id, getattr(ws, "_jiuwen_ws_id", ""),
+            )
+        return allowed
+
     def _enqueue_send(self, ws: Any, data: Any) -> None:
         """非阻塞入队一帧到 ws 的出站队列，立即返回。
 
@@ -407,6 +427,8 @@ class BaseWsChannel(BaseWebChannel):
         与 ``_coalesce`` 解析回 dict 的往返）、str/bytes（原样发送）或 None
         哨兵。ws 已关闭或队列缺失时静默丢弃（与旧 _safe_send 语义一致）。
         """
+        if not self._owner_allows(ws):
+            return
         data, op = self._trace_outbound_frame(ws, data)
         ws_id = getattr(ws, "_jiuwen_ws_id", "")
         q = self._send_queues.get(ws_id)

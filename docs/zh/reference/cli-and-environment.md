@@ -14,7 +14,95 @@
 | `--web-path <PATH>` | `WEB_PATH` 或 `/ws` | WebChannel WebSocket 路径 |
 | `--name <name>` | 无 | 启动 `instances.yaml` 中的命名实例 |
 | `--dotenv <path>` | 无 | 启动时从指定 `.env` 加载环境变量（仅启动阶段生效） |
+| `--enable-cron` | 关闭 | 在 `--mode multiprocess` 中启用受支持的文件模式个人版 Cron 任务；使用账号登录或非默认项目的任务会被拒绝 |
+| `--check-cron` | 关闭 | 配合 `--mode multiprocess --enable-cron` 使用：以 JSON 输出只读的 Cron 预检报告并退出 |
+| `--southbound-routes-file <path>` | 无 | 配合 `--mode multiprocess` 使用：静态多 AgentServer 试点。该 JSON 文件为每个具名用户固定其回环 AgentServer 及所属 Worker 槽位 |
 | `-h, --help` | 无 | 显示帮助并退出 |
+
+### 本地多进程试点
+
+仅用于个人版 IPv4 回环部署。显式使用 `--mode multiprocess --workers 2` 启动两个 Worker；省略 `--mode` 仍走原单进程。北向仅开放试点支持的 Web `/ws`、健康探针和 TUI／ACP 数据操作；南向连接单个 `ws://127.0.0.1:<端口>`。账号管理和可选渠道请继续使用单进程。试点中的 Cron 默认关闭，需显式传入 `--enable-cron`。要接入多个本地 AgentServer 而非一个，请使用下文的静态试点。
+
+### 静态多 AgentServer 试点（仅路由）
+
+```bash
+agent-gateway --mode multiprocess --workers 2 --southbound-routes-file routes.json
+```
+
+`routes.json` 是一份本地、不含密钥的快照，固定每个具名用户由哪个回环 AgentServer 提供服务。每个 Worker 保留自己的固定槽位，只连接该槽位的目标。连接的具名用户（`user_id` 查询参数，TUI／ACP 上的 `X-User-Id`）决定目标。这里没有默认 AgentServer：用户没有目标的连接，以及与所属连接用户不一致的帧，都会在任何处理器为其保留状态之前以 `1008` 关闭。
+
+文件规则：
+
+- UTF-8 JSON，不超过 16 KiB，必须且只能包含下列全部字段。未知、缺失或重复的字段都会被拒绝。
+- `manifest.slots` 必须与 `--workers` 的槽位完全一致：一个 Worker 为 `[0]`，两个为 `[0, 1]`，依此类推。
+- `owner_slot` 是该用户的固定亲和规则在此 manifest 下选中的槽位。这与为连接选择 Worker 是同一条规则，因此应计算得出，而不是自行指定：
+
+```python
+from agent_gateway.common.ingress_identity import LocalIdentityPolicy, resolve_local_identity
+from agent_gateway.common.worker_affinity import FixedUserHash, WorkerManifest
+
+
+def owner_slot(user_id: str, workers: int) -> int:
+    policy = LocalIdentityPolicy()
+    affinity = FixedUserHash(WorkerManifest(tuple(range(workers))), policy)
+    identity = resolve_local_identity(f"user_id={user_id}".encode(), (), entry="web", policy=policy)
+    return affinity.select(identity)
+```
+
+- `target_id`、`physical_id`、`user_id`、`ws_url` 在同一文件内各自唯一。`ws_url` 为 `ws://127.0.0.1:<端口>` 或 `ws://[::1]:<端口>`，可带路径，不能含凭据、查询串或片段。`agent_type` 为 `jiuwenswarm`。单个文件最多 32 个目标。
+
+两个 Worker 的示例：
+
+```json
+{
+  "schema_version": 1,
+  "revision": 1,
+  "identity_policy": {"contract_id": "local-v1", "domain": "local"},
+  "manifest": {"slots": [0, 1], "config_version": 1, "algorithm": "hrw-sha256-v1"},
+  "targets": [
+    {
+      "target_id": "as-a", "physical_id": "as-a", "generation": 1, "user_id": "alice",
+      "agent_type": "jiuwenswarm", "owner_slot": 0, "ws_url": "ws://127.0.0.1:8081/agent"
+    },
+    {
+      "target_id": "as-b", "physical_id": "as-b", "generation": 1, "user_id": "bob",
+      "agent_type": "jiuwenswarm", "owner_slot": 1, "ws_url": "ws://127.0.0.1:8082/agent"
+    }
+  ]
+}
+```
+
+静态 Worker 保证的行为：
+
+- **路由。** 请求只到达其连接用户的目标，不会到达其他任何目标。没有服务发现，没有 Worker 之间的转发，也没有故障转移：目录只能通过以新的 `revision` 重启来变更。
+- **会话。** 在一个 Worker 内，一个会话 ID 只属于一个目标，不论它是 AgentServer 自己的 ID，还是 ACP 会话对客户端可见的 ID。指名其他目标会话的帧会在套接字处被拒绝。
+- **投递。** 出站帧只到达其归属用户的套接字：依次取请求的用户、帧声明的用户、会话的用户。没有归属用户的帧不予投递。
+- **启动。** 某个 Worker 无法连接其任一目标时，整个进程组以 `SOUTHBOUND_UNREACHABLE` 停止，且不开放任何监听。目录或角色是 Worker 无法提供服务的，则以 `SOUTHBOUND_CONFIGURATION` 失败。
+- **推送。** AgentServer 的 `send_push` 帧只有在发送它的目标拥有该帧所指的请求 ID 或会话时才会被投递。由其他目标发送的帧，或未指名任何已归属请求或会话的帧，都会被丢弃。
+
+一个 AgentServer 只有一个主动推送槽位，属于它最新的非 RPC WebSocket 连接。AgentServer 是否会把某个推送给到本 Gateway 的连接，取决于该 AgentServer 自身。本试点不承诺未关联任何请求或会话的推送能到达任何用户，无论是同一 Worker 还是其他 Worker 上的用户。
+
+- `--enable-accounts` 将凭据限制在目标 AS 和 Worker 槽位内。`--enable-cron` 按任务归属调度文件任务，并把工具确认回给原 AS；只读预检会拦截没有静态路由的已启用任务。
+
+本版本中静态 Worker 不提供的内容：
+
+- **免账号 Worker 的个人版兼容能力。** 其原生 TUI 请求、个人版 Web 设置与操作，以及心跳代理，都是读取单个 AgentServer 的用户目录来应答的。静态 Worker 的每个具名用户各有一个 AgentServer，因此不安装这些能力，并拒绝相应请求。
+- **附件。** 带 `files`、`media_items`、`attachments` 或 `documents` 的 `chat.send` 会被拒绝：每个用户都有私有的 AgentServer 目录，Gateway 无法代用户导入文件。
+- **其他智能体与配置写入。** `jiuwenswarm` 以外的 `agent_type`，以及所有 Gateway 配置变更。
+
+### ADX 动态实例试点
+
+在受信的回环部署中使用 `--mode multiprocess --workers 2 --instance-provider-file instances.json`。`InstanceProviderSpec` 文件不含密钥，定义槽位、允许的用户、命名空间、Ingress、注册表及工作目录，并须与现有 ADX 路由配置一致（`gateway.agent_client.type` 为 `adx_router` 或 `agentos_router`）。Ingress 凭据仍来自配置指定的环境变量。试点不可与静态路由、账号服务或 Cron 同时开启。
+
+首个数据请求按用户归属领取或创建实例。写入和主动推送受实例代次约束；在途或结果不确定的请求保留占用，空闲实例按配置阈值回收。回收后不把旧会话迁到新代次。试点不提供生产级租户认证，也未覆盖 Worker 崩溃后发现上代实例。
+
+### Cron 迁移预检
+
+```bash
+agent-gateway --mode multiprocess --enable-cron --check-cron --workers 4
+```
+
+使用准备上线的 Worker 数：每个用户的任务固定归属其中一个 Worker，归属由该数量决定。命令读取 `<root>/profile/agent/home/cron_jobs.json` 和 Gateway 配置，输出一行 JSON 后退出；不修改任务，也不启动监听、Worker 或调度器。`issues` 按任务 ID 和归属 Worker 列出阻塞项与警告，不包含任务正文或凭据数据。退出码 `0` 表示所有已启用任务均受支持；`1` 表示存在不支持的启用任务，或配置、任务文件无法读取。`agentserver_checked: false` 表示未向 AgentServer 核验模型可用性与项目执行。带 `--enable-cron` 启动时会执行同一检查，存在不支持的启用任务时不开放监听。
 
 ## 环境变量
 

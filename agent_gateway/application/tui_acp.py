@@ -7,7 +7,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 import os
+import time
 from typing import Any
+
+from e2a.message import EventType, Message
 
 from agent_gateway.application.inbound import InboundQueue, MessagePreprocessor
 from agent_gateway.routing.protocol_runtime import ProtocolRuntime, ProtocolRuntimeConfig, RouteConfig
@@ -71,6 +74,8 @@ async def assemble_tui_acp(
     heartbeat_controller: Any,
     preprocessor: MessagePreprocessor,
     log_stage: Callable[[str], None],
+    personal_tui: bool = False,
+    web_session_busy: Callable[..., bool] | None = None,
 ) -> TuiAcpAssembly:
     from agent_gateway.channel_manager.web.app_web_handlers import (
         _FORWARD_REQ_METHODS, _FORWARD_NO_LOCAL_HANDLER_METHODS, _DummyBus,
@@ -101,10 +106,20 @@ async def assemble_tui_acp(
     if callable(subscribe_fn):
         subscribe_fn(channel_manager)
 
+    async def publish_credential_error(message, error):
+        acp = message.channel_id == "acp"
+        payload = {"error": str(error), "code": "CREDENTIAL_SERVICE_FAILED"}
+        await protocol_runtime.send(Message(
+            id=message.id, type="event" if acp else "res", channel_id=message.channel_id,
+            session_id=message.session_id, params={}, timestamp=time.time(), ok=False,
+            user_id=message.user_id, agent_ref=message.agent_ref, metadata=message.metadata,
+            event_type=EventType.CHAT_ERROR if acp else None, payload=payload,
+        ))
+
     acp_inbound_server = InboundQueue(
-        lambda msg: preprocessor.forward(msg, channel_manager)
+        lambda msg: preprocessor.forward(msg, channel_manager),
+        error_callback=publish_credential_error,
     )
-    await acp_inbound_server.start()
 
     route_bindings = [
         _build_acp_route_binding(
@@ -137,6 +152,13 @@ async def assemble_tui_acp(
     )
     protocol_runtime = ProtocolRuntime(protocol_runtime_config, _DummyBus())
     protocol_runtime.message_handler_ref = message_handler
+    if personal_tui:
+        from agent_gateway.application.personal_tui import PersonalTuiRequests
+
+        tui_route = protocol_runtime_config.routes["/tui"]
+        tui_route.unbound_request_handler = PersonalTuiRequests(
+            protocol_runtime, client, web_session_busy,
+        ).handle
     for binding in route_bindings:
         route_config = protocol_runtime_config.routes[binding.path]
         # tui 出站已由 TuiChannel 接管（register_channel_with_inbound），
@@ -148,5 +170,6 @@ async def assemble_tui_acp(
         if binding.install is not None:
             binding.install(protocol_runtime)
     protocol_runtime.on_message(acp_inbound_server.handle_message)
+    await acp_inbound_server.start()
     log_stage("gateway_routes_registered")
     return TuiAcpAssembly(tui_channel, acp_inbound_server, protocol_runtime)

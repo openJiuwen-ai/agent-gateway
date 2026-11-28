@@ -11,6 +11,7 @@ from agent_gateway.extensions.agentos.agentos_router.agent_manager import (
     AgentCreatingTimeout,
     AgentDeleted,
     AgentManager,
+    AgentRebuildPending,
     AgentRuntime,
     normalize_agent_key_fields,
 )
@@ -580,3 +581,196 @@ async def test_idle_pop_refuses_while_shared_sandbox_is_creating():
     finally:
         release.set()
         await asyncio.gather(creating, return_exceptions=True)
+
+
+async def test_recover_creating_agent_uses_cas_and_wakes_waiters():
+    manager = AgentManager(creating_timeout_seconds=5.0)
+    creator_started = asyncio.Event()
+    release_creator = asyncio.Event()
+
+    async def creator(info):
+        creator_started.set()
+        await release_creator.wait()
+        info.sandbox_id = "physical-instance"
+        info.metadata["physical_generation"] = "physical-generation"
+        return info
+
+    owner = asyncio.create_task(
+        manager.get_or_create_agent("alice", "jiuwenswarm", creator=creator, acquire=True)
+    )
+    await creator_started.wait()
+    creating = await manager.get_agent("alice", "jiuwenswarm")
+    assert creating is not None
+    logical_id = creating.info.agent_id
+    waiter = asyncio.create_task(
+        manager.get_or_create_agent("alice", "jiuwenswarm", creator=creator)
+    )
+    await asyncio.sleep(0)
+
+    wrong_recovery = AgentInfo(
+        user_id="alice", agent_type="jiuwenswarm", agent_id=logical_id,
+        sandbox_id="wrong-instance",
+    )
+    assert await manager.recover_creating_agent(
+        "alice", "jiuwenswarm", expected_agent_id="wrong-id", created=wrong_recovery,
+    ) is None
+
+    recovered_info = AgentInfo(
+        user_id="alice", agent_type="jiuwenswarm", agent_id=logical_id,
+        sandbox_id="physical-instance", metadata={"physical_generation": "physical-generation"},
+    )
+    recovered = await manager.recover_creating_agent(
+        "alice", "jiuwenswarm", expected_agent_id=logical_id, created=recovered_info,
+    )
+    assert recovered is not None
+    assert recovered.is_ready()
+    assert recovered.info.agent_id == logical_id
+    assert recovered.info.sandbox_id == "physical-instance"
+    assert recovered.info.metadata["physical_generation"] == "physical-generation"
+
+    waited = await asyncio.wait_for(waiter, 1)
+    assert waited.info.agent_id == logical_id
+    assert waited.info.sandbox_id == "physical-instance"
+
+    release_creator.set()
+    finished = await owner
+    assert finished.info.agent_id == logical_id
+    assert finished.info.sandbox_id == "physical-instance"
+    assert finished.info.metadata["physical_generation"] == "physical-generation"
+
+    assert await manager.recover_creating_agent(
+        "alice", "jiuwenswarm", expected_agent_id=logical_id, created=recovered_info,
+    ) is None
+
+
+async def test_precreate_failure_after_recovery_keeps_the_ready_runtime():
+    manager = AgentManager(creating_timeout_seconds=5.0)
+    creator_started = asyncio.Event()
+    fail_creator = asyncio.Event()
+
+    async def creator(info):
+        creator_started.set()
+        await fail_creator.wait()
+        # A superseded generation gives up instead of publishing a second instance.
+        raise AgentRebuildPending("AGENT_REBUILD_PENDING: instance logical identity was recovered")
+
+    owner = asyncio.create_task(manager.get_or_create_agent("alice", "jiuwenswarm", creator=creator))
+    await creator_started.wait()
+    creating = await manager.get_agent("alice", "jiuwenswarm")
+    assert creating is not None
+    assert await manager.recover_creating_agent(
+        "alice", "jiuwenswarm", expected_agent_id=creating.info.agent_id,
+        created=AgentInfo(
+            user_id="alice", agent_type="jiuwenswarm", agent_id=creating.info.agent_id,
+            sandbox_id="physical-instance",
+        ),
+    ) is not None
+
+    fail_creator.set()
+    with pytest.raises(AgentRebuildPending, match="logical identity was recovered"):
+        await owner
+
+    # Discarding the failed creator must not drop the recovered, already READY runtime.
+    current = await manager.get_agent("alice", "jiuwenswarm")
+    assert current is not None and current.is_ready()
+    assert current.info.sandbox_id == "physical-instance"
+
+
+async def test_physical_write_fence_blocks_idle_detach_without_holding_manager_lock():
+    manager = AgentManager()
+    runtime = await manager.get_or_create_agent('alice', 'jiuwenswarm')
+    entered = asyncio.Event()
+    done = asyncio.Event()
+
+    async def write():
+        entered.set()
+        await done.wait()
+
+    sending = asyncio.create_task(manager.send_if_current(runtime, write))
+    try:
+        await entered.wait()
+        # Inspection for unrelated keys must not be serialized behind socket I/O.
+        async with asyncio.timeout(1):
+            assert await manager.get_agent('bob', 'jiuwenswarm') is None
+        await asyncio.sleep(.01)
+        assert await manager.pop_if_idle(runtime.key, .001) is None
+    finally:
+        done.set()
+        await sending
+    assert await manager.pop_if_idle(runtime.key, .001) is not None
+
+
+async def test_physical_write_fence_blocks_explicit_detach_of_a_shared_sandbox():
+    manager = _shared_alias_manager()
+    first = await _create_shared_alias(manager, "one")
+    sibling = await _create_shared_alias(manager, "two")
+    unrelated = await _create_shared_alias(manager, "three", "different")
+    entered = asyncio.Event()
+    done = asyncio.Event()
+
+    async def write():
+        entered.set()
+        await done.wait()
+
+    sending = asyncio.create_task(manager.send_if_current(sibling, write))
+    try:
+        await entered.wait()
+        # "one" shares the sandbox with the fenced "two": a shared detach would strand the write.
+        with pytest.raises(RuntimeError, match="fenced write"):
+            await manager.pop_agent(
+                "user", "test", key_values={"session_id": "one"}, include_shared_sandbox=True,
+            )
+        assert await manager.is_current(first)
+        assert await manager.is_current(sibling)
+        # A detach scoped to "one" does not touch the fenced alias and is unaffected.
+        assert await manager.pop_agent("user", "test", key_values={"session_id": "one"}) is not None
+        assert await manager.is_current(sibling)
+    finally:
+        done.set()
+        await sending
+    assert await manager.is_current(unrelated)
+
+
+async def test_idle_detach_refuses_while_a_shared_alias_write_is_fenced():
+    manager = _shared_alias_manager()
+    await _create_shared_alias(manager, "one")
+    sibling = await _create_shared_alias(manager, "two")
+    entered = asyncio.Event()
+    done = asyncio.Event()
+
+    async def write():
+        entered.set()
+        await done.wait()
+
+    sending = asyncio.create_task(manager.send_if_current(sibling, write))
+    try:
+        await entered.wait()
+        await asyncio.sleep(0.01)
+        assert await manager.pop_if_idle(sibling.key, 0.001, include_shared_sandbox=True) is None
+        assert await manager.is_current(sibling)
+    finally:
+        done.set()
+        await sending
+    assert await manager.pop_if_idle(sibling.key, 0.001, include_shared_sandbox=True) is not None
+
+
+async def test_stale_snapshot_cannot_write_and_a_failed_write_releases_the_fence():
+    manager = AgentManager()
+    stale = await manager.get_or_create_agent('alice', 'jiuwenswarm')
+    assert await manager.pop_agent('alice', 'jiuwenswarm') is not None
+
+    async def stale_write():
+        raise AssertionError("a stale generation must never write")
+
+    with pytest.raises(RuntimeError, match="stale instance generation"):
+        await manager.send_if_current(stale, stale_write)
+
+    replaced = await manager.get_or_create_agent('alice', 'jiuwenswarm')
+
+    async def failing_write():
+        raise ConnectionError("socket closed")
+
+    with pytest.raises(ConnectionError):
+        await manager.send_if_current(replaced, failing_write)
+    # A failed write must not pin its generation forever.
+    assert await manager.pop_agent('alice', 'jiuwenswarm') is not None

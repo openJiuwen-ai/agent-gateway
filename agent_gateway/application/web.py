@@ -21,8 +21,37 @@ from e2a.message import (
 )
 from agent_gateway.channel_manager.web.media import normalize_chat_media_attachments
 from agent_gateway.application.inbound import MessagePreprocessor
+from agent_gateway.application.personal_web_operations import PERSONAL_WEB_OPERATIONS, protect_personal_web_operation
+from agent_gateway.application.personal_settings import PERSONAL_SETTINGS_METHODS, protect_settings_handler
 
 logger = logging.getLogger("gateway")
+
+
+class _PersonalSettingsRegistration:
+    """Registration-only proxy used by the account-free personal Worker.
+
+    Nothing else changes: every attribute is forwarded to the channel and no
+    global hook is installed. A settings method is registered behind the Web
+    Origin and parameter gate, and it never takes the generic forwarding path.
+    """
+
+    def __init__(self, channel: Any) -> None:
+        object.__setattr__(self, "_channel", channel)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._channel, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(self._channel, name, value)
+
+    def register_method(self, method: str, handler: Any, *, local_only: bool = False) -> None:
+        if method in PERSONAL_SETTINGS_METHODS:
+            handler = protect_settings_handler(self._channel, method, handler)
+            local_only = True
+        elif method in PERSONAL_WEB_OPERATIONS:
+            handler = protect_personal_web_operation(self._channel, method, handler)
+            local_only = True
+        self._channel.register_method(method, handler, local_only=local_only)
 
 
 def assemble_web(
@@ -44,6 +73,8 @@ def assemble_web(
     log_stage: Callable[[str], None],
     auth_service_provider: Callable[[], AuthService] | None = None,
     credential_update_sink: CredentialUpdateSink | None = None,
+    personal_settings: bool = False,
+    require_git_activity_snapshot: bool = False,
 ) -> tuple[Any, asyncio.Event]:
     from agent_gateway.channel_manager.protocol.web_proxy.web_proxy_listen import register_3rdagent_web_method
     from agent_gateway.channel_manager.web.app_web_handlers import (
@@ -61,6 +92,7 @@ def assemble_web(
         port=web_port,
         path=web_path,
         ws_permessage_deflate=web_ws_deflate,
+        require_git_activity_snapshot=require_git_activity_snapshot,
     )
     web_channel = WebChannel(
         web_config, _DummyBus(), agent_client=client,
@@ -121,7 +153,7 @@ def assemble_web(
 
     _register_web_handlers(
         WebHandlersBindParams(
-            channel=web_channel,
+            channel=_PersonalSettingsRegistration(web_channel) if personal_settings else web_channel,
             agent_client=client,
             message_handler=message_handler,
             channel_manager=channel_manager,
@@ -130,6 +162,7 @@ def assemble_web(
             cron_controller=cron_controller,
             heartbeat_controller=heartbeat_controller,
             updater_service=updater_service,
+            personal_settings=personal_settings,
         )
     )
 

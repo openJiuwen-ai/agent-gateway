@@ -140,6 +140,9 @@ class AgentRuntime:
     # of a chat request / stream / SSH relay / web proxy; the idle clock only
     # starts once it drops back to zero.
     task_count: int = 0
+    # Physical writes fenced against detach; unlike task_count it is not held
+    # for a whole request and never starts the idle clock.
+    fenced_writes: int = 0
     last_active_at: float = field(default_factory=time.time)
     rebuild_pending: str | None = None
 
@@ -604,6 +607,35 @@ class AgentManager:
                 self._acquire_locked(runtime)
             return runtime.snapshot()
 
+    async def recover_creating_agent(
+        self,
+        user_id: str,
+        agent_type: str,
+        *,
+        expected_agent_id: str,
+        created: AgentInfo,
+        key_values: Mapping[str, Any] | None = None,
+    ) -> AgentRuntime | None:
+        """CAS-recover a still-CREATING runtime with a verified creator result.
+
+        The existing runtime object is retained so concurrent creation waiters
+        wake on its event and an in-flight creator owner cannot later wait on a
+        replacement object. Failure to match the expected logical ID returns
+        ``None`` and does not modify manager state.
+        """
+        key = self._make_key(user_id, agent_type, key_values=key_values)
+        async with self._runtimes_lock:
+            runtime = self._runtimes.get(key)
+            if (
+                runtime is None
+                or runtime.info.agent_id != expected_agent_id
+                or not runtime.is_creating()
+            ):
+                return None
+            resolved = AgentRuntime.apply_creator_result(created, base=runtime.info)
+            runtime.mark_ready(resolved)
+            return runtime.snapshot()
+
     async def wait_for_creation(
         self, user_id: str, agent_type: str, *, expected_agent_id: str,
         key_values: Mapping[str, Any] | None = None,
@@ -624,6 +656,21 @@ class AgentManager:
         except TimeoutError:
             return False
         return True
+
+    async def send_if_current(
+        self, runtime: AgentRuntime, operation: Callable[[], Awaitable[None]],
+    ) -> None:
+        """Fence only a physical write; never hold the manager lock over I/O."""
+        async with self._runtimes_lock:
+            current = self._runtimes.get(runtime.key)
+            if current is None or not current.is_ready() or current.info.agent_id != runtime.info.agent_id:
+                raise RuntimeError('stale instance generation cannot write')
+            current.fenced_writes += 1
+        try:
+            await operation()
+        finally:
+            async with self._runtimes_lock:
+                current.fenced_writes -= 1
 
     async def delete_agent(
         self,
@@ -678,9 +725,12 @@ class AgentManager:
                 and runtime.info.agent_id != expected_agent_id
             ):
                 return None
-            for other_key, other in self._shared_sandbox_runtimes_locked(
+            affected = self._shared_sandbox_runtimes_locked(
                 key, runtime, include_shared_sandbox,
-            ):
+            )
+            if any(other.fenced_writes for _, other in affected):
+                raise RuntimeError('cannot make an instance stale during a fenced write')
+            for other_key, other in affected:
                 self._runtimes.pop(other_key)
                 other.mark_deleted(reason=reason)
             return runtime.snapshot()
@@ -753,7 +803,7 @@ class AgentManager:
             )
             now = time.time()
             if any(
-                not other.is_ready() or other.task_count > 0
+                not other.is_ready() or other.task_count > 0 or other.fenced_writes > 0
                 or now - other.last_active_at < timeout
                 for _, other in candidates
             ):
@@ -863,6 +913,11 @@ class AgentManager:
         """Allow a later request to resume without repeating this request in waiters."""
         async with self._runtimes_lock:
             if self._runtimes.get(key) is not owner_runtime:
+                return
+            if owner_runtime.is_ready():
+                # Another caller recovered this exact runtime with a verified
+                # instance. Keep it; the superseded creator only wakes waiters.
+                owner_runtime.creating_event.set()
                 return
             self._runtimes.pop(key, None)
             owner_runtime.rebuild_pending = rebuild_pending

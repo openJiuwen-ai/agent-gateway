@@ -132,6 +132,10 @@ class ManagedSandboxControl(ManagedControl[SandboxCreateRequest, SandboxInfo, di
         await self.backend.delete_sandbox(instance_id)
 
     @property
+    def frontend_endpoint(self) -> str:
+        return self.backend.frontend_endpoint
+
+    @property
     def server_ready(self) -> bool:
         return self.backend.server_ready
 

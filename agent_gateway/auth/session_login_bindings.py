@@ -11,6 +11,7 @@ from agent_gateway.auth.credential_access import ModelCredential
 
 if TYPE_CHECKING:
     from agent_gateway.auth.service import AuthService
+    from agent_gateway.auth.control_blocking_work import ControlBlockingWork
 
 
 @dataclass(frozen=True)
@@ -34,18 +35,30 @@ class SessionLoginBindings(Protocol):
 class LocalSessionLoginBindings:
     """Reuse the original persistence, TTL and model availability rules."""
 
-    def __init__(self, auth_service_provider: Callable[[], AuthService]) -> None:
+    def __init__(
+        self, auth_service_provider: Callable[[], AuthService], *,
+        blocking_work: ControlBlockingWork | None = None,
+    ) -> None:
         self._auth_service_provider = auth_service_provider
+        self._blocking_work = blocking_work
 
     async def remember(self, session_id: str, credential_ref: str, model_name: str) -> None:
         from agent_gateway.auth import session_owners
 
-        session_owners.remember(session_id, credential_ref, model_name)
+        if self._blocking_work is None:
+            session_owners.remember(session_id, credential_ref, model_name)
+        else:
+            await self._blocking_work.run(
+                session_owners.remember, session_id, credential_ref, model_name,
+            )
 
     async def lookup(self, session_id: str) -> SessionLoginBinding | None:
         from agent_gateway.auth import session_owners
 
-        owner = session_owners.lookup(session_id)
+        if self._blocking_work is None:
+            owner = session_owners.lookup(session_id)
+        else:
+            owner = await self._blocking_work.run(session_owners.lookup, session_id)
         if owner is None:
             return None
         return SessionLoginBinding(owner.credential_ref, owner.model_name)
@@ -59,7 +72,8 @@ class LocalSessionLoginBindings:
                 service=self._auth_service_provider(),
             )
 
-        auth = await asyncio.to_thread(resolve)
+        auth = (await asyncio.to_thread(resolve) if self._blocking_work is None
+                else await self._blocking_work.run(resolve))
         if auth is None:
             return None
         return ModelCredential(

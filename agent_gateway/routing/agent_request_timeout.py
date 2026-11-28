@@ -147,13 +147,18 @@ async def send_agent_request_with_timeout(
     *,
     label: str,
     timeout_seconds: float | None = None,
+    required_capability: str | None = None,
 ) -> Any:
     timeout = request_timeout_from_envelope(env) if timeout_seconds is None else timeout_seconds
-    if timeout is None:
-        return await agent_client.send_request(env)
+    pending = (
+        agent_client.send_request(env) if required_capability is None
+        else agent_client.send_request(env, required_capability=required_capability)
+    )
 
+    if timeout is None:
+        return await pending
     try:
-        return await asyncio.wait_for(agent_client.send_request(env), timeout=timeout)
+        return await asyncio.wait_for(pending, timeout=timeout)
     except asyncio.TimeoutError as exc:
         logger.warning(
             "[%s] AgentServer unary request timed out: request_id=%s method=%s "

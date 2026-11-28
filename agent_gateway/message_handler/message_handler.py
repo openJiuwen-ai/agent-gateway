@@ -419,6 +419,7 @@ class MessageHandler(ABC):
         )
         self._running = False
         self._credential_access: CredentialAccess | None = None
+        self._credential_runtime: Any | None = None
         self._session_login_bindings = session_login_bindings
         self._forward_task: asyncio.Task | None = None
         self._deferred_put_tasks: set[asyncio.Task] = set()
@@ -432,6 +433,10 @@ class MessageHandler(ABC):
         # AgentServer server_push frames only carry request_id. Keep the
         # authenticated owner so cron mutations and reverse E2A stay routed.
         self._stream_user_ids: dict[str, str] = {}
+        # Static multi-AgentServer: every response names the user of the
+        # request it answers, and stream work is cancelled by that user only.
+        self._owner_delivery = False
+        self._request_owner_lookup: Callable[[str], str | None] | None = None
         self._stream_modes: dict[str, str] = {}  # request_id -> mode
         self._stream_emits_processing_status: dict[str, bool] = {}  # request_id -> emits chat.processing_status
         # request_id -> req_method value（如 chat.send / command.goal / history.get）。
@@ -492,6 +497,10 @@ class MessageHandler(ABC):
         # 组合：/join /exit 团队成员管理逻辑（独立文件维护，通过 self._h 访问宿主能力）
         self._join_exit = JoinExitHandlers(self)
         self._cron_controller = None
+        # Controlled Worker Cron: a private command runtime and its tool-push gate.
+        # Both stay at the single-mode defaults unless sharded Cron is assembled.
+        self._cron_tool_push_enabled = True
+        self._cron_command_runtime: Any | None = None
 
         # IM Pipeline（数字分身）— None 时不执行，不影响原有逻辑
         self._inbound_pipeline = None   # type: Any  # IMInboundPipeline | None
@@ -925,6 +934,42 @@ class MessageHandler(ABC):
         修复后后续可将 msg.bot_id 逐步迁移为 msg.app_id。
         """
         return getattr(msg, "app_id", None) or getattr(msg, "bot_id", None) or "default"
+
+    def set_owner_delivery(self, enabled: bool, *, request_owner: Callable[[str], str | None]) -> None:
+        """Bind named-owner responses; single-AgentServer mode keeps its fan-out.
+
+        ``request_owner`` names the user a request id was admitted for, from
+        the Worker route tables that outlive the per-request stream state.
+        """
+        if type(enabled) is not bool or not callable(request_owner):
+            raise ValueError("owner delivery requires a boolean and a request owner lookup")
+        self._owner_delivery = enabled
+        self._request_owner_lookup = request_owner
+
+    def request_owner(self, request_id: str | None) -> str | None:
+        """The user a request belongs to, while it runs and for its late pushes."""
+        rid = str(request_id or "").strip()
+        if not rid:
+            return None
+        user = getattr(self, "_stream_user_ids", {}).get(rid)
+        lookup = getattr(self, "_request_owner_lookup", None)
+        if not user and lookup is not None:
+            user = lookup(rid) or ""
+        return str(user or "").strip() or None
+
+    def _bind_response_owner(self, msg: "Message") -> "Message":
+        """Name the user a response belongs to before any channel sees it.
+
+        The user recorded with the request wins over a declared one. A response
+        whose request is unknown keeps what it declares, or names nobody; a
+        static Worker then refuses to deliver it.
+        """
+        if not getattr(self, "_owner_delivery", False):
+            return msg
+        owner = self.request_owner(getattr(msg, "id", None))
+        if not owner:
+            return msg
+        return msg if owner == getattr(msg, "user_id", None) else replace(msg, user_id=owner)
 
     async def handle_message(self, msg: "Message") -> None:
         """Channel 同步回调：将消息放入 user_messages 队列，由转发循环发给 AgentServer."""
@@ -1519,6 +1564,9 @@ class MessageHandler(ABC):
 
     def _pop_stream_tracking(self, rid: str) -> None:
         """Remove all per-request stream tracking entries for *rid*."""
+        cron_commands = getattr(self, "_cron_command_runtime", None)
+        if cron_commands is not None:
+            cron_commands.complete(rid)
         self._scheduler_stream_ids.discard(rid)
         self._stream_tasks.pop(rid, None)
         self._stream_channels.pop(rid, None)
@@ -1629,9 +1677,13 @@ class MessageHandler(ABC):
         if not channel_id:
             return 0
 
+        sender = str(getattr(msg, "user_id", None) or "").strip()
         candidates: list[tuple[str, asyncio.Task, str | None, str | None]] = []
         for rid, task in list(self._stream_tasks.items()):
             if self._stream_channels.get(rid) != channel_id:
+                continue
+            if getattr(self, "_owner_delivery", False) and self._stream_user_ids.get(rid) != sender:
+                # A static Worker shares the channel tables between users.
                 continue
             if task.done():
                 continue
@@ -3404,6 +3456,7 @@ class MessageHandler(ABC):
                 await self._outbound_pipeline.apply(msg)
             except Exception:
                 logger.exception("Outbound pipeline error, message queued without routing")
+        msg = self._bind_response_owner(msg)
         self._attach_derived_response_owner(msg)
         msg = queue_response_trace(msg)
         if getattr(self, "_trace_dispatch_stopped", False):
@@ -3416,6 +3469,7 @@ class MessageHandler(ABC):
 
     def publish_robot_messages_nowait(self, msg: "Message") -> None:
         """将 Agent 响应放入 robot_messages 队列（同步）."""
+        msg = self._bind_response_owner(msg)
         self._attach_derived_response_owner(msg)
         msg = queue_response_trace(msg)
         if getattr(self, "_trace_dispatch_stopped", False):
@@ -3451,7 +3505,7 @@ class MessageHandler(ABC):
         except asyncio.TimeoutError:
             return None
 
-    async def _ensure_acp_agent_session(self) -> str:
+    async def _ensure_acp_agent_session(self, user_id: str | None = None) -> str:
         from e2a.gateway_normalize import e2a_from_agent_fields
         from e2a.message import ReqMethod
 
@@ -3466,6 +3520,7 @@ class MessageHandler(ABC):
             },
             is_stream=False,
             timestamp=time.time(),
+            user_id=(str(user_id).strip() or None) if user_id is not None else None,
         )
         resp = await self._send_non_stream_agent_request(env)
         if not resp.ok:
@@ -3481,6 +3536,7 @@ class MessageHandler(ABC):
     async def _resolve_acp_internal_session_id(
         self,
         external_session_id: str | None,
+        user_id: str | None = None,
     ) -> tuple[str | None, bool]:
         external = str(external_session_id or "").strip()
         if not external:
@@ -3495,7 +3551,7 @@ class MessageHandler(ABC):
             if cached:
                 return cached, cached != external
 
-            ensured = await self._ensure_acp_agent_session()
+            ensured = await self._ensure_acp_agent_session(user_id)
             self._acp_session_aliases[external] = ensured
             return ensured, ensured != external
 
@@ -3512,7 +3568,9 @@ class MessageHandler(ABC):
         if msg.req_method in (ReqMethod.INITIALIZE, ReqMethod.SESSION_CREATE):
             return msg
 
-        internal_session_id, aliased = await self._resolve_acp_internal_session_id(msg.session_id)
+        internal_session_id, aliased = await self._resolve_acp_internal_session_id(
+            msg.session_id, msg.user_id,
+        )
         if not internal_session_id:
             return msg
 
@@ -3919,6 +3977,17 @@ class MessageHandler(ABC):
             enable_memory=enable_memory,
         )
 
+    def set_session_login_bindings(self, bindings: "SessionLoginBindings") -> None:
+        self._session_login_bindings = bindings
+
+    def set_credential_runtime(self, runtime: Any) -> None:
+        self._credential_runtime = runtime
+
+    def _release_request_credential(self, message: Any) -> None:
+        runtime = getattr(self, "_credential_runtime", None)
+        if runtime is not None:
+            runtime.release(message)
+
     def set_credential_access(self, credential_access: CredentialAccess) -> None:
         """Bind the local credential port before forwarding starts."""
         self._credential_access = credential_access
@@ -3939,6 +4008,16 @@ class MessageHandler(ABC):
         credential_ref = str(payload.get("credential_ref") or "")
         try:
             access = getattr(self, '_credential_access', None)
+            runtime = getattr(self, "_credential_runtime", None)
+            if runtime is not None:
+                result = await access.credential_refresh_for_ref(credential_ref, runtime.server_id)
+                if result is not None:
+                    runtime.refresh({
+                        "operation_id": result.operation_id, "server_id": result.server_id,
+                        "credential_ref": credential_ref, "ref_revision": result.ref_revision,
+                        "update": result.update.to_params(),
+                    })
+                return True
             if access is None:
                 update = await asyncio.to_thread(refreshed_credential_for_ref, credential_ref)
             else:
@@ -3971,6 +4050,30 @@ class MessageHandler(ABC):
 
     async def _handle_agent_server_push(self, wire: dict[str, Any]) -> None:
         """Serialize server-push handling so a final cannot overtake its deltas."""
+        cron_commands = getattr(self, "_cron_command_runtime", None)
+        if cron_commands is not None:
+            from e2a.wire_codec import parse_agent_server_wire_chunk
+
+            try:
+                cron_chunk = parse_agent_server_wire_chunk(wire)
+            except Exception:
+                cron_chunk = None
+            if (
+                cron_chunk is not None
+                and isinstance(cron_chunk.payload, dict)
+                and cron_chunk.payload.get("event_type") == "cron.response"
+            ):
+                # Admission only: execution and AS ACKs run outside the ordered
+                # push lock and the private Control event handler.
+                await cron_commands.handle_push(
+                    payload=cron_chunk.payload,
+                    request_id=str(cron_chunk.request_id or ""),
+                    channel_id=str(cron_chunk.channel_id or ""),
+                    session_id=wire.get("session_id"),
+                    metadata=wire.get("metadata"),
+                )
+                return
+
         lock = getattr(self, "_server_push_lock", None)
         if lock is None:
             lock = asyncio.Lock()
@@ -3987,6 +4090,19 @@ class MessageHandler(ABC):
         except Exception as e:
             logger.exception("[MessageHandler] server_push 解析失败: %s", e)
             return
+        if chunk.channel_id == "web" and isinstance(chunk.payload, dict):
+            event = str(chunk.payload.get("event_type") or "")
+            if event.startswith("designer."):
+                web = self._resolve_web_channel()
+                subscriptions = getattr(web, "designer_subscriptions", None)
+                if subscriptions is not None:
+                    sid = str(wire.get("session_id") or "")
+                    if sid:
+                        await subscriptions.send(sid, event, chunk.payload)
+                    return
+                metadata = wire.get("metadata")
+                if isinstance(metadata, dict) and metadata.get("_personal_designer_push"):
+                    return
         if (
             isinstance(chunk.payload, dict)
             and chunk.payload.get("event_type") == "jiuwenmate.group.inspect"
@@ -4276,6 +4392,16 @@ class MessageHandler(ABC):
     def set_cron_controller(self, controller: Any) -> None:
         self._cron_controller = controller
 
+    def set_cron_command_runtime(self, runtime: Any) -> None:
+        """Bind the controlled owner/context port; single keeps its old path."""
+        self._cron_command_runtime = runtime
+
+    def set_cron_tool_push_enabled(self, enabled: bool) -> None:
+        """Control whether AgentServer Cron tool pushes may execute."""
+        if type(enabled) is not bool:
+            raise ValueError("cron tool push enabled must be boolean")
+        self._cron_tool_push_enabled = enabled
+
     def _mirror_cron_live_file_push(self, msg: "Message") -> None:
         """cron 执行会话上的 chat.file / chat.media 抄进 CronLiveBus。"""
         payload = msg.payload if isinstance(getattr(msg, "payload", None), dict) else {}
@@ -4375,6 +4501,7 @@ class MessageHandler(ABC):
         session_id: str | None,
         metadata: dict[str, Any] | None,
         user_id: str | None = None,
+        _trusted_cron_metadata: dict[str, Any] | None = None,
     ) -> None:
         cc = self._cron_controller
         if cc is None:
@@ -4384,14 +4511,36 @@ class MessageHandler(ABC):
         params = payload.get("data") or {}
         if not isinstance(params, dict):
             params = {}
+        if not getattr(self, "_cron_tool_push_enabled", True):
+            error_text = "Worker Cron tool commands are not enabled"
+            error_data = {"error": error_text, "code": "CRON_TOOL_DISABLED"}
+            if action == "run_now":
+                await self._push_cron_run_now_ack(
+                    request_id=request_id,
+                    job_id=str(params.get("job_id") or ""),
+                    run_id="",
+                    user_id=str(user_id or "").strip() or None,
+                    session_id=session_id,
+                    error=error_text,
+                )
+            if command_id:
+                await self._push_cron_command_ack(
+                    command_id=command_id,
+                    data=error_data,
+                    user_id=str(user_id or "").strip() or None,
+                    session_id=session_id,
+                )
+            return
         # 对话里的 cron 工具也使用原始请求的华为登录会话。只读 Gateway
         # 保存的请求上下文，不信任工具参数或响应 metadata 里的登录身份。
-        request_metadata = self._stream_metadata.get(request_id)
-        if not isinstance(request_metadata, dict):
-            original_message = getattr(
-                self, "_non_stream_chat_messages", {}
-            ).get(request_id)
-            request_metadata = getattr(original_message, "metadata", None)
+        request_metadata = _trusted_cron_metadata
+        if request_metadata is None:
+            request_metadata = self._stream_metadata.get(request_id)
+            if not isinstance(request_metadata, dict):
+                original_message = getattr(
+                    self, "_non_stream_chat_messages", {}
+                ).get(request_id)
+                request_metadata = getattr(original_message, "metadata", None)
         auth_session = (
             str(request_metadata.get("auth_session") or "").strip()
             if isinstance(request_metadata, dict)
@@ -4548,7 +4697,11 @@ class MessageHandler(ABC):
                 tenant_group_id = str(params.get("group_id") or "")
                 tenant_bot_id = str(params.get("bot_id") or "")
                 # 从原始请求中获取 mode，覆盖 LLM 工具调用的默认值
-                request_mode = self._stream_modes.get(request_id)
+                request_mode = (
+                    _trusted_cron_metadata.get("mode")
+                    if _trusted_cron_metadata is not None
+                    else self._stream_modes.get(request_id)
+                )
                 if request_mode:
                     params["mode"] = request_mode
                 # A3g：agent 工具链路的 project 已由目标 AgentServer 在其目录
@@ -4721,9 +4874,14 @@ class MessageHandler(ABC):
                     user_id=user_id, group_id=group_id, bot_id=bot_id,
                 ),
             )
-            await send_agent_request_with_timeout(
-                self.agent_client, env, label="cron.command.ack"
-            )
+            if getattr(self, "_cron_command_runtime", None) is None:
+                await send_agent_request_with_timeout(
+                    self.agent_client, env, label="cron.command.ack",
+                )
+            else:
+                await send_agent_request_with_timeout(
+                    self.agent_client, env, label="cron.command.ack", timeout_seconds=2.0,
+                )
         except Exception:
             logger.warning("[Cron] command ack delivery failed: command_id=%s", command_id, exc_info=True)
 
@@ -4737,6 +4895,7 @@ class MessageHandler(ABC):
         session_id: str | None = None,
         group_id: str | None = None,
         bot_id: str | None = None,
+        error: str | None = None,
     ) -> None:
         """把 Gateway 生成的 run_id 经 E2A 回传目标 AgentServer（P2）。
 
@@ -4757,6 +4916,7 @@ class MessageHandler(ABC):
                     "ack_request_id": request_id,
                     "job_id": job_id,
                     "run_id": run_id,
+                    **({"error": error} if error else {}),
                 },
                 is_stream=False,
                 timestamp=time.time(),
@@ -4766,11 +4926,14 @@ class MessageHandler(ABC):
                     user_id=user_id, group_id=group_id, bot_id=bot_id,
                 ),
             )
-            await send_agent_request_with_timeout(
-                self.agent_client,
-                env,
-                label="cron.run_now.ack",
-            )
+            if getattr(self, "_cron_command_runtime", None) is None:
+                await send_agent_request_with_timeout(
+                    self.agent_client, env, label="cron.run_now.ack",
+                )
+            else:
+                await send_agent_request_with_timeout(
+                    self.agent_client, env, label="cron.run_now.ack", timeout_seconds=2.0,
+                )
         except Exception as exc:  # noqa: BLE001 - ack failure degrades to timeout
             logger.warning(
                 "[Cron] run_now ack push failed: request_id=%s error=%s", request_id, exc
@@ -5509,6 +5672,7 @@ class MessageHandler(ABC):
         return stored.strip() if isinstance(stored, str) else ""
 
     async def _apply_session_login_owner(self, env: "E2AEnvelope") -> None:
+        from agent_gateway.auth.credential_access import CredentialAccessError, OwnsResolveDeadline
         from e2a.constants import (
             E2A_LOGIN_REQUIRED_HINT_PARAM_KEY,
             E2A_MODEL_AUTH_PARAM_KEY,
@@ -5525,21 +5689,38 @@ class MessageHandler(ABC):
         if isinstance(auth, dict):
             # 凭据是 Gateway 按登录会话挂的：记下会话主人
             try:
-                await self._session_login_bindings.remember(
+                bindings = self._session_login_bindings
+                selector = getattr(bindings, "for_user", None)
+                if selector is not None:
+                    user_id = getattr(env, "user_id", None)
+                    if not user_id:
+                        return
+                    bindings = selector(user_id)
+                await bindings.remember(
                     session_id,
                     str(auth.get("credential_ref") or ""),
                     str(params.get("model_name") or ""),
                 )
+            except CredentialAccessError:
+                raise
             except Exception:  # noqa: BLE001
                 logger.warning("[MessageHandler] 记录会话主人失败 session=%s", session_id, exc_info=True)
             return
         if str(getattr(env, "channel", None) or "") == "web":
             return
 
+        access = self._session_login_bindings
         try:
             from agent_gateway.auth.login_credentials import bare_model_name
 
-            owner = await self._session_login_bindings.lookup(session_id)
+            selector = getattr(access, "for_user", None)
+            if selector is not None:
+                user_id = getattr(env, "user_id", None)
+                if not user_id:
+                    params[E2A_LOGIN_REQUIRED_HINT_PARAM_KEY] = _LOGIN_HINT_NO_OWNER
+                    return
+                access = selector(user_id)
+            owner = await access.lookup(session_id)
             effective_model = await self._effective_session_model(
                 session_id, params, user_id=str(getattr(env, "user_id", "") or "").strip() or None,
             )
@@ -5551,12 +5732,18 @@ class MessageHandler(ABC):
             ):
                 params[E2A_LOGIN_REQUIRED_HINT_PARAM_KEY] = _LOGIN_HINT_NO_OWNER
                 return
-            value = await asyncio.wait_for(
-                self._session_login_bindings.model_auth_for_binding(owner),
-                timeout=_SESSION_OWNER_AUTH_WAIT_S,
-            )
+            if isinstance(access, OwnsResolveDeadline):
+                async with asyncio.timeout(access.resolve_deadline_s):
+                    value = await access.model_auth_for_binding(owner)
+            else:
+                value = await asyncio.wait_for(access.model_auth_for_binding(owner),
+                                               timeout=_SESSION_OWNER_AUTH_WAIT_S)
             auth = value.to_params() if value is not None else None
+        except CredentialAccessError:
+            raise
         except asyncio.TimeoutError:
+            if isinstance(access, OwnsResolveDeadline):
+                raise CredentialAccessError("unavailable") from None
             logger.warning("[MessageHandler] 取会话主人的登录凭据超时 session=%s", session_id)
             params[E2A_LOGIN_REQUIRED_HINT_PARAM_KEY] = _LOGIN_HINT_RETRY
             return
@@ -5576,6 +5763,13 @@ class MessageHandler(ABC):
         self,
         env: "E2AEnvelope",
     ) -> "AgentResponse":
+        cron_commands = getattr(self, "_cron_command_runtime", None)
+        if cron_commands is not None:
+            original_message = getattr(self, "_non_stream_chat_messages", {}).get(env.request_id)
+            original_metadata = getattr(original_message, "metadata", None)
+            cron_commands.remember(
+                env, original_metadata if isinstance(original_metadata, dict) else env.channel_context,
+            )
         with trace_stage("preprocess.login_owner"):
             await self._apply_session_login_owner(env)
         with bind_agent_request_trace(env):
@@ -5680,6 +5874,9 @@ class MessageHandler(ABC):
                 # A non-stream AgentServer call can still emit cron server_push
                 # frames while it is awaited.  Release its owner mapping only after
                 # the request completes.
+                cron_commands = getattr(self, "_cron_command_runtime", None)
+                if cron_commands is not None:
+                    cron_commands.complete(env.request_id or "")
                 self._stream_user_ids.pop(env.request_id or "", None)
                 operation = get_message_trace(msg)
                 if operation is not None and complete_trace:
@@ -5729,6 +5926,7 @@ class MessageHandler(ABC):
         if operation is not None:
             operation.accepted = True
         task = asyncio.create_task(run(), name=f"gw-chat-{rid[:24]}")
+        task.add_done_callback(lambda _done: self._release_request_credential(env))
         if operation is not None:
             task.add_done_callback(lambda done: complete_request_trace(msg, "cancelled") if done.cancelled() else None)
         task.add_done_callback(lambda done: release_request_continuation(
@@ -6308,6 +6506,7 @@ class MessageHandler(ABC):
                             self._process_non_stream_request(msg, env, complete_trace=True),
                             name=f"gw-nonstr-{method_label}-{stream_rid[:24]}",
                         )
+                        task.add_done_callback(lambda _done, pending=env: self._release_request_credential(pending))
                         if operation is not None:
                             task.add_done_callback(
                                 lambda done, source=msg: (
@@ -6371,6 +6570,10 @@ class MessageHandler(ABC):
                             getattr(msg, "id", None),
                         )
             finally:
+                if msg is not None and not handed_off:
+                    pending_chat = self._non_stream_chat_tasks.get(getattr(msg, "id", ""))
+                    if pending_chat is None or self._non_stream_chat_messages.get(msg.id) is not msg:
+                        self._release_request_credential(msg)
                 if trace_scope is not None:
                     operation = get_message_trace(msg)
                     task = self._non_stream_chat_tasks.get(getattr(msg, "id", ""))
@@ -6450,6 +6653,9 @@ class MessageHandler(ABC):
             extra={"session_id": session_id} if session_id else {},
         )
         try:
+            cron_commands = getattr(self, "_cron_command_runtime", None)
+            if cron_commands is not None:
+                cron_commands.remember(env, request_metadata)
             with trace_stage("preprocess.login_owner"):
                 await self._apply_session_login_owner(env)
             async for chunk in self.agent_client.send_request_stream(env):
@@ -6734,6 +6940,9 @@ class MessageHandler(ABC):
             raise RuntimeError("background stream requires an owning task")
         metadata = {**(env.channel_context or {}), "user_id": str(env.user_id or "").strip()}
         app_id = str(metadata.get("app_id") or "")
+        cron_commands = getattr(self, "_cron_command_runtime", None)
+        if cron_commands is not None:
+            cron_commands.remember(env, metadata)
         self._register_stream_consumer(
             env, session_id, task, metadata=metadata, app_id=app_id, emit_processing_status=True,
         )
@@ -6790,6 +6999,7 @@ class MessageHandler(ABC):
             )
 
         task = asyncio.create_task(consume())
+        task.add_done_callback(lambda _done: self._release_request_credential(env))
         self._register_stream_consumer(
             env, msg.session_id, task, metadata=msg.metadata,
             app_id=msg.app_id or "", emit_processing_status=emit_processing_status,

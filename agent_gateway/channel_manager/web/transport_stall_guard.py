@@ -127,7 +127,11 @@ def guarded_websockets_protocol() -> type:
         from uvicorn.protocols.websockets.websockets_impl import WebSocketProtocol
 
         class GuardedWebSocketProtocol(TransportStallGuardMixin, WebSocketProtocol):
-            pass
+            async def run_asgi(self) -> None:
+                # The uvicorn websockets backend can preserve header casing.
+                # Starlette matches the ASGI header names against lowercase bytes.
+                self.scope["headers"] = [(name.lower(), value) for name, value in self.scope["headers"]]
+                await super().run_asgi()
 
         _guarded_websockets_class = GuardedWebSocketProtocol
     return _guarded_websockets_class

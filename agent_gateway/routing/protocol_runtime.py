@@ -13,6 +13,8 @@ import logging
 import re
 import time
 import uuid as uuid_module
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from urllib.parse import parse_qs, urlparse
@@ -40,6 +42,7 @@ from agent_gateway.routing.agent_request_timeout import (
     resolve_agent_request_timeout_seconds,
 )
 from agent_gateway.common.request_identity import apply_routing_metadata, normalize_routing_identity
+from agent_gateway.routing.owner_delivery import OwnerDelivery
 from agent_gateway.routing.session_sharing import RoutingTarget
 
 if TYPE_CHECKING:
@@ -107,6 +110,10 @@ class RouteConfig:
     # 到该 Channel.send（按 delivery.ws_id 物理寻址）。None 表示该 route 无需委托
     # （如 acp 自带 _session_to_client 反查，web 有独立 WebChannel 不经此路径）。
     ws_channel: Any = None
+    # Route-scoped compatibility requests that are answered before forwarding
+    # and local handlers, without binding or selecting a Session. It returns
+    # True once it has replied; False leaves the frame on the regular path.
+    unbound_request_handler: Callable[..., Awaitable[bool]] | None = None
 
 
 def _acp_route_decision(route: RouteConfig, method: str) -> str | None:
@@ -190,6 +197,9 @@ class ProtocolRuntime(BaseWebChannel):
     支持多个路径（如 /acp、/cli），每条路径可以有独立的 channel_id 和本地 handler。
     本地 handler 优先处理请求，未处理或无匹配则 forward 到 MessageHandler。
     """
+
+    # Installed on a Worker that serves named users from static targets.
+    owner_delivery: OwnerDelivery | None = None
 
     def __init__(self, config: ProtocolRuntimeConfig, router) -> None:
         from agent_gateway.channel_manager.protocol.acp.acp_connect import AcpGatewayBridge
@@ -738,13 +748,32 @@ class ProtocolRuntime(BaseWebChannel):
     async def _send_tui_reply(self, route: RouteConfig, ws: Any, outgoing: Any) -> None:
         """Send a TUI reply in order with the socket's queued outbound frames."""
         enqueue = getattr(route.ws_channel, "enqueue_message", None)
-        if callable(enqueue) and enqueue(ws, outgoing):
-            return
+        if callable(enqueue):
+            with self._reply_owner_scope(ws, outgoing):
+                delivered = enqueue(ws, outgoing)
+            if delivered:
+                return
         payload = outgoing.payload if isinstance(outgoing.payload, dict) else {}
         await self.send_response(
             ws, outgoing.id, ok=bool(outgoing.ok), payload=outgoing.payload,
             error=payload.get("error"), code=payload.get("code"),
         )
+
+    @contextmanager
+    def _reply_owner_scope(self, ws: Any, msg: Any) -> Iterator[None]:
+        """Scope a reply that goes to the socket its request came from.
+
+        The caller resolved that socket from the request origin and checked it
+        against the connection user. A static Worker therefore lets the reply
+        reach that socket when the Message names its user or no user at all; a
+        Message that names another user is still refused by the gate.
+        """
+        gate = self.owner_delivery
+        if gate is None:
+            yield
+            return
+        with gate.scope(gate.of_message(msg) or self._connection_user_id(ws)):
+            yield
 
     def _tui_request_origin(self, msg: Any) -> _TuiRequestOrigin | None:
         origin = self._tui_request_origins.get(msg.id)
@@ -986,6 +1015,8 @@ class ProtocolRuntime(BaseWebChannel):
     async def send(self, msg, *, routing_target: RoutingTarget | None = None) -> None:
         if await self._complete_tui_session_switch(msg):
             return
+        gate = self.owner_delivery
+        owner = gate.of_message(msg) if gate is not None else None
         # V2: 提取 agent_ref，优先 3 元组查找，2↔3 双向兜底（_lookup_client）。
         _agent_ref = getattr(msg, "agent_ref", None) or None
         _send_cid = getattr(msg, "channel_id", None)
@@ -1070,6 +1101,12 @@ class ProtocolRuntime(BaseWebChannel):
                                 return
                     elif not self._extract_routing_session_id(msg, include_top_level=True):
                         clients = self._find_channel_clients(channel_id)
+                        if gate is not None:
+                            # A session-less frame stays with its owner on a static Worker.
+                            clients = [
+                                client for client in clients
+                                if OwnerDelivery.allows(self._connection_user_id(client), owner)
+                            ]
                         if clients:
                             data = json.dumps(frame, ensure_ascii=False)
                             logger.info(
@@ -1096,6 +1133,16 @@ class ProtocolRuntime(BaseWebChannel):
                     "[GatewayServer] ws already closed, drop: channel_id=%s id=%s session_id=%s ws=%s",
                     _send_cid, _send_id, _send_sid, hex(id(ws)),
                 )
+            return
+
+        if gate is not None and not OwnerDelivery.allows(self._connection_user_id(ws), owner):
+            # The tables are shared by every user of this Worker: a resolved
+            # socket that is not the owner's is never written to.
+            logger.debug(
+                "[GatewayServer] routed message without a matching owner dropped:"
+                " channel_id=%s id=%s session_id=%s",
+                getattr(msg, "channel_id", None), getattr(msg, "id", None), getattr(msg, "session_id", None),
+            )
             return
 
         if getattr(msg, "channel_id", None) == "acp":
@@ -1429,6 +1476,11 @@ class ProtocolRuntime(BaseWebChannel):
         session_key = self._client_route_key(route.channel_id, session_id) if explicit_session_id else None
 
         req_user_id = self._connection_user_id(ws)
+        if route.unbound_request_handler is not None and await route.unbound_request_handler(
+            ws, req_id, method, data.get("params"), data.get("timeout_ms"), req_user_id,
+        ):
+            return
+
         # Only foreground operations select the TUI window's Session. A target
         # ID on preview, rename, or lifecycle requests is not a selection. The one
         # exception is a reconnected window taking back the Session it dropped.

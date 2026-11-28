@@ -18,6 +18,32 @@ _CANCEL_TIMEOUT_SECONDS = 1.0
 _logger = logging.getLogger("gateway")
 
 
+def web_protocol_config(
+    app: ASGIApp, *, host: str = "127.0.0.1", port: int = 0, ws_per_message_deflate: bool,
+) -> uvicorn.Config:
+    """Use the same protocol settings for listening and adopted sockets."""
+    from agent_gateway.channel_manager.web.transport_stall_guard import (
+        guarded_http_protocol,
+        guarded_websockets_protocol,
+    )
+    from agent_gateway.common.ws_limits import WEB_WS_MAX_MESSAGE_BYTES
+
+    return uvicorn.Config(
+        app,
+        host=host,
+        port=port,
+        log_level="info",
+        access_log=False,
+        ws_max_size=WEB_WS_MAX_MESSAGE_BYTES,
+        ws_ping_interval=20.0,
+        ws_ping_timeout=60.0,
+        timeout_graceful_shutdown=_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS,
+        http=guarded_http_protocol(),
+        ws=guarded_websockets_protocol(),
+        ws_per_message_deflate=ws_per_message_deflate,
+    )
+
+
 class _EmbeddedServer(uvicorn.Server):
     """Leave process signals with the Gateway and publish actual readiness."""
 
@@ -152,24 +178,8 @@ class UvicornListener:
 
     async def _serve(self) -> None:
         try:
-            from agent_gateway.channel_manager.web.transport_stall_guard import (
-                guarded_http_protocol,
-                guarded_websockets_protocol,
-            )
-            from agent_gateway.common.ws_limits import WEB_WS_MAX_MESSAGE_BYTES
-
-            config = uvicorn.Config(
-                self._app,
-                host=self._host,
-                port=self._port,
-                log_level="info",
-                access_log=False,
-                ws_max_size=WEB_WS_MAX_MESSAGE_BYTES,
-                ws_ping_interval=20.0,
-                ws_ping_timeout=60.0,
-                timeout_graceful_shutdown=_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS,
-                http=guarded_http_protocol(),
-                ws=guarded_websockets_protocol(),
+            config = web_protocol_config(
+                self._app, host=self._host, port=self._port,
                 ws_per_message_deflate=self._ws_per_message_deflate,
             )
             self._server = _EmbeddedServer(config, self._ready)
