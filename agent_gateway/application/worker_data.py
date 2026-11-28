@@ -257,6 +257,7 @@ async def data_worker(
                 cron_controller=cron_runtime.controller if cron is not None else None,
                 heartbeat_controller=None, preprocessor=preprocessor,
                 log_stage=lambda _stage: None, personal_tui=personal_tui,
+                web_session_busy=web.is_session_busy,
             )
             northbound.push_async_callback(tui.stop)
             if cron is not None:

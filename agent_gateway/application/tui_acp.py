@@ -75,6 +75,7 @@ async def assemble_tui_acp(
     preprocessor: MessagePreprocessor,
     log_stage: Callable[[str], None],
     personal_tui: bool = False,
+    web_session_busy: Callable[..., bool] | None = None,
 ) -> TuiAcpAssembly:
     from agent_gateway.channel_manager.web.app_web_handlers import (
         _FORWARD_REQ_METHODS, _FORWARD_NO_LOCAL_HANDLER_METHODS, _DummyBus,
@@ -155,7 +156,9 @@ async def assemble_tui_acp(
         from agent_gateway.application.personal_tui import PersonalTuiRequests
 
         tui_route = protocol_runtime_config.routes["/tui"]
-        tui_route.unbound_request_handler = PersonalTuiRequests(protocol_runtime, client).handle
+        tui_route.unbound_request_handler = PersonalTuiRequests(
+            protocol_runtime, client, web_session_busy,
+        ).handle
     for binding in route_bindings:
         route_config = protocol_runtime_config.routes[binding.path]
         # tui 出站已由 TuiChannel 接管（register_channel_with_inbound），

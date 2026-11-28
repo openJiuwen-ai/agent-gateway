@@ -157,3 +157,209 @@ def test_personal_tui_gate_requires_a_personal_loopback_agent_server(monkeypatch
     monkeypatch.setattr(personal_tui, 'is_enterprise', lambda: False)
     monkeypatch.setattr(personal_tui, 'is_agentos_runtime', lambda: True)
     assert personal_tui.enable_personal_tui('ws://127.0.0.1:19010') is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('metadata', 'code'), [
+    ({'user_id': 'another', 'runtime': {'is_processing': False}}, 'SESSION_IDENTITY_REQUIRED'),
+    ({'user_id': 'owner', 'runtime': {'is_processing': True}}, 'SESSION_BUSY'),
+    ({'user_id': 'owner', 'runtime': {'is_processing': False, 'recovery_pending': True}}, 'SERVICE_UNAVAILABLE'),
+    ({'user_id': 'owner'}, 'SERVICE_UNAVAILABLE'),
+])
+async def test_mutations_fail_closed_before_the_write(monkeypatch, metadata, code):
+    from agent_gateway.routing import e2a_proxy
+
+    fetch = AsyncMock(return_value=(True, metadata))
+    monkeypatch.setattr(e2a_proxy, 'fetch_agent_unary', fetch)
+    assembly, _ = await assemble()
+    try:
+        result = await request(assembly.protocol_runtime, window(user='owner'), 'session.rewind', {
+            'session_id': 's1', 'turn_index': 1, 'user_id': 'another',
+        })
+        assert result['code'] == code
+        fetch.assert_awaited_once()
+        assert fetch.await_args.kwargs['req_method'].value == 'session.get_metadata'
+        assert fetch.await_args.kwargs['user_id'] == 'owner'
+        assert fetch.await_args.kwargs['params'] == {'session_id': 's1', 'enable_writeback': False}
+    finally:
+        await assembly.stop()
+
+
+@pytest.mark.asyncio
+async def test_unavailable_metadata_fails_closed_without_echoing_it(monkeypatch):
+    from agent_gateway.routing import e2a_proxy
+
+    fetch = AsyncMock(return_value=(False, {'code': 'AGENT_SERVER_TIMEOUT', 'error': 'AgentServer request timed out'}))
+    monkeypatch.setattr(e2a_proxy, 'fetch_agent_unary', fetch)
+    assembly, _ = await assemble()
+    try:
+        result = await request(assembly.protocol_runtime, window(user='owner'), 'session.delete', {'session_id': 's1'})
+        assert (result['ok'], result['code'], result['error']) == (
+            False, 'AGENT_SERVER_TIMEOUT', 'AgentServer request timed out',
+        )
+        fetch.assert_awaited_once()
+    finally:
+        await assembly.stop()
+
+
+@pytest.mark.asyncio
+async def test_web_activity_in_the_same_worker_blocks_rewind(monkeypatch):
+    from agent_gateway.routing import e2a_proxy
+
+    fetch = AsyncMock(return_value=(True, {'user_id': '', 'runtime': {'is_processing': False}}))
+    monkeypatch.setattr(e2a_proxy, 'fetch_agent_unary', fetch)
+    checked = []
+    assembly = await tui_acp.assemble_tui_acp(
+        agent_client=SimpleNamespace(server_ready=True, send_request=AsyncMock()),
+        message_handler=SimpleNamespace(cancel_scheduled_disconnect_cancel_for_session=lambda *_: None),
+        channel_manager=SimpleNamespace(register_channel_with_inbound=lambda *_: None,
+                                        register_external_channel=lambda *_: None),
+        third_agent=None, on_config_saved=None, cron_controller=None, heartbeat_controller=None,
+        preprocessor=SimpleNamespace(for_channel=lambda *_: None), log_stage=lambda *_: None,
+        personal_tui=True, web_session_busy=lambda session_id: checked.append(session_id) or True,
+    )
+    try:
+        result = await request(assembly.protocol_runtime, window(), 'session.restore_files', {
+            'session_id': 's-busy', 'turn_index': 3,
+        })
+        assert (result['ok'], result['code'], result['error']) == (False, 'SESSION_BUSY', 'Session is running')
+        assert checked == ['s-busy']
+        fetch.assert_awaited_once()
+    finally:
+        await assembly.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('summary', 'activity', 'expected'), [
+    ((True, {'status': 'failed', 'summary': 'stale'}), None, 'SUMMARY_FAILED'),
+    ((True, {'status': 'ok', 'summary': '', 'summarized_count': 1}), None, 'SUMMARY_FAILED'),
+    ((True, {'status': 'ok', 'summary': 'only summary', 'summarized_count': 2}), True, 'SESSION_BUSY'),
+    ((True, {'status': 'ok', 'summary': 'only summary', 'summarized_count': 2}), False, 'AGENT_SERVER_TIMEOUT'),
+])
+async def test_rewind_with_summary_rechecks_activity_and_never_replays_write(monkeypatch, summary, activity, expected):
+    from agent_gateway.routing import e2a_proxy
+
+    replies = [(True, {'user_id': '', 'runtime': {'is_processing': False}}), summary]
+    methods = ['session.get_metadata', 'command.compact_partial']
+    if activity is not None:
+        replies.append((True, {'runtime': {'is_processing': activity}}))
+        methods.append('session.get_metadata')
+    if activity is False:
+        replies.append((False, {'code': 'AGENT_SERVER_TIMEOUT', 'error': 'AgentServer request timed out'}))
+        methods.append('session.rewind_compact')
+    fetch = AsyncMock(side_effect=replies)
+    monkeypatch.setattr(e2a_proxy, 'fetch_agent_unary', fetch)
+    assembly, _ = await assemble()
+    try:
+        result = await request(assembly.protocol_runtime, window(), 'command.rewind_compact', {
+            'session_id': 's1', 'turn_index': 2, 'direction': 'up_to', 'compact_summary': 'client text',
+        })
+        assert result['code'] == expected
+        assert [call.kwargs['req_method'].value for call in fetch.await_args_list] == methods
+        if activity is False:
+            assert fetch.await_args.kwargs['params']['compact_summary'] == 'only summary'
+    finally:
+        await assembly.stop()
+
+
+@pytest.mark.asyncio
+async def test_rewind_with_summary_returns_the_server_summary(monkeypatch):
+    from agent_gateway.routing import e2a_proxy
+
+    idle = (True, {'user_id': '', 'runtime': {'is_processing': False}})
+    fetch = AsyncMock(side_effect=[
+        idle, (True, {'status': 'ok', 'summary': 'server summary', 'summarized_count': 2}), idle,
+        (True, {'turns_removed': 2}),
+    ])
+    monkeypatch.setattr(e2a_proxy, 'fetch_agent_unary', fetch)
+    assembly, _ = await assemble()
+    try:
+        result = await request(assembly.protocol_runtime, window(), 'command.rewind_compact', {
+            'session_id': 's1', 'turn_index': 2, 'compact_summary': 'client text', 'summarized_count': 99,
+        })
+        assert result == {'type': 'res', 'id': 'legacy-request', 'ok': True,
+                          'payload': {'turns_removed': 2, 'summary': 'server summary', 'summarized_messages': 2}}
+        writes = [call.kwargs['params'] for call in fetch.await_args_list[3:]]
+        assert writes == [{'session_id': 's1', 'turn_index': 2, 'direction': 'from',
+                           'compact_summary': 'server summary', 'summarized_count': 2}]
+    finally:
+        await assembly.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('method', 'params', 'expected'), [
+    ('session.delete', {'session_id': 'owned', 'session_ids': ['other']}, 'BAD_REQUEST'),
+    ('session.rewind', {'session_id': 'owned', 'turn_index': True}, 'BAD_REQUEST'),
+    ('session.rewind_compact', {'session_id': 'owned', 'turn_index': 1}, None),
+    ('session.color_set', {}, 'BAD_REQUEST'),
+    ('session.rebind_project', {'session_id': 'owned', 'project_dir': '  '}, 'BAD_REQUEST'),
+    ('command.rewind_compact', {'session_id': 'owned', 'turn_index': 2, 'direction': 'sideways'}, 'BAD_REQUEST'),
+])
+async def test_tui_write_selectors_cannot_bypass_session_checks(monkeypatch, method, params, expected):
+    from agent_gateway.routing import e2a_proxy
+
+    fetch = AsyncMock()
+    monkeypatch.setattr(e2a_proxy, 'fetch_agent_unary', fetch)
+    assembly, _ = await assemble()
+    try:
+        result = await request(assembly.protocol_runtime, window(user='owner'), method, params)
+        assert not result['ok'] and result.get('code') == expected, result
+        fetch.assert_not_awaited()
+    finally:
+        await assembly.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('method', 'params', 'forwarded'), [
+    ('command.add_dir', {'path': '/tmp/project', 'remember': True, 'user_id': 'another'},
+     {'path': '/tmp/project', 'remember': True}),
+    ('session.color_set', {'session_id': 's1', 'color': '#fff'}, {'session_id': 's1', 'color': '#fff'}),
+    ('session.delete', {'session_id': 's1', 'extra': 1}, {'session_id': 's1'}),
+    ('session.rebind_project', {'session_id': 's1', 'project_dir': '/tmp/project'},
+     {'session_id': 's1', 'project_dir': '/tmp/project'}),
+])
+async def test_checked_writes_forward_only_their_own_fields(monkeypatch, method, params, forwarded):
+    from agent_gateway.routing import e2a_proxy
+
+    idle = (True, {'user_id': 'owner', 'runtime': {'is_processing': False}})
+    checked = method != 'command.add_dir'
+    fetch = AsyncMock(side_effect=[idle, (True, {'done': True})] if checked else [(True, {'done': True})])
+    monkeypatch.setattr(e2a_proxy, 'fetch_agent_unary', fetch)
+    assembly, _ = await assemble()
+    try:
+        result = await request(assembly.protocol_runtime, window(user='owner'), method, params)
+        assert result['ok'] is True and result['payload'] == {'done': True}, result
+        write = fetch.await_args_list[-1]
+        assert write.kwargs['req_method'].value == method and write.kwargs['params'] == forwarded
+        assert write.kwargs['user_id'] == 'owner'
+    finally:
+        await assembly.stop()
+
+
+@pytest.mark.asyncio
+async def test_tui_disconnect_uses_the_regular_local_handler(monkeypatch):
+    from agent_gateway.routing import e2a_proxy
+
+    fetch = AsyncMock()
+    monkeypatch.setattr(e2a_proxy, 'fetch_agent_unary', fetch)
+    assembly, _ = await assemble()
+    runtime = assembly.protocol_runtime
+    called = AsyncMock()
+
+    async def disconnect(ws, req_id, params, session_id):
+        await called((req_id, params, session_id))
+        await runtime.send_response(ws, req_id, ok=True, payload={'disconnected': True})
+
+    original = runtime.config.routes['/tui'].local_handlers['tui.disconnect']
+    runtime.config.routes['/tui'].local_handlers['tui.disconnect'] = disconnect
+    try:
+        ws = window()
+        assert (await request(runtime, ws, 'tui.disconnect', {'session_id': 's1', 'user_id': 'x'}))['ok'] is True
+        called.assert_awaited_once()
+        assert called.await_args.args[0] == ('legacy-request', {'session_id': 's1'}, 's1')
+        assert (await request(runtime, ws, 'tui.disconnect', {'session_id': 'bad id'}))['code'] == 'BAD_REQUEST'
+        assert called.await_count == 1
+        runtime.config.routes['/tui'].local_handlers['tui.disconnect'] = original
+        fetch.assert_not_awaited()
+    finally:
+        await assembly.stop()

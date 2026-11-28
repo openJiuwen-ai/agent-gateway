@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from collections.abc import Callable
 from ipaddress import ip_address
 from typing import Any
 from urllib.parse import urlsplit
@@ -26,7 +27,17 @@ _READ_METHODS = frozenset({
     ReqMethod.COMMAND_DIFF, ReqMethod.COMMAND_BTW, ReqMethod.COMMAND_RECAP,
     ReqMethod.COMMAND_SIMPLIFY, ReqMethod.SKILLS_LIST, ReqMethod.COMMAND_MCP,
 })
-_READ_BY_NAME = {method.value: method for method in _READ_METHODS}
+_REWIND_METHODS = frozenset({
+    ReqMethod.SESSION_REWIND, ReqMethod.SESSION_RESTORE_FILES,
+    ReqMethod.SESSION_REWIND_AND_RESTORE, ReqMethod.SESSION_REWIND_COMPACT,
+})
+_IDLE_REQUIRED = _REWIND_METHODS | {ReqMethod.SESSION_REBIND_PROJECT}
+_SESSION_WRITES = _IDLE_REQUIRED | {ReqMethod.SESSION_COLOR_SET, ReqMethod.SESSION_DELETE}
+_METHOD_BY_NAME = {
+    method.value: method
+    for method in (_READ_METHODS | _SESSION_WRITES | {ReqMethod.COMMAND_ADD_DIR}) - {ReqMethod.SESSION_REWIND_COMPACT}
+}
+_METHOD_BY_NAME["command.rewind_compact"] = ReqMethod.SESSION_REWIND_COMPACT
 _CONTEXT = {"session_id", "cwd", "project_dir", "trusted_dirs", "user_id"}
 _CONFIG_FIELDS = {
     "preferred_language", "skill_evolution", "auto_recap_enabled", "model",
@@ -107,13 +118,16 @@ def _project_read(method: ReqMethod, payload: dict[str, Any], key: str | None) -
 
 
 #: Frame names the personal Worker admits on /tui for the compatibility hook.
-PERSONAL_TUI_METHODS = frozenset(method.value for method in _READ_METHODS) | {"tui.disconnect"}
+PERSONAL_TUI_METHODS = frozenset(_METHOD_BY_NAME) | {"tui.disconnect"}
 
 
 class PersonalTuiRequests:
-    def __init__(self, runtime: Any, client: Any) -> None:
+    def __init__(
+        self, runtime: Any, client: Any, web_session_busy: Callable[..., bool] | None = None,
+    ) -> None:
         self.runtime = runtime
         self.client = client
+        self.web_session_busy = web_session_busy
 
     def _native_peer(self, ws: Any) -> bool:
         remote = getattr(ws, "remote_address", None)
@@ -132,7 +146,7 @@ class PersonalTuiRequests:
         self, ws: Any, req_id: str, method: str, raw_params: Any,
         timeout_ms: Any, user_id: str | None,
     ) -> bool:
-        req_method = _READ_BY_NAME.get(method)
+        req_method = _METHOD_BY_NAME.get(method)
         if req_method is None and method != "tui.disconnect":
             return False
         if not self._native_peer(ws):
@@ -142,7 +156,10 @@ class PersonalTuiRequests:
         params = dict(raw_params or {})
         params.pop("user_id", None)
         session_id = params.get("session_id")
-        if session_id is not None or method in ("session.preview", "history.list_turns", "tui.disconnect"):
+        if (
+            session_id is not None or req_method in _SESSION_WRITES
+            or method in ("session.preview", "history.list_turns", "tui.disconnect")
+        ):
             try:
                 session_id = validate_session_id(session_id)
             except InvalidProtocolId as exc:
@@ -151,6 +168,9 @@ class PersonalTuiRequests:
             disconnect = self.runtime.config.routes["/tui"].local_handlers[method]
             await disconnect(ws, req_id, params, session_id)
             return True
+
+        if req_method in _SESSION_WRITES or req_method == ReqMethod.COMMAND_ADD_DIR:
+            return await self._write(ws, req_id, req_method, params, session_id, user_id, timeout_ms)
 
         key = None
         if req_method in (ReqMethod.CONFIG_GET, ReqMethod.COMMAND_MODEL, ReqMethod.MODELS_LIST):
@@ -174,6 +194,104 @@ class PersonalTuiRequests:
                 return await self._error(ws, req_id, payload["code"], "Could not read display configuration")
             return await self._error(ws, req_id, payload["code"], payload["error"])
         await self.runtime.send_response(ws, req_id, ok=True, payload=_project_read(req_method, payload, key))
+        return True
+
+    async def _check_session(self, method, session_id, user_id, timeout_ms):
+        ok, metadata = await self._fetch(
+            ReqMethod.SESSION_GET_METADATA, {"session_id": session_id, "enable_writeback": False},
+            session_id, user_id, timeout_ms,
+        )
+        if not ok:
+            return metadata
+        owner = metadata.get("user_id")
+        if ("" if owner is None else owner) != (user_id or ""):
+            return {"code": "SESSION_IDENTITY_REQUIRED", "error": "Session belongs to another user"}
+        if method in _IDLE_REQUIRED:
+            # The AS snapshot is scoped to the caller's app and agent. A Web
+            # request in this same Worker can be busy under a different scope.
+            if self.web_session_busy is not None and self.web_session_busy(session_id):
+                return {"code": "SESSION_BUSY", "error": "Session is running"}
+            snapshot = metadata.get("runtime")
+            if isinstance(snapshot, dict) and not snapshot.get("recovery_pending"):
+                processing = snapshot.get("is_processing")
+                if processing is False:
+                    return None
+                if processing is True:
+                    return {"code": "SESSION_BUSY", "error": "Session is running"}
+            return {"code": "SERVICE_UNAVAILABLE", "error": "Session execution state is unavailable"}
+        return None
+
+    async def _write(self, ws, req_id, method, params, session_id, user_id, timeout_ms):
+        if method == ReqMethod.COMMAND_ADD_DIR:
+            path = params.get("path")
+            if not isinstance(path, str) or not path.strip():
+                return await self._error(ws, req_id, "BAD_REQUEST", "path is required")
+            remember = params.get("remember", False)
+            if not isinstance(remember, bool):
+                return await self._error(ws, req_id, "BAD_REQUEST", "remember must be a boolean")
+            params = {"path": path, "remember": remember}
+        else:
+            if method == ReqMethod.SESSION_DELETE:
+                # The TUI deletes one checked session. The AS also accepts a
+                # batch selector, which must not bypass that ownership check.
+                if "session_ids" in params:
+                    return await self._error(ws, req_id, "BAD_REQUEST", "Only one session may be deleted")
+                params = {"session_id": session_id}
+            elif method == ReqMethod.SESSION_COLOR_SET:
+                params = {"session_id": session_id, "color": params.get("color")}
+            elif method == ReqMethod.SESSION_REBIND_PROJECT:
+                directory = params.get("project_dir")
+                if not isinstance(directory, str) or not directory.strip():
+                    return await self._error(ws, req_id, "BAD_REQUEST", "project_dir is required")
+                params = {"session_id": session_id, "project_dir": directory}
+            elif method in _REWIND_METHODS:
+                turn_index = params.get("turn_index")
+                if type(turn_index) is not int or turn_index < 1:
+                    return await self._error(ws, req_id, "BAD_REQUEST", "turn_index must be a positive integer")
+                direction = params.get("direction", "from")
+                params = {"session_id": session_id, "turn_index": turn_index}
+                if method == ReqMethod.SESSION_REWIND_COMPACT:
+                    if direction not in ("from", "up_to"):
+                        return await self._error(ws, req_id, "BAD_REQUEST", "direction must be 'from' or 'up_to'")
+                    params["direction"] = direction
+            problem = await self._check_session(method, session_id, user_id, timeout_ms)
+            if problem is not None:
+                return await self._error(ws, req_id, problem["code"], problem["error"])
+
+        if method == ReqMethod.SESSION_REWIND_COMPACT:
+            return await self._rewind_with_summary(ws, req_id, params, session_id, user_id, timeout_ms)
+        ok, payload = await self._fetch(method, params, session_id, user_id, timeout_ms)
+        if not ok:
+            return await self._error(ws, req_id, payload["code"], payload["error"])
+        await self.runtime.send_response(ws, req_id, ok=True, payload=payload)
+        return True
+
+    async def _rewind_with_summary(self, ws, req_id, params, session_id, user_id, timeout_ms):
+        ok, summary_result = await self._fetch(
+            ReqMethod.COMMAND_COMPACT_PARTIAL, params, session_id, user_id, timeout_ms,
+        )
+        if not ok:
+            return await self._error(ws, req_id, summary_result["code"], summary_result["error"])
+        summary = summary_result.get("summary")
+        count = summary_result.get("summarized_count")
+        if (
+            summary_result.get("status") != "ok" or not isinstance(summary, str)
+            or not summary.strip() or type(count) is not int or count < 1
+        ):
+            return await self._error(ws, req_id, "SUMMARY_FAILED", "Could not summarize the selected turns")
+        problem = await self._check_session(ReqMethod.SESSION_REWIND_COMPACT, session_id, user_id, timeout_ms)
+        if problem is not None:
+            return await self._error(ws, req_id, problem["code"], problem["error"])
+        ok, payload = await self._fetch(
+            ReqMethod.SESSION_REWIND_COMPACT,
+            {**params, "compact_summary": summary, "summarized_count": count},
+            session_id, user_id, timeout_ms,
+        )
+        if not ok:
+            return await self._error(ws, req_id, payload["code"], payload["error"])
+        await self.runtime.send_response(
+            ws, req_id, ok=True, payload={**payload, "summary": summary, "summarized_messages": count},
+        )
         return True
 
     async def _fetch(self, method, params, session_id, user_id, timeout_ms):

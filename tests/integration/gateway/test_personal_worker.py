@@ -192,6 +192,48 @@ async def test_tui_still_refuses_requests_outside_the_compatibility_set(personal
     assert not any(request["method"] in {"session.create", "config.set", "cron.job.list"} for request in stub.requests)
 
 
+async def test_tui_session_writes_check_the_owner_and_activity_before_the_write(personal):
+    group, stub = personal
+
+    foreign = {"user_id": "bob", "runtime": {"is_processing": False}}
+
+    def session_metadata(envelope):
+        session_id = envelope["params"]["session_id"]
+        if session_id == "no-such-id":
+            return {"error": "AgentServer request timed out", "code": "AGENT_SERVER_TIMEOUT"}
+        if session_id == "s-foreign":
+            return foreign
+        return {"user_id": envelope.get("user_id") or "",
+                "runtime": {"is_processing": session_id == "s-busy"}}
+
+    stub.replies["session.get_metadata"] = session_metadata
+    stub.replies["session.rewind"] = {"turns_removed": 1}
+    stub.replies["session.restore_files"] = {"turns_removed": 1}
+    async with connect(tui_url(group)) as tui:
+        for request_id, session_id, code in (("busy", "s-busy", "SESSION_BUSY"),
+                                             ("foreign", "s-foreign", "SESSION_IDENTITY_REQUIRED"),
+                                             ("missing", "no-such-id", "AGENT_SERVER_TIMEOUT")):
+            await tui.send(json.dumps({"type": "req", "id": request_id, "method": "session.rewind", "params": {
+                "session_id": session_id, "turn_index": 1, "user_id": USER,
+            }}))
+            result = await answer(tui, request_id)
+            assert (result["ok"], result["code"]) == (False, code), result
+        await tui.send(json.dumps({"type": "req", "id": "idle", "method": "session.restore_files", "params": {
+            "session_id": "s-idle", "turn_index": 2, "user_id": "mallory",
+        }}))
+        assert await answer(tui, "idle") == {"type": "res", "id": "idle", "ok": True, "payload": {"turns_removed": 1}}
+        await tui.send(json.dumps({"type": "req", "id": "exit", "method": "tui.disconnect", "params": {"session_id": "s-idle"}}))
+        assert (await answer(tui, "exit"))["ok"] is True
+    writes = [request for request in stub.requests if request["method"] in {"session.rewind", "session.restore_files"}]
+    assert [(request["method"], request["params"], request["user_id"]) for request in writes] == [
+        ("session.restore_files", {"session_id": "s-idle", "turn_index": 2}, USER),
+    ]
+    checks = [request for request in stub.requests if request["method"] == "session.get_metadata"]
+    assert all(request["params"] == {"session_id": request["session_id"], "enable_writeback": False}
+               for request in checks)
+    assert [request["user_id"] for request in checks] == [USER] * len(checks)
+
+
 async def test_web_listener_does_not_take_tui_compatibility_requests(personal):
     group, stub = personal
     async with connect(web_url(group)) as web:
