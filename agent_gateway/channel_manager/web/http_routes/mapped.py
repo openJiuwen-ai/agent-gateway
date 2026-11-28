@@ -1123,6 +1123,7 @@ CORE_ROUTE_CATALOG: tuple[tuple[str, str, str, str], ...] = (
     ("POST", "/chat/resume", "chat.resume", "恢复中断对话"),
     ("POST", "/chat/{session_id}/actions/interrupt", "chat.interrupt", "中断生成"),
     ("POST", "/chat/{session_id}/actions/user_answer", "chat.user_answer", "回答 Agent 追问"),
+    ("POST", "/chat/{session_id}/actions/swarmflow-reply", "chat.swarmflow_reply", "SwarmFlow 人工轮回复"),
 )
 
 

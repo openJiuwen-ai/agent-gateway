@@ -27,6 +27,12 @@ _SPECIAL_CASED = frozenset({"chat.send", "chat.resume", "history.get"})
 
 #: Gateway 有、协议包还没有的方法。新增项必须写明为什么、以及跟谁对齐。
 _GATEWAY_ONLY: dict[str, str] = {
+    "chat.swarmflow_reply": (
+        "SwarmFlow 人工轮回复：AgentServer 侧（jiuwenswarm pod_rest_map + "
+        "http_chat）已落地 /chat/{session_id}/actions/swarmflow-reply 并经 "
+        "handle_unary 投递 team_manager.interact；协议包尚未登记该成员，"
+        "待 agent-protocol 补声明后移出本白名单"
+    ),
     "mcp.sources.providers": (
         "企业连接器广场：协议包尚未发布该成员；Gateway 已 shim 枚举并转发，"
         "南向 path 与 Agent /mcp/actions/sources-providers 对齐"

@@ -73,6 +73,7 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("chat.steer", "POST", "/chat/{session_id}/actions/steer"),
     ("chat.steer.status", "POST", "/chat/{session_id}/actions/steer/status"),
     ("chat.user_answer", "POST", "/chat/{session_id}/actions/answer"),
+    ("chat.swarmflow_reply", "POST", "/chat/{session_id}/actions/swarmflow-reply"),
     ("command.session", "POST", "/sessions/{session_id}/commands"),
     ("command.compact", "POST", "/sessions/{session_id}/commands/compact"),
     ("command.compact_partial", "POST", "/sessions/{session_id}/commands/compact-partial"),

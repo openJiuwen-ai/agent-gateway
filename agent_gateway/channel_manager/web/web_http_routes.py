@@ -509,6 +509,18 @@ def register_web_http_api_routes(
             wait_for_result=wait_for_result,
         )
 
+    @app.post(
+        "/api/v1/chat/{session_id}/actions/swarmflow-reply",
+        tags=["chat"],
+        summary="SwarmFlow 人工轮回复（Web RPC method=chat.swarmflow_reply）",
+    )
+    async def chat_swarmflow_reply(
+        session_id: str, request: Request, body: ChatActionBody | None = None,
+    ) -> Response:
+        payload = _body_dict(body)
+        payload["session_id"] = session_id
+        return await _unary(request, channel, "chat.swarmflow_reply", payload, is_stream=False)
+
     @app.get(
         "/api/v1/catalog",
         tags=["Web HTTP catalog"],
@@ -686,7 +698,7 @@ def _chat_identity_error(
     request: Request, method: str, params: dict[str, Any], request_id: str,
 ) -> JSONResponse | None:
     """Check history-writing chat methods before dispatch or opening SSE."""
-    if method not in ("chat.send", "chat.resume", "chat.user_answer"):
+    if method not in ("chat.send", "chat.resume", "chat.user_answer", "chat.swarmflow_reply"):
         return None
     for field in ("user_id", "group_id", "bot_id", "gateway_id"):
         header = (request.headers.get("x-" + field.replace("_", "-")) or "").strip()
