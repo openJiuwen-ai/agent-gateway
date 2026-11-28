@@ -104,6 +104,39 @@ def test_conflicting_query_and_header_users_are_refused():
     assert refused(b'user_id=bob', [(b'X-User-Id', b'alice')]).status == 400
 
 
+# aiohttp and websockets hand out text headers. A text pair must stop the caller:
+# compared with the byte name it never matches, and its declaration would be
+# dropped without a signal.
+@pytest.mark.parametrize('headers', [
+    [('X-User-Id', 'alice')],
+    [(b'X-User-Id', 'alice')],
+    [(b'Accept', b'*/*'), ('x-user-id', 'alice')],
+    [(b'X-User-Id', bytearray(b'alice'))],
+    [(bytearray(b'X-User-Id'), b'alice')],
+    [(memoryview(b'X-User-Id'), memoryview(b'alice'))],
+])
+def test_headers_that_are_not_raw_byte_pairs_are_a_caller_error(headers):
+    with pytest.raises(ValueError, match='raw byte pairs') as error:
+        resolve(b'user_id=bob', headers, entry='tui')
+    assert 'alice' not in str(error.value) and 'bob' not in str(error.value)
+
+
+@pytest.mark.parametrize('query', [b'', b'user_id=bob', b'user_id=%zz'])
+def test_a_text_header_is_neither_dropped_to_anonymous_nor_to_the_query_user(query):
+    # The caller's mistake is reported before any identity field is read.
+    with pytest.raises(ValueError, match='raw byte pairs'):
+        resolve(query, [('X-User-Id', 'alice')], entry='tui')
+
+
+@pytest.mark.parametrize(
+    'query', ['user_id=alice', bytearray(b'user_id=alice'), memoryview(b'user_id=alice'), None, 1],
+)
+def test_a_query_that_is_not_raw_bytes_is_a_caller_error(query):
+    with pytest.raises(ValueError, match='raw bytes') as error:
+        resolve(query, [(b'X-User-Id', b'alice')])
+    assert 'alice' not in str(error.value)
+
+
 def test_blank_query_user_falls_back_to_the_header():
     assert resolve(b'user_id=&token=t', [(b'X-User-Id', b'alice')]).business_user_id == 'alice'
 

@@ -20,6 +20,9 @@ The rules:
 * A malformed, repeated or conflicting declaration is refused with HTTP 400. It
   is never ignored or repaired: a dropped declaration would move the connection
   to another user or to the anonymous bucket without anyone noticing.
+* Both channels are read as the raw bytes the client sent. Text headers are a
+  caller error, not an anonymous connection: HTTP stacks decode headers
+  differently, and a text ``X-User-Id`` would be dropped without a signal.
 
 A connection that declares no user joins one anonymous bucket. Nothing tells two
 anonymous clients apart across reconnects, or between the WebSocket and the HTTP
@@ -172,8 +175,8 @@ def resolve_local_identity(
 
     Args:
         query: Raw ASCII URL query, without the leading question mark.
-        headers: Raw header pairs, preserving duplicates; ``X-User-Id`` is ASCII
-            once its optional whitespace is removed.
+        headers: Raw header pairs of ``bytes``, preserving duplicates;
+            ``X-User-Id`` is ASCII once its optional whitespace is removed.
         entry: Business entry kind; TUI and ACP retain their ASCII user rules.
         policy: Explicit local contract and identity namespace.
 
@@ -182,16 +185,24 @@ def resolve_local_identity(
 
     Raises:
         IngressIdentityError: Identity fields are malformed, duplicated or conflicting.
-        ValueError: The caller did not select a supported entry or explicit policy.
+        ValueError: The caller passed text instead of raw bytes, or did not select
+            a supported entry or explicit policy.
     """
     if not isinstance(policy, LocalIdentityPolicy):
         raise ValueError('an explicit local identity policy is required')
     if entry not in _ENTRIES:
         raise ValueError('unsupported ingress entry')
-    if not isinstance(query, bytes) or not query.isascii():
+    if not isinstance(query, bytes):
+        raise ValueError('the query must be raw bytes')
+    if not query.isascii():
         raise IngressIdentityError()
+    header_values = []
+    for name, value in headers:
+        if not (isinstance(name, bytes) and isinstance(value, bytes)):
+            raise ValueError('headers must be raw byte pairs')
+        if name.lower() == b'x-user-id':
+            header_values.append(value)
     query_user = _query_user(query)
-    header_values = [value for name, value in headers if name.lower() == b'x-user-id']
     if len(header_values) > 1:
         raise IngressIdentityError()
     header_user = None
