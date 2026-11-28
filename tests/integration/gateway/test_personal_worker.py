@@ -15,8 +15,9 @@ import time
 from types import SimpleNamespace
 
 import pytest
-from e2a.agent_models import AgentResponse
-from e2a.wire_codec import encode_agent_response_for_wire
+from e2a.agent_models import AgentResponse, AgentResponseChunk
+from e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
+from e2a.wire_codec import encode_agent_chunk_for_wire, encode_agent_response_for_wire
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 
@@ -38,6 +39,11 @@ class RecordingAgentServer(StubAgentServer):
         self.capabilities = tuple(capabilities)
         self.handshakes: list[dict[str, str]] = []
         self.replies: dict[str, object] = {}
+
+    def push(self, wire: dict) -> None:
+        """An AgentServer ``send_push``, on each live Gateway connection."""
+        for connection in tuple(self._connections):
+            connection.send(json.dumps(wire))
 
     def _handle(self, connection) -> None:
         self._connections.add(connection)
@@ -709,6 +715,33 @@ async def test_web_git_panel_refuses_what_it_never_asks_for(tmp_path, monkeypatc
                 "project_id": "p-1", "force": False, "delete": False, "_personal_project_git_v1": True,
             }, USER),
         ]
+
+
+def server_push(payload, *, request_id="push", channel_id="web", session_id=None):
+    """The frame the AgentServer emits for a ``send_push`` (``build_server_push_wire``)."""
+    chunk = AgentResponseChunk(
+        request_id=request_id, channel_id=channel_id, payload=payload, is_complete=False,
+    )
+    wire = encode_agent_chunk_for_wire(chunk, response_id=request_id, sequence=0)
+    metadata = dict(wire.get("metadata") or {})
+    metadata[E2A_WIRE_SERVER_PUSH_KEY] = True
+    wire["metadata"] = metadata
+    if session_id is not None:
+        wire["session_id"] = session_id
+    return wire
+
+
+async def test_personal_worker_delivers_an_agentserver_server_push_to_its_pages(personal):
+    """The Worker reads what the AgentServer pushes, as the single process does."""
+    group, stub = personal
+    async with (connect(web_url(group), additional_headers=ORIGIN) as web,
+                connect(web_url(group), additional_headers=ORIGIN) as sibling):
+        await asyncio.to_thread(
+            stub.push, server_push({"event_type": "models.updated"}, request_id="models-updated"),
+        )
+        for ws in (web, sibling):
+            assert await event(ws, "models.updated") == {"type": "event", "event": "models.updated", "payload": {}}
+    assert requests_sent(stub) == []
 
 
 def heartbeat_answers(stub):

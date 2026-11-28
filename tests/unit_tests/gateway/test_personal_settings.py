@@ -411,3 +411,22 @@ async def test_personal_settings_never_read_or_write_the_gateway_config(monkeypa
     await plain.methods["locale.set_conf"](ws, "set", {"preferred_language": "en"}, "session", "user")
     assert touched == ["read", "en"]
     assert [response["ok"] for response in plain.responses] == [True, True]
+
+
+def test_the_personal_worker_registers_the_agentserver_push_handler_itself():
+    """MessageHandler does not register its server-push handler in ``__init__``.
+
+    The single process gets it from ``set_outbound_pipeline``, which the Worker
+    assembly never calls. A Worker that does not register it drops every
+    AgentServer push as it arrives.
+    """
+    import inspect
+
+    from agent_gateway.application import worker_data
+    from agent_gateway.message_handler.message_handler import MessageHandler
+
+    module = inspect.getsource(MessageHandler)
+    registration = module.index("self._register_agent_server_push_handler()")
+    enclosing = module[module.rfind("\n    def ", 0, registration):]
+    assert enclosing.startswith("\n    def set_outbound_pipeline("), "moved: drop the Worker's own call"
+    assert "handler._register_agent_server_push_handler()" in inspect.getsource(worker_data.data_worker)

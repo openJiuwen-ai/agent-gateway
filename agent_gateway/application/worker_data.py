@@ -354,6 +354,13 @@ async def data_worker(
             credentials.attach_handler(handler)
         else:
             handler.set_credential_access(accounts)
+        if personal:
+            # MessageHandler registers its AgentServer server-push handler only
+            # from set_outbound_pipeline, which the single process calls while
+            # assembling and no Worker does. Without it a push is dropped as it
+            # arrives: a Designer canvas event, or the sentinel that ends a
+            # stream the AgentServer cancelled.
+            handler._register_agent_server_push_handler()
         manager = ChannelManager(handler, config={})
         handler.set_channel_manager(manager)
         cleanup.push_async_callback(handler.stop_forwarding)
