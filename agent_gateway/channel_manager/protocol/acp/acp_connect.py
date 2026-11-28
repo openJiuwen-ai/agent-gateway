@@ -1640,6 +1640,10 @@ class AcpChannel(BaseChannel):
         ) from last_exc
 
     async def _close_gateway_connection(self) -> None:
+        # Take the socket before cancelling the reader: the reader's finally
+        # clears ``self._gateway_ws``, which would otherwise skip ``close()``.
+        ws = self._gateway_ws
+        self._gateway_ws = None
         reader_task = self._gateway_reader_task
         self._gateway_reader_task = None
         if reader_task is not None:
@@ -1649,8 +1653,6 @@ class AcpChannel(BaseChannel):
             except asyncio.CancelledError:
                 pass
 
-        ws = self._gateway_ws
-        self._gateway_ws = None
         if ws is not None:
             try:
                 await ws.close()

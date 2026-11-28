@@ -1,5 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
+import asyncio
 import json
 from argparse import Namespace
 import sys
@@ -2149,3 +2150,41 @@ async def test_reasoning_and_todo_events_cancel_idle_finalize(monkeypatch):
         ),
         41,
     )
+
+
+async def test_close_gateway_connection_closes_websocket_after_reader_started():
+    """Closing must send a close frame even though the reader clears ``_gateway_ws``."""
+    from websockets.legacy.server import serve
+
+    close_codes: list[int | None] = []
+    server_done = asyncio.Event()
+
+    async def handler(ws, path):
+        try:
+            async for _ in ws:
+                pass
+        finally:
+            close_codes.append(ws.close_code)
+            server_done.set()
+
+    async with serve(handler, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        channel = AcpChannel(
+            AcpChannelConfig(enabled=True),
+            DummyBus(),
+            gateway_url=f"ws://127.0.0.1:{port}",
+        )
+        await channel._ensure_gateway_connection()
+        ws = channel._gateway_ws
+        reader_task = channel._gateway_reader_task
+        # Let the reader enter ``async for``, as it has during any real session.
+        await asyncio.sleep(0.05)
+
+        await channel._close_gateway_connection()
+        await asyncio.wait_for(server_done.wait(), timeout=2)
+
+    assert ws.closed
+    assert close_codes == [1000]
+    assert reader_task.done()
+    assert channel._gateway_ws is None
+    assert channel._gateway_reader_task is None
