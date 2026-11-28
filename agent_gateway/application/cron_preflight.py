@@ -60,6 +60,24 @@ async def preflight_controlled_cron(
     return report
 
 
+async def require_controlled_cron(
+    ownership: CronOwnership, *, config: dict[str, Any] | None = None,
+    allow_project_jobs: bool = False,
+) -> CronPreflightReport:
+    """Preflight with a message that names only blocking job identifiers and reasons."""
+    report = await inspect_controlled_cron(
+        ownership, config=config, allow_project_jobs=allow_project_jobs,
+    )
+    if not report.ready:
+        # ``issues`` carries operational identifiers only: never a task body,
+        # description or credential reference.
+        blockers = ", ".join(
+            f"{issue.job_id or 'config'}: {issue.reason}" for issue in report.issues if issue.blocking
+        )
+        raise ValueError(f"Cron preflight rejected unsupported enabled capabilities ({blockers})")
+    return report
+
+
 def check_cron_cli(worker_count: int) -> int:
     """Inspect a static snapshot without preparing a runtime or touching AS."""
     import asyncio

@@ -6,11 +6,13 @@ from __future__ import annotations
 import asyncio
 from contextlib import ExitStack
 from dataclasses import dataclass, field
+import logging
 import os
 import socket
 import sys
 import uuid
 
+from agent_gateway.common.worker_affinity import WorkerManifest
 from agent_gateway.processes.capabilities import management_preflight
 from agent_gateway.processes.channel import ManagementChannel
 from agent_gateway.processes.control_channel import ControlServiceChannel
@@ -22,7 +24,13 @@ from agent_gateway.transport.handoff import HandoffRejected, HandoffSender
 from agent_gateway.transport.handoff_channel import HandoffChannel
 from agent_gateway.transport.handoff_protocol import HandoffIdentity
 
+logger = logging.getLogger("gateway")
+
 RUNTIME_IDS = ("web-http", "web-ws", "protocol")
+
+
+class _WorkerFrameError(RuntimeError):
+    """A Worker reported a management phase that was not expected."""
 
 
 def management_frame(kind: str, identity: HandoffIdentity, **fields) -> dict:
@@ -42,14 +50,32 @@ class _Worker:
     control_socket: socket.socket | None = None
     control: ControlServiceServer | None = None
     control_watch: asyncio.Task | None = None
+    cron_active: asyncio.Event = field(default_factory=asyncio.Event)
+    cron_activate_sent: bool = False
 
 
 class WorkerPool:
     def __init__(self, agent_server_url: str, count: int, *, startup_timeout: float = 30,
-                 control_services: ControlServices | None = None) -> None:
+                 control_services: ControlServices | None = None,
+                 cron_manifest: WorkerManifest | None = None,
+                 account_services: bool = False) -> None:
         if type(count) is not int or not 1 <= count <= 32:
             raise ValueError("number of Workers must be between 1 and 32")
         self.slots = tuple(range(count))
+        if cron_manifest is not None:
+            if type(cron_manifest) is not WorkerManifest or cron_manifest.slots != self.slots:
+                raise ValueError("Worker Cron manifest must cover the complete Worker range")
+            if control_services is None:
+                raise ValueError("Worker Cron requires control services")
+        if type(account_services) is not bool:
+            raise ValueError("account services must be an explicit boolean")
+        if account_services and control_services is None:
+            raise ValueError("Worker account services require control services")
+        self.cron_manifest = cron_manifest
+        # A Control fd alone keeps the original account contract. It is stated
+        # explicitly for a Cron slot, whose Control client is Cron-only otherwise.
+        self._account_services = account_services
+        self._cron_activation_in_progress = False
         self._agent_server_url = agent_server_url
         self._startup_timeout = startup_timeout
         self._group_id = uuid.uuid4().hex
@@ -112,6 +138,10 @@ class WorkerPool:
                 control, control_fd = pair()
                 args.append(str(control_fd))
                 pass_fds.append(control_fd)
+            if self._account_services:
+                args.append("--accounts")
+            if self.cron_manifest is not None:
+                args += ["--cron-slot", str(slot), "--cron-slots", ",".join(map(str, self.slots))]
 
             # Keep the spawn task owned if start is cancelled during fork/exec.
             spawn = asyncio.create_task(asyncio.create_subprocess_exec(
@@ -163,6 +193,10 @@ class WorkerPool:
         frame = await self._expect(worker, "RUNTIME_READY")
         if set(frame["runtime_ids"]) != set(RUNTIME_IDS):
             raise RuntimeError("Worker runtime manifest does not match")
+        if self.cron_manifest is not None:
+            # Prepared, not started: the slot has validated its owned Cron
+            # shard and now waits for the common CRON_ACTIVATE below.
+            await self._expect(worker, "CRON_PREPARED")
 
     async def _watch_control(self, worker: _Worker) -> None:
         try:
@@ -172,23 +206,110 @@ class WorkerPool:
         if self._stop_task is None:
             self._fail(RuntimeError(f"Worker {worker.sender.identity.slot_id} Control channel closed"))
 
-    async def _expect(self, worker: _Worker, kind: str) -> dict:
+    async def _expect(self, worker: _Worker, kinds: str | tuple[str, ...]) -> dict:
+        expected = (kinds,) if isinstance(kinds, str) else kinds
         frame = validate_message(await worker.management.receive(), expected=vars(worker.sender.identity))
-        if frame["type"] != kind or frame["pid"] != worker.process.pid:
+        if frame["type"] not in expected or frame["pid"] != worker.process.pid:
             slot = worker.sender.identity.slot_id
-            raise RuntimeError(f"Worker {slot}: expected {kind}, received {frame['type']}")
+            received = frame["type"]
+            if received == "FAILED":
+                received += f" ({frame['error_code']})"
+            raise _WorkerFrameError(f"Worker {slot}: expected {' or '.join(expected)}, received {received}")
         return frame
 
     async def _watch(self, worker: _Worker) -> None:
         slot = worker.sender.identity.slot_id
         try:
-            await self._expect(worker, "STOPPED")
+            while True:
+                frame = await self._expect(worker, ("CRON_ACTIVE", "STOPPED"))
+                if frame["type"] == "STOPPED":
+                    break
+                if (self.cron_manifest is None or not worker.cron_activate_sent
+                        or worker.cron_active.is_set()):
+                    raise _WorkerFrameError(f"Worker {slot}: unexpected CRON_ACTIVE")
+                worker.cron_active.set()
         except Exception as error:
             if self._stop_task is None:
-                self._fail(RuntimeError(f"Worker {slot} management channel failed: {type(error).__name__}"))
+                # Only the protocol's own frame names and error codes are
+                # echoed; a decode failure keeps its type name alone.
+                failure = error if isinstance(error, _WorkerFrameError) else RuntimeError(
+                    f"Worker {slot} management channel failed: {type(error).__name__}"
+                )
+                self._fail(failure)
             return
         if self._stop_task is None:
             self._fail(RuntimeError(f"Worker {slot} stopped unexpectedly"))
+
+    async def activate_cron(self) -> None:
+        """Start every owned Cron shard once all fixed slots are prepared.
+
+        A slot starts only after every sibling reported ``CRON_PREPARED``, and
+        the group admits no connection until every slot reported
+        ``CRON_ACTIVE``. A failed or cancelled activation stops the pool: a
+        partly activated group must not keep serving Cron traffic.
+        """
+        if self.cron_manifest is None:
+            raise RuntimeError("Worker Cron activation is not enabled")
+        if self._stop_task is not None or not self._ready or not self._workers:
+            raise RuntimeError("Worker Cron activation requires a ready Worker pool")
+        if self._cron_activation_in_progress:
+            raise RuntimeError("Worker Cron activation is already in progress")
+        if all(worker.cron_active.is_set() for worker in self._workers):
+            raise RuntimeError("Worker Cron is already active")
+
+        async def activated() -> None:
+            await asyncio.gather(*(worker.cron_active.wait() for worker in self._workers))
+
+        async def pool_failed(self) -> None:
+            await asyncio.shield(self._failure)
+
+        self._cron_activation_in_progress = True
+        activation = asyncio.create_task(activated(), name="gateway-activate-cron")
+        failure = asyncio.create_task(pool_failed(self), name="gateway-cron-pool-failure")
+        cancelled = False
+        try:
+            async with asyncio.timeout(self._startup_timeout):
+                for worker in self._workers:
+                    worker.cron_activate_sent = True
+                await asyncio.gather(*(
+                    worker.management.send(management_frame("CRON_ACTIVATE", worker.sender.identity))
+                    for worker in self._workers
+                ))
+                done, _pending = await asyncio.wait(
+                    (activation, failure), return_when=asyncio.FIRST_COMPLETED,
+                )
+                if failure in done:
+                    raise failure.result() or RuntimeError(
+                        "Worker pool stopped during Cron activation"
+                    )
+        except TimeoutError as error:
+            await self._abort_cron_activation()
+            raise RuntimeError("Worker Cron activation timed out") from error
+        except asyncio.CancelledError:
+            cancelled = True
+        except RuntimeError:
+            # The pool already holds the first Worker failure; report it as is.
+            await self._abort_cron_activation()
+            raise
+        except BaseException as error:
+            await self._abort_cron_activation()
+            raise RuntimeError(f"Worker Cron activation failed: {type(error).__name__}") from error
+        finally:
+            for task in (activation, failure):
+                task.cancel()
+            await asyncio.gather(activation, failure, return_exceptions=True)
+            self._cron_activation_in_progress = False
+        if cancelled:
+            # Some slots may already run their shard; the group cannot recover.
+            self._fail(RuntimeError("Worker Cron activation was cancelled"))
+            await self.stop()
+            raise asyncio.CancelledError
+
+    async def _abort_cron_activation(self) -> None:
+        """Keep the first observed Worker failure and reap the whole pool."""
+        if not self._failure.done():
+            self._fail(RuntimeError("Worker Cron activation did not complete"))
+        await self.stop()
 
     def _fail(self, error: RuntimeError) -> None:
         if not self._failure.done():
@@ -202,7 +323,8 @@ class WorkerPool:
 
     async def handoff(self, slot: int, client: socket.socket, runtime: str, prefix: bytes, *, timeout: float) -> None:
         worker = self._workers[slot]
-        if not self._ready or worker.handoff_waiters >= 16 or worker.process.returncode is not None:
+        if (not self._ready or worker.handoff_waiters >= 16 or worker.process.returncode is not None
+                or (self.cron_manifest is not None and not worker.cron_active.is_set())):
             raise HandoffRejected("Worker not available for handoff")
         worker.handoff_waiters += 1
         try:
@@ -263,6 +385,11 @@ class WorkerPool:
                     except ProcessLookupError:
                         pass
                     await process.wait()
+            if process.returncode not in (None, 0):
+                # A non-zero stop is how a Worker reports unconfirmed cleanup,
+                # for example an AgentServer run it could not confirm stopped.
+                logger.warning("[App] Worker %s exited with status %s during stop",
+                               worker.sender.identity.slot_id, process.returncode)
             if watcher is not None:
                 await asyncio.gather(watcher, return_exceptions=True)
             if worker.control_watch is not None:

@@ -1,19 +1,28 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Supervise the fixed Worker pool, loopback listeners and optional account authority."""
+"""Supervise the fixed Worker pool, loopback listeners and optional authorities.
+
+With ``cron=True`` the group also owns the sharded personal Cron runtime. The
+parent runs the read-only preflight before any Worker starts, prepares every
+slot, activates all shards together and only then opens the listeners.
+"""
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+import logging
 import math
 import socket
 from urllib.parse import urlsplit
 
+from agent_gateway.application.cron_preflight import require_controlled_cron
 from agent_gateway.common.ingress_identity import LocalIdentityPolicy
 from agent_gateway.common.worker_affinity import FixedUserHash, WorkerManifest
 from agent_gateway.enterprise import is_enterprise
 from agent_gateway.processes.pool import WorkerPool
 from agent_gateway.transport.connection_acceptor import ConnectionAcceptor
+
+logger = logging.getLogger("gateway")
 
 
 class WorkerGroup:
@@ -23,6 +32,7 @@ class WorkerGroup:
         self, agent_server_url: str, *, workers: int, web_port: int = 19000,
         protocol_port: int = 19001, handoff_timeout: float = 2,
         auth_service_provider: Callable | None = None,
+        cron: bool = False,
     ) -> None:
         url = urlsplit(agent_server_url)
         if (is_enterprise() or url.scheme != "ws" or not url.port
@@ -30,20 +40,63 @@ class WorkerGroup:
             raise ValueError("the Worker group only supports personal loopback with a single local AgentServer")
         if not math.isfinite(handoff_timeout) or handoff_timeout <= 0:
             raise ValueError("handoff timeout must be finite and positive")
+        if type(cron) is not bool:
+            raise ValueError("cron must be an explicit boolean")
+        if type(workers) is not int or not 1 <= workers <= 32:
+            raise ValueError("number of Workers must be between 1 and 32")
         self._credential_authority = self._control_web = None
+        self._cron_ownership = self._cron_commands = None
+        if cron:
+            from agent_gateway.cron.control_commands import ControlCronCommands
+            from agent_gateway.cron.ownership import CronOwnership
+
+            # Ownership follows the configured slots, never the healthy subset.
+            self._cron_ownership = CronOwnership(WorkerManifest(tuple(range(workers))), LocalIdentityPolicy())
+            self._cron_commands = ControlCronCommands(self._cron_ownership, agent_server_url)
         control_services = None
-        if auth_service_provider is not None:
-            from agent_gateway.auth.control_credentials import ControlCredentialServices
+        if auth_service_provider is not None or self._cron_commands is not None:
             from agent_gateway.processes.control_service import ControlServices
 
-            authority = self._credential_authority = ControlCredentialServices(
-                auth_service_provider, server_id=agent_server_url, enable_public_catalog=True,
-            )
+            factories, connects, disconnects = [], [], []
+            if auth_service_provider is not None:
+                from agent_gateway.auth.control_credentials import ControlCredentialServices
+
+                authority = self._credential_authority = ControlCredentialServices(
+                    auth_service_provider, server_id=agent_server_url, enable_public_catalog=True,
+                )
+                factories.append(authority.handlers_for)
+                connects.append(authority.endpoint_connected)
+                disconnects.append(authority.endpoint_disconnected)
+            if self._cron_commands is not None:
+                factories.append(self._cron_commands.handlers_for)
+                connects.append(self._cron_commands.endpoint_connected)
+                disconnects.append(self._cron_commands.endpoint_disconnected)
+
+            def handlers_for(identity):
+                merged: dict = {}
+                for factory in factories:
+                    handlers = dict(factory(identity))
+                    reserved = merged.keys() & handlers.keys()
+                    if reserved:
+                        raise ValueError(f"control operations are reserved twice: {sorted(reserved)}")
+                    merged.update(handlers)
+                return merged
+
+            def run_all(callbacks):
+                def invoke(*arguments):
+                    for callback in callbacks:
+                        callback(*arguments)
+                return invoke
+
             control_services = ControlServices(
-                handlers_factory=authority.handlers_for, on_connect=authority.endpoint_connected,
-                on_disconnect=authority.endpoint_disconnected,
+                handlers_factory=handlers_for, on_connect=run_all(connects),
+                on_disconnect=run_all(disconnects),
             )
-        self.pool = WorkerPool(agent_server_url, workers, control_services=control_services)
+        self.pool = WorkerPool(
+            agent_server_url, workers, control_services=control_services,
+            cron_manifest=self._cron_ownership.manifest if self._cron_ownership is not None else None,
+            account_services=auth_service_provider is not None,
+        )
         self._ports = (web_port, protocol_port)
         self._handoff_timeout = handoff_timeout
         self._acceptors: list[ConnectionAcceptor] = []
@@ -57,10 +110,16 @@ class WorkerGroup:
             raise RuntimeError("Worker group is single-use")
         self._started = True
         try:
+            if self._cron_ownership is not None:
+                # Read-only and parent-side: no Worker is spawned while an
+                # enabled record still needs a capability this batch lacks.
+                await require_controlled_cron(self._cron_ownership)
             if self._credential_authority is not None:
                 await self._credential_authority.prepare()
                 await self._start_control_web()
             await self.pool.start()
+            if self._cron_ownership is not None:
+                await self.pool.activate_cron()
             if self._close_task is not None:
                 raise RuntimeError("Worker group stopped during startup")
             affinity = FixedUserHash(WorkerManifest(self.pool.slots), LocalIdentityPolicy())
@@ -85,6 +144,8 @@ class WorkerGroup:
             for acceptor in self._acceptors:
                 acceptor.start()
             self._monitor = asyncio.create_task(self._watch(), name="gateway-watch-worker-group")
+            if self._cron_ownership is not None:
+                logger.info("[App] multiprocess_cron_ready workers=%d", len(self.pool.slots))
         except BaseException:
             await self.stop()
             raise

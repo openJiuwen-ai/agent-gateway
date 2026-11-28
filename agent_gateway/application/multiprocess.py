@@ -11,12 +11,17 @@ import os
 from pathlib import Path
 import socket
 
+from agent_gateway.application.cron_preflight import require_controlled_cron
 from agent_gateway.application.worker_group import WorkerGroup
 from agent_gateway.common.agentos_runtime import is_agentos_runtime
+from agent_gateway.common.ingress_identity import LocalIdentityPolicy
+from agent_gateway.common.worker_affinity import WorkerManifest
+from agent_gateway.cron.ownership import CronOwnership
 from agent_gateway.enterprise import is_enterprise
 from agent_gateway.processes.capabilities import management_preflight
 
 DEFAULT_WORKERS = 2
+MAX_WORKERS = 32
 logger = logging.getLogger("gateway")
 
 
@@ -26,15 +31,18 @@ class MultiprocessOptions:
     web_port: int
     protocol_port: int
     accounts: bool = False
+    cron: bool = False
 
     @classmethod
     def from_cli(cls, *, workers: int | None, web_host: str, web_port: int,
                  web_path: str, web_ws_deflate: bool,
                  required_client_type: str | tuple[str, ...] | None,
-                 accounts: bool = False) -> MultiprocessOptions:
+                 accounts: bool = False, cron: bool = False) -> MultiprocessOptions:
         count = DEFAULT_WORKERS if workers is None else workers
-        if not 1 <= count <= 32:
-            raise ValueError("--workers must be between 1 and 32")
+        if not 1 <= count <= MAX_WORKERS:
+            raise ValueError(f"--workers must be between 1 and {MAX_WORKERS}")
+        if type(accounts) is not bool or type(cron) is not bool:
+            raise ValueError("--enable-accounts and --enable-cron must be explicit flags")
         if is_enterprise() or is_agentos_runtime() or required_client_type is not None:
             raise ValueError("multiprocess requires a personal deployment")
         if web_host not in {"127.0.0.1", "localhost"} or os.getenv(
@@ -55,7 +63,7 @@ class MultiprocessOptions:
             raise ValueError("listen ports must be between 0 and 65535")
         if web_port == protocol_port != 0:
             raise ValueError("Web and TUI/ACP must use distinct ports")
-        return cls(count, web_port, protocol_port, accounts)
+        return cls(count, web_port, protocol_port, accounts, cron)
 
 
 def _channel_enabled(config: object) -> bool:
@@ -82,9 +90,18 @@ def _has_enabled_cron_jobs(path: Path) -> bool:
     return any(job.get("enabled") for job in jobs)
 
 
-async def validate_workspace() -> None:
+async def validate_workspace(*, cron: bool = False, workers: int = DEFAULT_WORKERS) -> None:
+    """Refuse a workspace the Worker group cannot serve before any listener opens.
+
+    Without ``cron`` an enabled Cron record keeps the trial in single mode, as
+    before. With ``cron`` the record must instead pass the read-only preflight.
+    Neither path creates, migrates or rewrites the Cron file.
+    """
     from agent_gateway.common.config import get_config
     from agent_gateway.common.cron_settings import load_cron_store_settings
+
+    if type(cron) is not bool:
+        raise ValueError("cron must be an explicit boolean")
 
     config = await asyncio.to_thread(get_config)
     gateway = config.get("gateway") or {}
@@ -102,13 +119,22 @@ async def validate_workspace() -> None:
     if (config.get("proactive_recommendation") or {}).get("enabled"):
         raise ValueError("proactive recommendations are unavailable in multiprocess mode")
     settings = load_cron_store_settings(config)
-    if settings.backend != "file" or await asyncio.to_thread(_has_enabled_cron_jobs, settings.file_path):
+    if settings.backend != "file":
         raise ValueError("Cron is not supported by this trial; use single mode")
+    if not cron:
+        if await asyncio.to_thread(_has_enabled_cron_jobs, settings.file_path):
+            raise ValueError("Cron is not supported by this trial; use single mode")
+        return
+    if type(workers) is not int or not 1 <= workers <= MAX_WORKERS:
+        raise ValueError(f"--workers must be between 1 and {MAX_WORKERS}")
+    await require_controlled_cron(
+        CronOwnership(WorkerManifest(tuple(range(workers))), LocalIdentityPolicy()), config=config,
+    )
 
 
 async def run_multiprocess(options: MultiprocessOptions, agent_server_url: str,
                            shutdown_event: asyncio.Event) -> None:
-    await validate_workspace()
+    await validate_workspace(cron=options.cron, workers=options.workers)
     if shutdown_event.is_set():
         return
     auth_service_provider = None
@@ -117,7 +143,8 @@ async def run_multiprocess(options: MultiprocessOptions, agent_server_url: str,
 
         auth_service_provider = get_auth_service
     group = WorkerGroup(agent_server_url, workers=options.workers, web_port=options.web_port,
-                        protocol_port=options.protocol_port, auth_service_provider=auth_service_provider)
+                        protocol_port=options.protocol_port, auth_service_provider=auth_service_provider,
+                        cron=options.cron)
     shutdown = asyncio.create_task(shutdown_event.wait())
     startup = asyncio.create_task(group.start())
     tasks = [shutdown, startup]

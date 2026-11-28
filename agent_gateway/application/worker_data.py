@@ -1,5 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Assemble the existing data handlers for the internal single-AS Worker test host."""
+"""Assemble the existing data handlers for the internal single-AS Worker test host.
+
+With an explicit slot this host also owns one Cron shard. The shard is prepared
+here but only started when the parent sends ``CRON_ACTIVATE``.
+"""
 
 from __future__ import annotations
 
@@ -49,8 +53,16 @@ class _DisabledAccounts:
         return None
 
 
-def is_data_frame(raw: str | bytes, *, acp: bool = False, accounts: bool = False) -> bool:
-    """Keep unadapted login, configuration and Cron out of this Worker host."""
+def is_data_frame(
+    raw: str | bytes, *, acp: bool = False, accounts: bool = False, cron: bool = False,
+) -> bool:
+    """Keep unadapted login, configuration and Cron out of this Worker host.
+
+    ``cron=True`` admits only the owned Cron panel methods; a frame that still
+    carries a credential selector is refused like every other Worker frame.
+    """
+    from agent_gateway.application.worker_cron_ingress import CRON_PANEL_METHODS
+
     try:
         frame = json.loads(raw)
     except (ValueError, RecursionError):
@@ -59,6 +71,8 @@ def is_data_frame(raw: str | bytes, *, acp: bool = False, accounts: bool = False
         return False
     method = frame.get("method")
     methods = _ACP_METHODS if acp and frame.get("jsonrpc") == "2.0" else _DATA_METHODS
+    if cron and not acp:
+        methods = methods | CRON_PANEL_METHODS
     if not isinstance(method, str) or method not in methods:
         return False
     params = frame.get("params")
@@ -115,8 +129,43 @@ async def _no_refresh(_message) -> None:
     pass
 
 
+def _wire_cron_command_runtime(
+    *, control_client, message_handler, cron_runtime, manifest, slot_id,
+):
+    from agent_gateway.application.worker_cron_commands import WorkerCronCommands
+    from agent_gateway.cron.ownership import CronOwnership
+
+    cron_commands = WorkerCronCommands(
+        client=control_client,
+        message_handler=message_handler,
+        ownership=CronOwnership(manifest, LocalIdentityPolicy()),
+        slot_id=slot_id,
+        # A delivered command is refused until the parent activated this slot.
+        enabled=lambda: cron_runtime._activated.is_set(),
+    )
+    message_handler.set_cron_command_runtime(cron_commands)
+    message_handler.set_cron_tool_push_enabled(True)
+    return cron_commands
+
+
 @asynccontextmanager
-async def data_worker(agent_server_url: str, *, control_client=None, on_credentials=None):
+async def data_worker(
+    agent_server_url: str, *, control_client=None, on_credentials=None, accounts: bool = True,
+    cron_slot: int | None = None, cron_manifest=None,
+):
+    """Yield ``(runtimes, web_runtime, cron)``.
+
+    ``cron`` is ``None``, or ``(runtime, commands)`` for the owned Cron shard.
+    ``accounts`` must be false when the Control client exists only for Cron.
+    """
+    from agent_gateway.common.worker_affinity import WorkerManifest
+
+    cron_enabled = cron_slot is not None or cron_manifest is not None
+    if cron_enabled and (type(cron_manifest) is not WorkerManifest or type(cron_slot) is not int
+                         or cron_slot not in cron_manifest.slots):
+        raise ValueError("sharded Cron requires an explicit Worker manifest and slot")
+    if cron_enabled and control_client is None:
+        raise ValueError("Worker Cron requires its process Control client")
     from agent_gateway.application.preparation import callback_framework
     from agent_gateway.application.tui_acp import assemble_tui_acp
     from agent_gateway.application.web import assemble_web
@@ -135,7 +184,7 @@ async def data_worker(agent_server_url: str, *, control_client=None, on_credenti
         cleanup.push_async_callback(client.disconnect)
         await client.connect(agent_server_url)
         credentials = None
-        if control_client is not None:
+        if control_client is not None and accounts:
             from agent_gateway.auth.worker_credential_services import WorkerCredentialServices
 
             credentials = WorkerCredentialServices.from_client(
@@ -161,31 +210,64 @@ async def data_worker(agent_server_url: str, *, control_client=None, on_credenti
         )
         if credentials is not None:
             preprocessor = preprocessor.with_credential_access(credentials.credentials)
-        web, _ = assemble_web(
-            agent_client=client, message_handler=handler, channel_manager=manager,
-            extension_registry=registry, on_config_saved=_reject_config, heartbeat_service=None,
-            cron_controller=None, heartbeat_controller=None, updater_service=None,
-            host="127.0.0.1", port=0, path="/ws", ws_permessage_deflate=False,
-            preprocessor=preprocessor, log_stage=lambda _stage: None,
-        )
-        cleanup.push_async_callback(web.stop)
-        tui = await assemble_tui_acp(
-            agent_client=client, message_handler=handler, channel_manager=manager,
-            third_agent=get_unsupported_third_agent(), on_config_saved=_reject_config,
-            cron_controller=None, heartbeat_controller=None, preprocessor=preprocessor,
-            log_stage=lambda _stage: None,
-        )
-        cleanup.push_async_callback(tui.stop)
-        await tui.tui_channel.start()
-        frame_allowed = partial(is_data_frame, accounts=credentials is not None)
-        web_app = _build_web_app(web, frame_allowed=frame_allowed)
-        web_runtime = WebProtocolRuntime(web_app, ws_per_message_deflate=False, single_request_http=True)
-        cleanup.push_async_callback(web_runtime.stop)
-        await web_runtime.start()
-        protocol = ProtocolConnectionRuntime(tui.protocol_runtime, frame_allowed=frame_allowed)
-        cleanup.push_async_callback(protocol.stop)
-        await protocol.start()
-        yield {"web-http": web_runtime, "web-ws": _WebSocketAdopter(web_runtime), "protocol": protocol}, web_runtime
+        cron = None
+        if cron_enabled:
+            from agent_gateway.application.worker_cron import build_worker_cron
+
+            cron_runtime = await build_worker_cron(
+                manifest=cron_manifest, slot_id=cron_slot, agent_client=client,
+                message_handler=handler,
+            )
+            cron_commands = _wire_cron_command_runtime(
+                control_client=control_client, message_handler=handler, cron_runtime=cron_runtime,
+                manifest=cron_manifest, slot_id=cron_slot,
+            )
+            cron = (cron_runtime, cron_commands)
+            # Unwound after the northbound runtimes below and before the
+            # handlers, credentials and southbound connection: a stop must
+            # still reach the AgentServer to confirm every active run ended.
+            cleanup.push_async_callback(cron_runtime.stop)
+            cleanup.push_async_callback(cron_commands.stop)
+
+        async with AsyncExitStack() as northbound:
+            web, _ = assemble_web(
+                agent_client=client, message_handler=handler, channel_manager=manager,
+                extension_registry=registry, on_config_saved=_reject_config, heartbeat_service=None,
+                cron_controller=cron_runtime.controller if cron is not None else None,
+                heartbeat_controller=None, updater_service=None,
+                host="127.0.0.1", port=0, path="/ws", ws_permessage_deflate=False,
+                preprocessor=preprocessor, log_stage=lambda _stage: None,
+            )
+            northbound.push_async_callback(web.stop)
+            tui = await assemble_tui_acp(
+                agent_client=client, message_handler=handler, channel_manager=manager,
+                third_agent=get_unsupported_third_agent(), on_config_saved=_reject_config,
+                cron_controller=cron_runtime.controller if cron is not None else None,
+                heartbeat_controller=None, preprocessor=preprocessor,
+                log_stage=lambda _stage: None,
+            )
+            northbound.push_async_callback(tui.stop)
+            if cron is not None:
+                from agent_gateway.application.worker_cron_ingress import bind_owned_cron_handlers
+
+                bind_owned_cron_handlers(web, tui.protocol_runtime)
+            await tui.tui_channel.start()
+            frame_allowed = partial(
+                is_data_frame, accounts=credentials is not None, cron=cron is not None,
+            )
+            web_app = _build_web_app(web, frame_allowed=frame_allowed)
+            web_runtime = WebProtocolRuntime(
+                web_app, ws_per_message_deflate=False, single_request_http=True,
+            )
+            northbound.push_async_callback(web_runtime.stop)
+            await web_runtime.start()
+            protocol = ProtocolConnectionRuntime(tui.protocol_runtime, frame_allowed=frame_allowed)
+            northbound.push_async_callback(protocol.stop)
+            await protocol.start()
+            runtimes = {
+                "web-http": web_runtime, "web-ws": _WebSocketAdopter(web_runtime), "protocol": protocol,
+            }
+            yield runtimes, web_runtime, cron
 
 
 class _WebSocketAdopter:
